@@ -1,6 +1,5 @@
-use crate::rendering::framebuffer::Framebuffer;
 use crate::text_load::Maze;
-use raylib::prelude::{Color, Vector2};
+use raylib::prelude::Vector2;
 use std::f32::consts::PI;
 
 /// Representa al jugador dentro del laberinto.
@@ -42,25 +41,5 @@ impl Player {
         }
 
         Err("No se encontró el carácter 'p' en el laberinto".to_string())
-    }
-}
-
-/// Dibuja al jugador como un pequeño círculo.
-pub fn render_player(framebuffer: &mut Framebuffer, player: &Player) {
-    const PLAYER_RADIUS: i32 = 5;
-
-    framebuffer.set_current_color(Color::new(50, 220, 160, 255));
-
-    let center_x = player.pos.x.round() as i32;
-    let center_y = player.pos.y.round() as i32;
-
-    for offset_y in -PLAYER_RADIUS..=PLAYER_RADIUS {
-        for offset_x in -PLAYER_RADIUS..=PLAYER_RADIUS {
-            let distance_squared = offset_x * offset_x + offset_y * offset_y;
-
-            if distance_squared <= PLAYER_RADIUS * PLAYER_RADIUS {
-                framebuffer.point(center_x + offset_x, center_y + offset_y);
-            }
-        }
     }
 }

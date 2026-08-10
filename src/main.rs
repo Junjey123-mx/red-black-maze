@@ -8,10 +8,10 @@ mod text_load;
 use caster::cast_fov;
 use config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use controller::process_events;
-use player::{Player, render_player};
+use player::Player;
 use raylib::prelude::*;
 use rendering::framebuffer::Framebuffer;
-use rendering::map_2d::render_maze;
+use rendering::map_2d::{render_maze, render_player};
 use rendering::world_3d::render_world;
 use text_load::{Maze, load_maze, validate_maze};
 
