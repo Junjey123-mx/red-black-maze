@@ -1,4 +1,4 @@
-use crate::framebuffer::Framebuffer;
+use crate::rendering::framebuffer::Framebuffer;
 use crate::text_load::Maze;
 use raylib::prelude::{Color, Vector2};
 use std::f32::consts::PI;

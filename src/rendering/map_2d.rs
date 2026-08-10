@@ -1,4 +1,4 @@
-use crate::framebuffer::Framebuffer;
+use super::framebuffer::Framebuffer;
 use crate::text_load::Maze;
 use raylib::prelude::Color;
 

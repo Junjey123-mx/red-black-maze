@@ -1,5 +1,5 @@
-use crate::framebuffer::Framebuffer;
 use crate::player::Player;
+use crate::rendering::framebuffer::Framebuffer;
 use crate::text_load::Maze;
 use raylib::prelude::Color;
 
