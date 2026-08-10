@@ -1,4 +1,5 @@
 mod caster;
+mod config;
 mod controller;
 mod framebuffer;
 mod maze_renderer;
@@ -7,6 +8,7 @@ mod text_load;
 mod world_renderer;
 
 use caster::cast_fov;
+use config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use controller::process_events;
 use framebuffer::Framebuffer;
 use maze_renderer::render_maze;
@@ -23,14 +25,6 @@ enum ViewMode {
 }
 
 fn main() {
-    const BLOCK_SIZE: usize = 48;
-
-    /*
-     * Cantidad de rayos utilizados únicamente para
-     * mostrar el abanico en el mapa 2D.
-     */
-    const MAP_RAYS: usize = 180;
-
     let maze: Maze = load_maze("./maze.txt");
 
     if let Err(error) = validate_maze(&maze) {
@@ -62,7 +56,7 @@ fn main() {
         .log_level(TraceLogLevel::LOG_WARNING)
         .build();
 
-    window.set_target_fps(60);
+    window.set_target_fps(TARGET_FPS);
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
 
