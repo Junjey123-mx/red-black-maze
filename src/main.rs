@@ -1,13 +1,13 @@
 mod caster;
 mod config;
-mod controller;
+mod input;
 mod player;
 mod rendering;
 mod text_load;
 
 use caster::cast_fov;
 use config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
-use controller::process_events;
+use input::controller::process_events;
 use player::Player;
 use raylib::prelude::*;
 use rendering::framebuffer::Framebuffer;
