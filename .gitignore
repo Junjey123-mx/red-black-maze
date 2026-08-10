@@ -1,0 +1,14 @@
+# Rust build output
+/target/
+
+# Environment and local files
+.env
+.env.*
+*.log
+
+# Copyrighted background music
+/assets/audio/music/background.ogg
+
+# OS/editor files
+.DS_Store
+Thumbs.db
