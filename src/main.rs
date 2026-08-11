@@ -1,14 +1,14 @@
-mod caster;
 mod config;
 mod input;
 mod player;
+mod raycasting;
 mod rendering;
 mod text_load;
 
-use caster::cast_fov;
 use config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use input::controller::process_events;
 use player::Player;
+use raycasting::cast_fov;
 use raylib::prelude::*;
 use rendering::framebuffer::Framebuffer;
 use rendering::map_2d::{render_maze, render_player};

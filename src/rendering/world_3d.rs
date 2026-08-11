@@ -1,31 +1,9 @@
+use super::background::draw_background;
 use super::framebuffer::Framebuffer;
-use crate::caster::cast_ray;
 use crate::player::Player;
+use crate::raycasting::cast_ray;
 use crate::text_load::Maze;
 use raylib::prelude::Color;
-
-/// Dibuja el cielo y el suelo de la vista 3D.
-fn draw_background(framebuffer: &mut Framebuffer) {
-    let width = framebuffer.width();
-    let height = framebuffer.height();
-    let half_height = height / 2;
-
-    let ceiling_color = Color::new(28, 20, 24, 255);
-
-    let floor_color = Color::new(12, 12, 16, 255);
-
-    for y in 0..height {
-        if y < half_height {
-            framebuffer.set_current_color(ceiling_color);
-        } else {
-            framebuffer.set_current_color(floor_color);
-        }
-
-        for x in 0..width {
-            framebuffer.point(x, y);
-        }
-    }
-}
 
 /// Obtiene el color de una pared según el carácter
 /// golpeado y la distancia.
