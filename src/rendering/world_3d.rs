@@ -1,6 +1,6 @@
 use super::background::draw_background;
 use super::framebuffer::Framebuffer;
-use super::textures::TextureAsset;
+use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
 use crate::raycasting::cast_ray;
 use crate::world::Level;
@@ -130,6 +130,7 @@ pub(crate) fn render_world(
     level: &Level,
     player: &Player,
     block_size: usize,
+    textures: &TextureManager,
 ) -> Vec<f32> {
     let screen_width = framebuffer.width().max(1);
 
@@ -194,22 +195,49 @@ pub(crate) fn render_world(
 
         /*
          * Centrar la columna vertical.
+         *
+         * `projected_top` es la proyección COMPLETA sin recortar;
+         * `stake_top`/`stake_bottom` son el rango ya recortado
+         * contra los límites de la pantalla que realmente se
+         * dibuja.
          */
-        let stake_top = (half_height - stake_height / 2.0).floor().max(0.0) as i32;
+        let projected_top = half_height - stake_height / 2.0;
+
+        let stake_top = projected_top.floor().max(0.0) as i32;
 
         let stake_bottom = (half_height + stake_height / 2.0)
             .ceil()
             .min(screen_height as f32 - 1.0) as i32;
 
-        let color = wall_color(ray_hit.tile, corrected_distance);
-
-        framebuffer.set_current_color(color);
-
         /*
-         * Dibujar la columna vertical.
+         * Si el carácter de pared golpeado tiene una textura
+         * registrada, dibujar la columna muestreándola; de lo
+         * contrario, usar el color plano existente.
          */
-        for y in stake_top..=stake_bottom {
-            framebuffer.point(screen_x, y);
+        let textured = textures.wall_texture(ray_hit.tile).is_some_and(|texture| {
+            draw_textured_column(
+                framebuffer,
+                screen_x,
+                stake_top,
+                stake_bottom,
+                projected_top,
+                stake_height,
+                texture,
+                ray_hit.texture_offset,
+            )
+        });
+
+        if !textured {
+            let color = wall_color(ray_hit.tile, corrected_distance);
+
+            framebuffer.set_current_color(color);
+
+            /*
+             * Dibujar la columna vertical.
+             */
+            for y in stake_top..=stake_bottom {
+                framebuffer.point(screen_x, y);
+            }
         }
     }
 

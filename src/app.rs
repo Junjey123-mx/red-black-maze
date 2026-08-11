@@ -2,6 +2,7 @@ use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
+use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
@@ -13,14 +14,16 @@ pub(crate) struct App {
     state: GameState,
     level_manager: LevelManager,
     session: GameSession,
+    textures: TextureManager,
 }
 
 impl App {
-    fn new(level_manager: LevelManager, session: GameSession) -> Self {
+    fn new(level_manager: LevelManager, session: GameSession, textures: TextureManager) -> Self {
         Self {
             state: GameState::Playing,
             level_manager,
             session,
+            textures,
         }
     }
 
@@ -93,6 +96,7 @@ impl App {
                     &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
+                    &self.textures,
                 );
             }
         }
@@ -123,6 +127,13 @@ pub fn run() {
 
     let player = Player::from_level(&level, BLOCK_SIZE);
 
+    let mut texture_manager = TextureManager::new();
+
+    if let Err(error) = texture_manager.load_wall_textures() {
+        eprintln!("Error al cargar texturas de paredes: {error}");
+        return;
+    }
+
     let (mut window, raylib_thread) = raylib::init()
         .size(framebuffer_width, framebuffer_height)
         .title("Red-Black Maze")
@@ -135,7 +146,11 @@ pub fn run() {
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
-    let mut app = App::new(level_manager, GameSession::new(level, player));
+    let mut app = App::new(
+        level_manager,
+        GameSession::new(level, player),
+        texture_manager,
+    );
 
     while !window.window_should_close() {
         app.update(&window);

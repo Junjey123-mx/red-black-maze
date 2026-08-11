@@ -85,6 +85,19 @@ impl fmt::Display for TextureError {
     }
 }
 
+/// Catálogo centralizado y congelado de las texturas de pared:
+/// carácter de pared -> (clave interna, ruta del recurso).
+///
+/// Esta es la ÚNICA correspondencia entre un carácter de pared y
+/// su textura en todo el proyecto; los renderers deben consultarla
+/// a través de `TextureManager`, nunca duplicarla.
+const WALL_TEXTURES: [(char, &str, &str); 4] = [
+    ('+', "wall-heart", "assets/textures/walls/heart.png"),
+    ('-', "wall-diamond", "assets/textures/walls/diamond.png"),
+    ('|', "wall-club", "assets/textures/walls/club.png"),
+    ('#', "wall-spade", "assets/textures/walls/spade.png"),
+];
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -97,6 +110,31 @@ impl TextureManager {
         Self {
             textures: HashMap::new(),
         }
+    }
+
+    /// Carga, una única vez, las cuatro texturas de pared del
+    /// catálogo centralizado.
+    ///
+    /// Reutiliza la API genérica `load` existente; no introduce un
+    /// mecanismo de carga paralelo.
+    pub(crate) fn load_wall_textures(&mut self) -> Result<(), TextureError> {
+        for (_, key, path) in WALL_TEXTURES {
+            self.load(key, path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Resuelve el carácter de pared golpeado por un rayo hacia su
+    /// textura ya cargada, si el catálogo lo reconoce.
+    ///
+    /// Retorna `None` para cualquier carácter sin correspondencia
+    /// (por ejemplo `'e'`, `'t'` o un carácter desconocido), sin
+    /// entrar en pánico ni indexar de forma insegura.
+    pub(crate) fn wall_texture(&self, tile: char) -> Option<&TextureAsset> {
+        let (_, key, _) = WALL_TEXTURES.iter().find(|(cell, _, _)| *cell == tile)?;
+
+        self.get(key)
     }
 
     /// Carga una textura la primera vez que se solicita `key`.
