@@ -1,4 +1,4 @@
-use crate::text_load::Maze;
+use crate::world::Level;
 use raylib::prelude::Vector2;
 use std::f32::consts::PI;
 
@@ -15,31 +15,25 @@ pub struct Player {
 }
 
 impl Player {
-    /// Busca el carácter `p` en el laberinto y coloca
-    /// al jugador en el centro de esa celda.
-    pub fn from_maze(maze: &Maze, block_size: usize) -> Result<Self, String> {
-        for (row_index, row) in maze.iter().enumerate() {
-            for (column_index, &cell) in row.iter().enumerate() {
-                if cell == 'p' {
-                    let half_block = block_size as f32 / 2.0;
+    /// Coloca al jugador en el centro de la celda de aparición
+    /// que el nivel ya descubrió.
+    pub(crate) fn from_level(level: &Level, block_size: usize) -> Self {
+        let (row, column) = level.player_spawn();
 
-                    let x = column_index as f32 * block_size as f32 + half_block;
+        let half_block = block_size as f32 / 2.0;
 
-                    let y = row_index as f32 * block_size as f32 + half_block;
+        let x = column as f32 * block_size as f32 + half_block;
 
-                    return Ok(Self {
-                        pos: Vector2::new(x, y),
+        let y = row as f32 * block_size as f32 + half_block;
 
-                        // Dirección inicial de 60 grados.
-                        a: PI / 3.0,
+        Self {
+            pos: Vector2::new(x, y),
 
-                        // Campo de visión total de 60 grados.
-                        fov: PI / 3.0,
-                    });
-                }
-            }
+            // Dirección inicial de 60 grados.
+            a: PI / 3.0,
+
+            // Campo de visión total de 60 grados.
+            fov: PI / 3.0,
         }
-
-        Err("No se encontró el carácter 'p' en el laberinto".to_string())
     }
 }

@@ -1,6 +1,6 @@
 use crate::player::Player;
 use crate::rendering::framebuffer::Framebuffer;
-use crate::text_load::Maze;
+use crate::world::Level;
 use raylib::prelude::Color;
 
 /// Información obtenida cuando un rayo impacta una pared.
@@ -27,7 +27,7 @@ fn is_walkable(cell: char) -> bool {
 /// sobre el mapa 2D. En la vista 3D será falso.
 pub fn cast_ray(
     framebuffer: &mut Framebuffer,
-    maze: &Maze,
+    level: &Level,
     player: &Player,
     ray_angle: f32,
     block_size: usize,
@@ -35,9 +35,9 @@ pub fn cast_ray(
 ) -> Intersect {
     const STEP_SIZE: f32 = 1.0;
 
-    let map_width = maze.first().map_or(0, |row| row.len()) as f32 * block_size as f32;
+    let map_width = level.width() as f32 * block_size as f32;
 
-    let map_height = maze.len() as f32 * block_size as f32;
+    let map_height = level.height() as f32 * block_size as f32;
 
     let max_distance = (map_width * map_width + map_height * map_height).sqrt();
 
@@ -76,14 +76,7 @@ pub fn cast_ray(
 
         let row = (ray_y / block_size as f32).floor() as usize;
 
-        let Some(maze_row) = maze.get(row) else {
-            return Intersect {
-                distance,
-                impact: '#',
-            };
-        };
-
-        let Some(&cell) = maze_row.get(column) else {
+        let Some(cell) = level.cell_at(row, column) else {
             return Intersect {
                 distance,
                 impact: '#',
@@ -122,7 +115,7 @@ pub fn cast_ray(
 /// en el mapa 2D.
 pub fn cast_fov(
     framebuffer: &mut Framebuffer,
-    maze: &Maze,
+    level: &Level,
     player: &Player,
     block_size: usize,
     number_of_rays: usize,
@@ -134,7 +127,7 @@ pub fn cast_fov(
     let start_angle = player.a - player.fov / 2.0;
 
     if number_of_rays == 1 {
-        cast_ray(framebuffer, maze, player, player.a, block_size, true);
+        cast_ray(framebuffer, level, player, player.a, block_size, true);
 
         return;
     }
@@ -144,6 +137,6 @@ pub fn cast_fov(
     for ray_index in 0..number_of_rays {
         let ray_angle = start_angle + ray_index as f32 * angle_step;
 
-        cast_ray(framebuffer, maze, player, ray_angle, block_size, true);
+        cast_ray(framebuffer, level, player, ray_angle, block_size, true);
     }
 }

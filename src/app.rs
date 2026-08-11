@@ -6,7 +6,7 @@ use crate::raycasting::cast_fov;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_maze, render_player};
 use crate::rendering::world_3d::render_world;
-use crate::text_load::{Maze, load_maze, validate_maze};
+use crate::world::Level;
 use raylib::prelude::*;
 
 /// Coordina el estado de la aplicación y la sesión de juego activa.
@@ -38,7 +38,7 @@ impl App {
         process_events(
             window,
             &mut self.session.player,
-            &self.session.maze,
+            &self.session.level,
             BLOCK_SIZE,
         );
 
@@ -71,11 +71,11 @@ impl App {
                 /*
                  * Vista superior.
                  */
-                render_maze(framebuffer, &self.session.maze, BLOCK_SIZE);
+                render_maze(framebuffer, &self.session.level, BLOCK_SIZE);
 
                 cast_fov(
                     framebuffer,
-                    &self.session.maze,
+                    &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
                     MAP_RAYS,
@@ -90,7 +90,7 @@ impl App {
                  */
                 render_world(
                     framebuffer,
-                    &self.session.maze,
+                    &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
                 );
@@ -101,15 +101,17 @@ impl App {
 
 /// Punto de entrada de la aplicación.
 pub fn run() {
-    let maze: Maze = load_maze("./maze.txt");
+    let level = match Level::load("./maze.txt") {
+        Ok(level) => level,
 
-    if let Err(error) = validate_maze(&maze) {
-        eprintln!("Error en maze.txt: {error}");
-        return;
-    }
+        Err(error) => {
+            eprintln!("Error en maze.txt: {error}");
+            return;
+        }
+    };
 
-    let maze_height = maze.len();
-    let maze_width = maze[0].len();
+    let maze_height = level.height();
+    let maze_width = level.width();
 
     let framebuffer_width =
         i32::try_from(maze_width * BLOCK_SIZE).expect("El ancho del laberinto es demasiado grande");
@@ -117,14 +119,7 @@ pub fn run() {
     let framebuffer_height = i32::try_from(maze_height * BLOCK_SIZE)
         .expect("La altura del laberinto es demasiado grande");
 
-    let player = match Player::from_maze(&maze, BLOCK_SIZE) {
-        Ok(player) => player,
-
-        Err(error) => {
-            eprintln!("Error al crear al jugador: {error}");
-            return;
-        }
-    };
+    let player = Player::from_level(&level, BLOCK_SIZE);
 
     let (mut window, raylib_thread) = raylib::init()
         .size(framebuffer_width, framebuffer_height)
@@ -138,7 +133,7 @@ pub fn run() {
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
-    let mut app = App::new(GameSession::new(maze, player));
+    let mut app = App::new(GameSession::new(level, player));
 
     while !window.window_should_close() {
         app.update(&window);

@@ -1,5 +1,5 @@
 use crate::player::Player;
-use crate::text_load::Maze;
+use crate::world::Level;
 use raylib::prelude::{KeyboardKey, RaylibHandle};
 use std::f32::consts::{PI, TAU};
 
@@ -19,7 +19,7 @@ fn is_walkable(cell: char) -> bool {
 
 /// Comprueba si una coordenada en píxeles corresponde
 /// a una posición transitable dentro del laberinto.
-fn is_point_walkable(maze: &Maze, x: f32, y: f32, block_size: usize) -> bool {
+fn is_point_walkable(level: &Level, x: f32, y: f32, block_size: usize) -> bool {
     if x < 0.0 || y < 0.0 {
         return false;
     }
@@ -27,16 +27,14 @@ fn is_point_walkable(maze: &Maze, x: f32, y: f32, block_size: usize) -> bool {
     let column = (x / block_size as f32).floor() as usize;
     let row = (y / block_size as f32).floor() as usize;
 
-    maze.get(row)
-        .and_then(|maze_row| maze_row.get(column))
-        .is_some_and(|cell| is_walkable(*cell))
+    level.cell_at(row, column).is_some_and(is_walkable)
 }
 
 /// Comprueba cuatro puntos alrededor del jugador.
 ///
 /// Esto evita que solamente el centro del jugador sea considerado
 /// y que sus bordes atraviesen una pared.
-fn can_occupy(maze: &Maze, x: f32, y: f32, block_size: usize) -> bool {
+fn can_occupy(level: &Level, x: f32, y: f32, block_size: usize) -> bool {
     let collision_points = [
         (x - COLLISION_RADIUS, y - COLLISION_RADIUS),
         (x + COLLISION_RADIUS, y - COLLISION_RADIUS),
@@ -46,12 +44,17 @@ fn can_occupy(maze: &Maze, x: f32, y: f32, block_size: usize) -> bool {
 
     collision_points
         .into_iter()
-        .all(|(point_x, point_y)| is_point_walkable(maze, point_x, point_y, block_size))
+        .all(|(point_x, point_y)| is_point_walkable(level, point_x, point_y, block_size))
 }
 
 /// Procesa el teclado y actualiza la posición y el ángulo
 /// del jugador.
-pub fn process_events(window: &RaylibHandle, player: &mut Player, maze: &Maze, block_size: usize) {
+pub fn process_events(
+    window: &RaylibHandle,
+    player: &mut Player,
+    level: &Level,
+    block_size: usize,
+) {
     // Limitar el delta evita saltos grandes si la ventana
     // se congela momentáneamente.
     let delta_time = window.get_frame_time().clamp(0.0, 0.05);
@@ -116,11 +119,11 @@ pub fn process_events(window: &RaylibHandle, player: &mut Player, maze: &Maze, b
      * Esto permite que el jugador se deslice a lo largo
      * de una pared en lugar de quedarse completamente detenido.
      */
-    if can_occupy(maze, proposed_x, player.pos.y, block_size) {
+    if can_occupy(level, proposed_x, player.pos.y, block_size) {
         player.pos.x = proposed_x;
     }
 
-    if can_occupy(maze, player.pos.x, proposed_y, block_size) {
+    if can_occupy(level, player.pos.x, proposed_y, block_size) {
         player.pos.y = proposed_y;
     }
 }

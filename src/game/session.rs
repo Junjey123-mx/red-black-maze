@@ -1,5 +1,5 @@
 use crate::player::Player;
-use crate::text_load::Maze;
+use crate::world::Level;
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -10,19 +10,19 @@ pub(crate) enum ViewMode {
 
 /// Estado en tiempo de ejecución de la partida activa.
 pub(crate) struct GameSession {
-    pub(crate) maze: Maze,
+    pub(crate) level: Level,
     pub(crate) player: Player,
     pub(crate) view_mode: ViewMode,
 }
 
 impl GameSession {
-    /// Crea una sesión a partir de un laberinto y un jugador
+    /// Crea una sesión a partir de un nivel y un jugador
     /// ya construidos.
     ///
     /// Inicia mostrando el mapa 2D.
-    pub(crate) fn new(maze: Maze, player: Player) -> Self {
+    pub(crate) fn new(level: Level, player: Player) -> Self {
         Self {
-            maze,
+            level,
             player,
             view_mode: ViewMode::Map2D,
         }

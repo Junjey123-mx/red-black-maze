@@ -1,6 +1,6 @@
 use super::framebuffer::Framebuffer;
 use crate::player::Player;
-use crate::text_load::Maze;
+use crate::world::Level;
 use raylib::prelude::Color;
 
 /// Rellena un rectángulo dentro del framebuffer.
@@ -78,13 +78,15 @@ pub fn draw_cell(
 }
 
 /// Recorre todas las filas y columnas del laberinto.
-pub fn render_maze(framebuffer: &mut Framebuffer, maze: &Maze, block_size: usize) {
-    for (row_index, row) in maze.iter().enumerate() {
-        for (column_index, &cell) in row.iter().enumerate() {
-            let x0 = column_index * block_size;
-            let y0 = row_index * block_size;
+pub(crate) fn render_maze(framebuffer: &mut Framebuffer, level: &Level, block_size: usize) {
+    for row_index in 0..level.height() {
+        for column_index in 0..level.width() {
+            if let Some(cell) = level.cell_at(row_index, column_index) {
+                let x0 = column_index * block_size;
+                let y0 = row_index * block_size;
 
-            draw_cell(framebuffer, x0, y0, block_size, cell);
+                draw_cell(framebuffer, x0, y0, block_size, cell);
+            }
         }
     }
 }

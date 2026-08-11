@@ -2,7 +2,7 @@ use super::background::draw_background;
 use super::framebuffer::Framebuffer;
 use crate::player::Player;
 use crate::raycasting::cast_ray;
-use crate::text_load::Maze;
+use crate::world::Level;
 use raylib::prelude::Color;
 
 /// Obtiene el color de una pared según el carácter
@@ -41,9 +41,9 @@ fn wall_color(impact: char, distance: f32) -> Color {
 /// Se lanza un rayo por cada columna de la pantalla.
 /// La distancia de cada rayo determina la altura
 /// de la columna vertical.
-pub fn render_world(
+pub(crate) fn render_world(
     framebuffer: &mut Framebuffer,
-    maze: &Maze,
+    level: &Level,
     player: &Player,
     block_size: usize,
 ) {
@@ -82,7 +82,7 @@ pub fn render_world(
          */
         let ray_angle = player.a - player.fov / 2.0 + player.fov * ray_fraction;
 
-        let intersection = cast_ray(framebuffer, maze, player, ray_angle, block_size, false);
+        let intersection = cast_ray(framebuffer, level, player, ray_angle, block_size, false);
 
         /*
          * Corregir el efecto ojo de pez.
