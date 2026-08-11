@@ -1,6 +1,7 @@
 use super::framebuffer::Framebuffer;
+use crate::config::BLOCK_SIZE;
 use crate::player::Player;
-use crate::raycasting::cast_ray;
+use crate::raycasting::{RayHit, cast_ray};
 use crate::world::Level;
 use raylib::prelude::Color;
 
@@ -150,6 +151,62 @@ fn draw_ray_trajectory(
 
         distance += STEP_SIZE;
     }
+
+    if should_draw_boundary_sample(ray_angle, &ray_hit) {
+        framebuffer.point(
+            ray_hit.position.x.round() as i32,
+            ray_hit.position.y.round() as i32,
+        );
+    }
+}
+
+/// Determina si el punto exacto de la frontera de celda coincide
+/// con una muestra que el antiguo marcher por pasos de 1.0 habría
+/// dibujado.
+///
+/// El antiguo marcher clasificaba cada muestra con `floor(x /
+/// BLOCK_SIZE)`. Para una entrada por el eje negativo (rayo hacia
+/// la izquierda o hacia arriba) la frontera exacta de la celda
+/// golpeada cae, bajo esa regla de piso, dentro de la celda
+/// ANTERIOR (transitable), así que si la distancia exacta coincide
+/// con un paso entero de la cuadrícula de muestreo, esa muestra sí
+/// se dibujaba. Para una entrada por el eje positivo (derecha o
+/// abajo) la frontera cae directamente en la celda golpeada
+/// (bloqueada), por lo que nunca se dibujaba.
+///
+/// Esto es una reconstrucción puramente geométrica para la
+/// visualización de depuración; no consulta `Level` ni recalcula
+/// colisiones.
+fn should_draw_boundary_sample(ray_angle: f32, ray_hit: &RayHit) -> bool {
+    /// Tolerancia para considerar que la distancia exacta cae
+    /// sobre la cuadrícula de muestreo de 1.0 unidades.
+    const LATTICE_EPSILON: f32 = 1e-3;
+
+    /// Tolerancia para considerar que una coordenada de impacto
+    /// cae exactamente sobre un borde de `BLOCK_SIZE`.
+    const BOUNDARY_EPSILON: f32 = 1e-3;
+
+    let nearest_step = ray_hit.distance.round();
+
+    if (ray_hit.distance - nearest_step).abs() > LATTICE_EPSILON {
+        return false;
+    }
+
+    let direction_x = ray_angle.cos();
+
+    let direction_y = ray_angle.sin();
+
+    let block_size = BLOCK_SIZE as f32;
+
+    let x_grid = ray_hit.position.x / block_size;
+
+    let y_grid = ray_hit.position.y / block_size;
+
+    let x_on_boundary = (x_grid - x_grid.round()).abs() < BOUNDARY_EPSILON / block_size;
+
+    let y_on_boundary = (y_grid - y_grid.round()).abs() < BOUNDARY_EPSILON / block_size;
+
+    (x_on_boundary && direction_x < 0.0) || (y_on_boundary && direction_y < 0.0)
 }
 
 /// Dibuja al jugador como un pequeño círculo.
