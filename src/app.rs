@@ -92,7 +92,7 @@ impl App {
                 /*
                  * Vista en primera persona.
                  */
-                let _wall_depth_buffer = render_world(
+                let wall_depth_buffer = render_world(
                     framebuffer,
                     &self.session.level,
                     &self.session.player,
@@ -106,6 +106,7 @@ impl App {
                     &self.session.player,
                     &self.textures,
                     BLOCK_SIZE,
+                    &wall_depth_buffer,
                 );
             }
         }

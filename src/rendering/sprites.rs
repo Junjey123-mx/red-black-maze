@@ -23,16 +23,19 @@ const MIN_DEPTH: f32 = 0.0001;
 /// mismas unidades que `BLOCK_SIZE`); el ancho proyectado preserva
 /// la relación de aspecto real de la textura.
 ///
-/// Esta función es puramente de proyección/dibujo: no compara
-/// contra el z-buffer de paredes (eso pertenece a la Tarea 18), por
-/// lo que el sprite puede dibujarse incluso si geométricamente está
-/// detrás de una pared.
+/// `wall_depth_buffer` es el z-buffer de paredes de ESTE MISMO
+/// cuadro, producido por `render_world`. Antes de dibujar cada
+/// columna de pantalla del sprite se compara su profundidad de
+/// cámara con la profundidad de pared de esa misma columna; si la
+/// pared está igual o más cerca, esa columna del sprite se omite
+/// por completo, permitiendo oclusión parcial.
 fn draw_billboard(
     framebuffer: &mut Framebuffer,
     player: &Player,
     world_position: Vector2,
     texture: &TextureAsset,
     world_size: f32,
+    wall_depth_buffer: &[f32],
 ) {
     let texture_width = texture.width();
 
@@ -121,6 +124,23 @@ fn draw_billboard(
 
     for screen_x in draw_left..=draw_right {
         /*
+         * Oclusión por columna: si no hay profundidad de pared
+         * registrada para esta columna, o la pared está igual o
+         * más cerca que el sprite, esta columna no se dibuja.
+         *
+         * `screen_x` ya es no negativo gracias al recorte anterior
+         * (`draw_left = ....max(0.0)`), por lo que la conversión a
+         * `usize` es segura.
+         */
+        let Some(&wall_depth) = wall_depth_buffer.get(screen_x as usize) else {
+            continue;
+        };
+
+        if depth >= wall_depth {
+            continue;
+        }
+
+        /*
          * u/v se calculan sobre el rectángulo proyectado COMPLETO
          * (sin recortar), para que un sprite parcialmente fuera de
          * pantalla no estire la textura hacia la porción visible.
@@ -163,13 +183,15 @@ fn draw_billboard(
 ///
 /// Convierte la posición de celda de `Level::goal()` al centro de
 /// esa celda en coordenadas de mundo y delega la proyección al
-/// billboard genérico.
+/// billboard genérico, incluyendo la oclusión contra
+/// `wall_depth_buffer` de este mismo cuadro.
 pub(crate) fn render_goal_sprite(
     framebuffer: &mut Framebuffer,
     level: &Level,
     player: &Player,
     textures: &TextureManager,
     block_size: usize,
+    wall_depth_buffer: &[f32],
 ) {
     let Some(texture) = textures.goal_texture() else {
         return;
@@ -189,5 +211,6 @@ pub(crate) fn render_goal_sprite(
         Vector2::new(x, y),
         texture,
         block_size as f32,
+        wall_depth_buffer,
     );
 }
