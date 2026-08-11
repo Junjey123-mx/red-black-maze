@@ -46,10 +46,12 @@ pub(crate) fn render_world(
     level: &Level,
     player: &Player,
     block_size: usize,
-) {
+) -> Vec<f32> {
     let screen_width = framebuffer.width().max(1);
 
     let screen_height = framebuffer.height().max(1);
+
+    let mut wall_depth_buffer = Vec::with_capacity(screen_width as usize);
 
     draw_background(framebuffer);
 
@@ -94,6 +96,8 @@ pub(crate) fn render_world(
 
         let corrected_distance = corrected_distance.max(0.0001);
 
+        wall_depth_buffer.push(corrected_distance);
+
         /*
          * Altura de la columna:
          *
@@ -124,4 +128,6 @@ pub(crate) fn render_world(
             framebuffer.point(screen_x, y);
         }
     }
+
+    wall_depth_buffer
 }
