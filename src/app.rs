@@ -5,6 +5,7 @@ use crate::player::Player;
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
+use crate::rendering::render_goal_sprite;
 use crate::rendering::world_3d::render_world;
 use crate::world::LevelManager;
 use raylib::prelude::*;
@@ -98,6 +99,14 @@ impl App {
                     BLOCK_SIZE,
                     &self.textures,
                 );
+
+                render_goal_sprite(
+                    framebuffer,
+                    &self.session.level,
+                    &self.session.player,
+                    &self.textures,
+                    BLOCK_SIZE,
+                );
             }
         }
     }
@@ -131,6 +140,11 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_wall_textures() {
         eprintln!("Error al cargar texturas de paredes: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_goal_texture() {
+        eprintln!("Error al cargar la textura de la meta: {error}");
         return;
     }
 

@@ -98,6 +98,13 @@ const WALL_TEXTURES: [(char, &str, &str); 4] = [
     ('#', "wall-spade", "assets/textures/walls/spade.png"),
 ];
 
+/// Clave y ruta congeladas de la textura del sprite de meta.
+///
+/// Única correspondencia identidad/ruta para este recurso en todo
+/// el proyecto.
+const GOAL_TEXTURE_KEY: &str = "sprite-goal";
+const GOAL_TEXTURE_PATH: &str = "assets/textures/sprites/goal.png";
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -135,6 +142,18 @@ impl TextureManager {
         let (_, key, _) = WALL_TEXTURES.iter().find(|(cell, _, _)| *cell == tile)?;
 
         self.get(key)
+    }
+
+    /// Carga, una única vez, la textura del sprite de meta.
+    ///
+    /// Reutiliza la API genérica `load` existente.
+    pub(crate) fn load_goal_texture(&mut self) -> Result<(), TextureError> {
+        self.load(GOAL_TEXTURE_KEY, GOAL_TEXTURE_PATH)
+    }
+
+    /// Textura ya cargada del sprite de meta, si está disponible.
+    pub(crate) fn goal_texture(&self) -> Option<&TextureAsset> {
+        self.get(GOAL_TEXTURE_KEY)
     }
 
     /// Carga una textura la primera vez que se solicita `key`.
