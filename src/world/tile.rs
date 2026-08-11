@@ -30,4 +30,10 @@ impl Tile {
             _ => None,
         }
     }
+
+    /// Indica si esta clasificación semántica puede ser
+    /// atravesada por el jugador y por los rayos.
+    pub(crate) fn is_walkable(self) -> bool {
+        matches!(self, Tile::Empty | Tile::PlayerSpawn | Tile::Goal)
+    }
 }

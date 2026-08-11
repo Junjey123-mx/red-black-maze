@@ -158,6 +158,15 @@ impl Level {
         self.cell_at(row, column).and_then(Tile::from_char)
     }
 
+    /// Indica si la celda puede ser atravesada por el jugador
+    /// y por los rayos.
+    ///
+    /// Retorna `false` para posiciones fuera de los límites del
+    /// nivel y para cualquier carácter no reconocido.
+    pub(crate) fn is_walkable(&self, row: usize, column: usize) -> bool {
+        self.tile_at(row, column).is_some_and(Tile::is_walkable)
+    }
+
     /// Posición (fila, columna) de la celda de aparición del jugador.
     pub(crate) fn player_spawn(&self) -> (usize, usize) {
         self.player_spawn

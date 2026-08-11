@@ -13,12 +13,6 @@ pub struct Intersect {
     pub impact: char,
 }
 
-/// Indica si una celda puede ser atravesada por el jugador
-/// y por los rayos.
-fn is_walkable(cell: char) -> bool {
-    matches!(cell, ' ' | 'p' | 'g')
-}
-
 /// Lanza un único rayo desde el jugador.
 ///
 /// `ray_angle` representa la dirección específica del rayo.
@@ -87,7 +81,7 @@ pub fn cast_ray(
          * Si no es una celda transitable, el rayo
          * encontró una pared.
          */
-        if !is_walkable(cell) {
+        if !level.is_walkable(row, column) {
             return Intersect {
                 distance,
                 impact: cell,
