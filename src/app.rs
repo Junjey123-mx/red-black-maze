@@ -6,19 +6,21 @@ use crate::raycasting::cast_fov;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_maze, render_player};
 use crate::rendering::world_3d::render_world;
-use crate::world::Level;
+use crate::world::LevelManager;
 use raylib::prelude::*;
 
 /// Coordina el estado de la aplicación y la sesión de juego activa.
 pub(crate) struct App {
     state: GameState,
+    level_manager: LevelManager,
     session: GameSession,
 }
 
 impl App {
-    fn new(session: GameSession) -> Self {
+    fn new(level_manager: LevelManager, session: GameSession) -> Self {
         Self {
             state: GameState::Playing,
+            level_manager,
             session,
         }
     }
@@ -101,11 +103,13 @@ impl App {
 
 /// Punto de entrada de la aplicación.
 pub fn run() {
-    let level = match Level::load("./maze.txt") {
+    let mut level_manager = LevelManager::new();
+
+    let level = match level_manager.load(0) {
         Ok(level) => level,
 
         Err(error) => {
-            eprintln!("Error en maze.txt: {error}");
+            eprintln!("Error al cargar el nivel inicial: {error}");
             return;
         }
     };
@@ -133,7 +137,7 @@ pub fn run() {
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
-    let mut app = App::new(GameSession::new(level, player));
+    let mut app = App::new(level_manager, GameSession::new(level, player));
 
     while !window.window_should_close() {
         app.update(&window);
