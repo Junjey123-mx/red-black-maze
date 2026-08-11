@@ -1,5 +1,6 @@
 use super::framebuffer::Framebuffer;
 use crate::player::Player;
+use crate::raycasting::cast_ray;
 use crate::world::Level;
 use raylib::prelude::Color;
 
@@ -88,6 +89,66 @@ pub(crate) fn render_maze(framebuffer: &mut Framebuffer, level: &Level, block_si
                 draw_cell(framebuffer, x0, y0, block_size, cell);
             }
         }
+    }
+}
+
+/// Lanza múltiples rayos y dibuja su trayectoria para mostrar
+/// el campo de visión en el mapa 2D.
+pub(crate) fn render_fov_rays(
+    framebuffer: &mut Framebuffer,
+    level: &Level,
+    player: &Player,
+    number_of_rays: usize,
+) {
+    if number_of_rays == 0 {
+        return;
+    }
+
+    let start_angle = player.a - player.fov / 2.0;
+
+    if number_of_rays == 1 {
+        draw_ray_trajectory(framebuffer, level, player, player.a);
+
+        return;
+    }
+
+    let angle_step = player.fov / (number_of_rays - 1) as f32;
+
+    for ray_index in 0..number_of_rays {
+        let ray_angle = start_angle + ray_index as f32 * angle_step;
+
+        draw_ray_trajectory(framebuffer, level, player, ray_angle);
+    }
+}
+
+/// Dibuja la trayectoria visible de un rayo hasta la distancia
+/// calculada por el raycaster.
+///
+/// El renderer no decide colisiones: únicamente recorre, con el
+/// mismo incremento que usaba el raycaster, el tramo entre el
+/// jugador y `RayHit::distance`.
+fn draw_ray_trajectory(
+    framebuffer: &mut Framebuffer,
+    level: &Level,
+    player: &Player,
+    ray_angle: f32,
+) {
+    const STEP_SIZE: f32 = 1.0;
+
+    let ray_hit = cast_ray(level, player, ray_angle);
+
+    framebuffer.set_current_color(Color::new(245, 245, 245, 255));
+
+    let mut distance = 0.0;
+
+    while distance < ray_hit.distance {
+        let ray_x = player.pos.x + distance * ray_angle.cos();
+
+        let ray_y = player.pos.y + distance * ray_angle.sin();
+
+        framebuffer.point(ray_x.round() as i32, ray_y.round() as i32);
+
+        distance += STEP_SIZE;
     }
 }
 

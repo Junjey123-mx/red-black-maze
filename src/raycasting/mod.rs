@@ -1,3 +1,5 @@
 mod caster;
+mod hit;
 
-pub(crate) use caster::{cast_fov, cast_ray};
+pub(crate) use caster::cast_ray;
+pub(crate) use hit::RayHit;

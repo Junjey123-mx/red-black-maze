@@ -2,9 +2,8 @@ use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
-use crate::raycasting::cast_fov;
 use crate::rendering::framebuffer::Framebuffer;
-use crate::rendering::map_2d::{render_maze, render_player};
+use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
 use crate::world::LevelManager;
 use raylib::prelude::*;
@@ -75,11 +74,10 @@ impl App {
                  */
                 render_maze(framebuffer, &self.session.level, BLOCK_SIZE);
 
-                cast_fov(
+                render_fov_rays(
                     framebuffer,
                     &self.session.level,
                     &self.session.player,
-                    BLOCK_SIZE,
                     MAP_RAYS,
                 );
 

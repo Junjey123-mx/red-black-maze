@@ -82,7 +82,7 @@ pub(crate) fn render_world(
          */
         let ray_angle = player.a - player.fov / 2.0 + player.fov * ray_fraction;
 
-        let intersection = cast_ray(framebuffer, level, player, ray_angle, block_size, false);
+        let ray_hit = cast_ray(level, player, ray_angle);
 
         /*
          * Corregir el efecto ojo de pez.
@@ -90,7 +90,7 @@ pub(crate) fn render_world(
          * Sin esta corrección, las paredes rectas
          * parecerían curvas.
          */
-        let corrected_distance = intersection.distance * (ray_angle - player.a).cos();
+        let corrected_distance = ray_hit.distance * (ray_angle - player.a).cos();
 
         let corrected_distance = corrected_distance.max(0.0001);
 
@@ -113,7 +113,7 @@ pub(crate) fn render_world(
             .ceil()
             .min(screen_height as f32 - 1.0) as i32;
 
-        let color = wall_color(intersection.impact, corrected_distance);
+        let color = wall_color(ray_hit.tile, corrected_distance);
 
         framebuffer.set_current_color(color);
 
