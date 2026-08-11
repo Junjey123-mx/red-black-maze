@@ -1,5 +1,6 @@
 use super::background::draw_background;
 use super::framebuffer::Framebuffer;
+use super::textures::TextureAsset;
 use crate::player::Player;
 use crate::raycasting::cast_ray;
 use crate::world::Level;
@@ -34,6 +35,89 @@ fn wall_color(impact: char, distance: f32) -> Color {
         // Carácter desconocido.
         _ => Color::new(bright, 0, bright, 255),
     }
+}
+
+/// Deriva la coordenada de textura horizontal (tx) a partir del
+/// desplazamiento normalizado geométrico calculado por el
+/// raycaster.
+///
+/// `texture_offset` está garantizado por el raycaster a estar en
+/// `[0.0, 1.0)`. El resultado se recorta defensivamente al rango
+/// válido de píxeles de la textura ante cualquier imprecisión de
+/// punto flotante.
+fn calculate_tx(texture_offset: f32, texture_width: i32) -> i32 {
+    if texture_width <= 0 {
+        return 0;
+    }
+
+    let tx = (texture_offset * texture_width as f32).floor() as i32;
+
+    tx.clamp(0, texture_width - 1)
+}
+
+/// Deriva la coordenada de textura vertical (ty) a partir de la
+/// posición de un píxel de pantalla dentro del STAKE PROYECTADO
+/// COMPLETO (sin recortar contra los límites de la pantalla).
+///
+/// `projected_top` y `stake_height` deben ser los valores de
+/// proyección SIN recortar; usar el rango de dibujo ya recortado
+/// aquí estiraría la textura para llenar únicamente la porción
+/// visible de una pared cercana, lo cual es incorrecto.
+fn calculate_ty(screen_y: i32, projected_top: f32, stake_height: f32, texture_height: i32) -> i32 {
+    if texture_height <= 0 || stake_height <= 0.0 {
+        return 0;
+    }
+
+    let relative_y = screen_y as f32 - projected_top;
+
+    let texture_v = relative_y / stake_height;
+
+    let ty = (texture_v * texture_height as f32).floor() as i32;
+
+    ty.clamp(0, texture_height - 1)
+}
+
+/// Dibuja una columna de pared muestreando la textura suministrada.
+///
+/// `draw_top`/`draw_bottom` son el rango de píxeles de pantalla ya
+/// recortado que realmente se dibuja. `projected_top`/
+/// `stake_height` describen la proyección COMPLETA sin recortar,
+/// usada únicamente para calcular `ty` correctamente.
+///
+/// Retorna `false` sin dibujar nada si la textura tiene
+/// dimensiones inválidas, dejando que el llamador recurra a un
+/// respaldo (por ejemplo, el color plano existente).
+fn draw_textured_column(
+    framebuffer: &mut Framebuffer,
+    screen_x: i32,
+    draw_top: i32,
+    draw_bottom: i32,
+    projected_top: f32,
+    stake_height: f32,
+    texture: &TextureAsset,
+    texture_offset: f32,
+) -> bool {
+    let texture_width = texture.width();
+
+    let texture_height = texture.height();
+
+    if texture_width <= 0 || texture_height <= 0 || stake_height <= 0.0 {
+        return false;
+    }
+
+    let tx = calculate_tx(texture_offset, texture_width);
+
+    for screen_y in draw_top..=draw_bottom {
+        let ty = calculate_ty(screen_y, projected_top, stake_height, texture_height);
+
+        if let Some(color) = texture.pixel_at(tx, ty) {
+            framebuffer.set_current_color(color);
+
+            framebuffer.point(screen_x, screen_y);
+        }
+    }
+
+    true
 }
 
 /// Renderiza el laberinto utilizando proyección 3D.
