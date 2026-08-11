@@ -58,6 +58,7 @@ pub(crate) struct Level {
     height: usize,
     player_spawn: (usize, usize),
     goal: (usize, usize),
+    torch_spawns: Vec<(usize, usize)>,
 }
 
 impl Level {
@@ -112,6 +113,13 @@ impl Level {
             return Err(LevelError::GoalCount(goal_cells.len()));
         }
 
+        /*
+         * Las antorchas son marcadores de aparición de sprite
+         * opcionales: cero, una o varias son válidas, sin
+         * validación adicional.
+         */
+        let torch_spawns = Self::find_cells(&cells, 't');
+
         let height = cells.len();
 
         Ok(Self {
@@ -119,6 +127,7 @@ impl Level {
             height,
             player_spawn: player_spawn_cells[0],
             goal: goal_cells[0],
+            torch_spawns,
             cells,
         })
     }
@@ -175,5 +184,11 @@ impl Level {
     /// Posición (fila, columna) de la meta.
     pub(crate) fn goal(&self) -> (usize, usize) {
         self.goal
+    }
+
+    /// Posiciones (fila, columna) de todas las celdas de aparición
+    /// de antorcha. Puede estar vacío.
+    pub(crate) fn torch_spawns(&self) -> &[(usize, usize)] {
+        &self.torch_spawns
     }
 }

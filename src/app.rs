@@ -5,7 +5,7 @@ use crate::player::Player;
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
-use crate::rendering::render_goal_sprite;
+use crate::rendering::render_world_sprites;
 use crate::rendering::world_3d::render_world;
 use crate::world::LevelManager;
 use raylib::prelude::*;
@@ -46,6 +46,14 @@ impl App {
             &self.session.level,
             BLOCK_SIZE,
         );
+
+        /*
+         * Avanza la animación de antorcha según el tiempo real
+         * transcurrido. Esto es independiente del delta clamped
+         * que usa el movimiento del jugador dentro de
+         * process_events.
+         */
+        self.session.update_torch_animation(window.get_frame_time());
 
         /*
          * M cambia entre la vista 2D y la vista 3D.
@@ -100,12 +108,13 @@ impl App {
                     &self.textures,
                 );
 
-                render_goal_sprite(
+                render_world_sprites(
                     framebuffer,
                     &self.session.level,
                     &self.session.player,
                     &self.textures,
                     BLOCK_SIZE,
+                    self.session.torch_frame_index(),
                     &wall_depth_buffer,
                 );
             }
@@ -146,6 +155,11 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_goal_texture() {
         eprintln!("Error al cargar la textura de la meta: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_torch_textures() {
+        eprintln!("Error al cargar las texturas de antorcha: {error}");
         return;
     }
 

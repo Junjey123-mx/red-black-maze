@@ -33,7 +33,14 @@ impl Tile {
 
     /// Indica si esta clasificación semántica puede ser
     /// atravesada por el jugador y por los rayos.
+    ///
+    /// `Torch` es transitable: es únicamente un marcador visual de
+    /// aparición de sprite, no una pared. `EnemySpawn` permanece
+    /// bloqueado hasta que exista un sistema de enemigos.
     pub(crate) fn is_walkable(self) -> bool {
-        matches!(self, Tile::Empty | Tile::PlayerSpawn | Tile::Goal)
+        matches!(
+            self,
+            Tile::Empty | Tile::PlayerSpawn | Tile::Goal | Tile::Torch
+        )
     }
 }

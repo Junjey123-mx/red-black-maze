@@ -105,6 +105,32 @@ const WALL_TEXTURES: [(char, &str, &str); 4] = [
 const GOAL_TEXTURE_KEY: &str = "sprite-goal";
 const GOAL_TEXTURE_PATH: &str = "assets/textures/sprites/goal.png";
 
+/// Catálogo centralizado y congelado de los cuatro cuadros de
+/// animación de la antorcha, en orden de reproducción.
+///
+/// Esta es la ÚNICA correspondencia entre un índice de cuadro y su
+/// recurso de textura en todo el proyecto. El índice/tiempo de
+/// animación NO vive aquí: `TextureManager` solo posee los datos
+/// decodificados de cada cuadro.
+const TORCH_TEXTURES: [(&str, &str); 4] = [
+    (
+        "sprite-torch-01",
+        "assets/textures/sprites/torch/torch_01.png",
+    ),
+    (
+        "sprite-torch-02",
+        "assets/textures/sprites/torch/torch_02.png",
+    ),
+    (
+        "sprite-torch-03",
+        "assets/textures/sprites/torch/torch_03.png",
+    ),
+    (
+        "sprite-torch-04",
+        "assets/textures/sprites/torch/torch_04.png",
+    ),
+];
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -154,6 +180,30 @@ impl TextureManager {
     /// Textura ya cargada del sprite de meta, si está disponible.
     pub(crate) fn goal_texture(&self) -> Option<&TextureAsset> {
         self.get(GOAL_TEXTURE_KEY)
+    }
+
+    /// Carga, una única vez, los cuatro cuadros de animación de la
+    /// antorcha.
+    ///
+    /// Reutiliza la API genérica `load` existente.
+    pub(crate) fn load_torch_textures(&mut self) -> Result<(), TextureError> {
+        for (key, path) in TORCH_TEXTURES {
+            self.load(key, path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Textura ya cargada del cuadro de antorcha solicitado.
+    ///
+    /// Retorna `None` para cualquier índice fuera de rango, sin
+    /// entrar en pánico. Este método NO controla el temporizado de
+    /// la animación; solo resuelve un índice ya decidido por el
+    /// estado de juego hacia su recurso de textura.
+    pub(crate) fn torch_texture(&self, frame_index: usize) -> Option<&TextureAsset> {
+        let (key, _) = TORCH_TEXTURES.get(frame_index)?;
+
+        self.get(key)
     }
 
     /// Carga una textura la primera vez que se solicita `key`.

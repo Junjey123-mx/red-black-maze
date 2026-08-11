@@ -15,6 +15,64 @@ const MIN_DISTANCE: f32 = 0.0001;
 /// prácticamente sobre el plano de la cámara y no se dibuja.
 const MIN_DEPTH: f32 = 0.0001;
 
+/// Calcula la posición de un punto del mundo en el espacio de
+/// cámara del jugador: desplazamiento lateral y profundidad
+/// perpendicular ("hacia adelante").
+///
+/// Retorna `None` si el punto está demasiado cerca del jugador o
+/// detrás/sobre el plano de la cámara, en cuyo caso no debe
+/// proyectarse ni participar en el ordenamiento de dibujo.
+///
+/// Esta es la ÚNICA definición de este cálculo; tanto la
+/// proyección (`draw_billboard`) como el ordenamiento far->near
+/// (`render_world_sprites`) la reutilizan en lugar de duplicarla.
+fn camera_space(player: &Player, world_position: Vector2) -> Option<(f32, f32)> {
+    let dx = world_position.x - player.pos.x;
+
+    let dy = world_position.y - player.pos.y;
+
+    let distance = dx.hypot(dy);
+
+    if distance < MIN_DISTANCE {
+        return None;
+    }
+
+    let sprite_angle = dy.atan2(dx);
+
+    /*
+     * Ángulo relativo a la dirección del jugador, normalizado a
+     * [-PI, PI).
+     */
+    let relative_angle = (sprite_angle - player.a + PI).rem_euclid(TAU) - PI;
+
+    /*
+     * Profundidad perpendicular/de cámara: el mismo tipo de valor
+     * almacenado en wall_depth_buffer, usado tanto para proyectar
+     * el sprite como para su oclusión contra paredes.
+     */
+    let depth = distance * relative_angle.cos();
+
+    if depth <= MIN_DEPTH {
+        return None;
+    }
+
+    let lateral = distance * relative_angle.sin();
+
+    Some((lateral, depth))
+}
+
+/// Convierte una celda (fila, columna) al centro de esa celda en
+/// coordenadas de mundo, con la misma convención de centrado que
+/// usan la aparición del jugador y la meta.
+fn cell_center(row: usize, column: usize, block_size: usize) -> Vector2 {
+    let half_block = block_size as f32 / 2.0;
+
+    Vector2::new(
+        column as f32 * block_size as f32 + half_block,
+        row as f32 * block_size as f32 + half_block,
+    )
+}
+
 /// Dibuja un billboard genérico: una textura que siempre mira
 /// hacia la cámara, proyectada en perspectiva desde su posición
 /// en el mundo.
@@ -45,39 +103,9 @@ fn draw_billboard(
         return;
     }
 
-    /*
-     * Vector del jugador hacia el sprite.
-     */
-    let dx = world_position.x - player.pos.x;
-
-    let dy = world_position.y - player.pos.y;
-
-    let distance = dx.hypot(dy);
-
-    if distance < MIN_DISTANCE {
+    let Some((lateral, depth)) = camera_space(player, world_position) else {
         return;
-    }
-
-    let sprite_angle = dy.atan2(dx);
-
-    /*
-     * Ángulo relativo a la dirección del jugador, normalizado a
-     * [-PI, PI).
-     */
-    let relative_angle = (sprite_angle - player.a + PI).rem_euclid(TAU) - PI;
-
-    /*
-     * Profundidad perpendicular/de cámara, del mismo tipo que la
-     * futura Tarea 18 comparará contra wall_depth_buffer. Aquí
-     * SOLO se usa para proyectar el sprite, no para ocluirlo.
-     */
-    let depth = distance * relative_angle.cos();
-
-    if depth <= MIN_DEPTH {
-        return;
-    }
-
-    let lateral = distance * relative_angle.sin();
+    };
 
     let screen_width = framebuffer.width().max(1);
 
@@ -178,39 +206,82 @@ fn draw_billboard(
     }
 }
 
-/// Dibuja el sprite de la meta del nivel activo, si su textura ya
-/// fue cargada por el `TextureManager`.
+/// Un billboard preparado para dibujarse en el cuadro actual.
 ///
-/// Convierte la posición de celda de `Level::goal()` al centro de
-/// esa celda en coordenadas de mundo y delega la proyección al
-/// billboard genérico, incluyendo la oclusión contra
-/// `wall_depth_buffer` de este mismo cuadro.
-pub(crate) fn render_goal_sprite(
+/// Esto es un ítem de renderizado LOCAL A LA LLAMADA de dibujo, no
+/// una entidad de juego: no se almacena entre cuadros.
+struct BillboardItem<'a> {
+    world_position: Vector2,
+    texture: &'a TextureAsset,
+    world_size: f32,
+}
+
+/// Dibuja todos los sprites billboard de la escena actual (meta y
+/// antorchas), ordenados de más lejano a más cercano y ocluidos
+/// contra `wall_depth_buffer` de este mismo cuadro.
+///
+/// `torch_frame_index` es el cuadro de animación de antorcha
+/// decidido por `GameSession`; este renderer solo LEE ese índice
+/// para seleccionar la textura correspondiente, nunca lo avanza.
+pub(crate) fn render_world_sprites(
     framebuffer: &mut Framebuffer,
     level: &Level,
     player: &Player,
     textures: &TextureManager,
     block_size: usize,
+    torch_frame_index: usize,
     wall_depth_buffer: &[f32],
 ) {
-    let Some(texture) = textures.goal_texture() else {
-        return;
-    };
+    let mut items: Vec<BillboardItem> = Vec::new();
 
-    let (row, column) = level.goal();
+    if let Some(texture) = textures.goal_texture() {
+        let (row, column) = level.goal();
 
-    let half_block = block_size as f32 / 2.0;
+        items.push(BillboardItem {
+            world_position: cell_center(row, column, block_size),
+            texture,
+            world_size: block_size as f32,
+        });
+    }
 
-    let x = column as f32 * block_size as f32 + half_block;
+    if let Some(texture) = textures.torch_texture(torch_frame_index) {
+        for &(row, column) in level.torch_spawns() {
+            items.push(BillboardItem {
+                world_position: cell_center(row, column, block_size),
+                texture,
+                world_size: block_size as f32,
+            });
+        }
+    }
 
-    let y = row as f32 * block_size as f32 + half_block;
+    /*
+     * Orden de pintor: de más lejano a más cercano, para que un
+     * sprite más cercano sobrescriba a uno más lejano si se
+     * superponen en pantalla. Un ítem sin profundidad de cámara
+     * válida (detrás/sobre el plano de la cámara) se ordena al
+     * frente; `draw_billboard` lo descartará de todas formas.
+     */
+    let depths: Vec<f32> = items
+        .iter()
+        .map(|item| {
+            camera_space(player, item.world_position).map_or(f32::INFINITY, |(_, depth)| depth)
+        })
+        .collect();
 
-    draw_billboard(
-        framebuffer,
-        player,
-        Vector2::new(x, y),
-        texture,
-        block_size as f32,
-        wall_depth_buffer,
-    );
+    let mut order: Vec<usize> = (0..items.len()).collect();
+
+    order.sort_by(|&a, &b| depths[b].total_cmp(&depths[a]));
+
+    for index in order {
+        let item = &items[index];
+
+        draw_billboard(
+            framebuffer,
+            player,
+            item.world_position,
+            item.texture,
+            item.world_size,
+            wall_depth_buffer,
+        );
+    }
 }
