@@ -1,16 +1,14 @@
+use crate::config::MOUSE_SENSITIVITY;
 use crate::player::Player;
 use crate::world::{Level, can_occupy};
 use raylib::prelude::{KeyboardKey, RaylibHandle};
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 /// Velocidad del jugador medida en píxeles por segundo.
 const MOVE_SPEED: f32 = 150.0;
 
-/// Velocidad de rotación medida en radianes por segundo.
-const ROTATION_SPEED: f32 = PI;
-
-/// Procesa el teclado y actualiza la posición y el ángulo
-/// del jugador.
+/// Procesa el mouse y el teclado, actualizando el ángulo y la
+/// posición del jugador.
 pub fn process_events(
     window: &RaylibHandle,
     player: &mut Player,
@@ -24,20 +22,13 @@ pub fn process_events(
     /*
      * ROTACIÓN
      *
-     * Izquierda/A disminuyen el ángulo.
-     * Derecha/D aumentan el ángulo.
+     * El desplazamiento horizontal del mouse gira la cámara. El
+     * delta del mouse ya representa el movimiento ocurrido durante
+     * este cuadro, por lo que NO se multiplica por delta_time.
      */
-    let mut rotation_direction = 0.0;
+    let mouse_delta = window.get_mouse_delta();
 
-    if window.is_key_down(KeyboardKey::KEY_LEFT) || window.is_key_down(KeyboardKey::KEY_A) {
-        rotation_direction -= 1.0;
-    }
-
-    if window.is_key_down(KeyboardKey::KEY_RIGHT) || window.is_key_down(KeyboardKey::KEY_D) {
-        rotation_direction += 1.0;
-    }
-
-    player.a += rotation_direction * ROTATION_SPEED * delta_time;
+    player.a += mouse_delta.x * MOUSE_SENSITIVITY;
 
     // Mantener el ángulo dentro del intervalo 0 a 2π.
     player.a = player.a.rem_euclid(TAU);
@@ -45,32 +36,64 @@ pub fn process_events(
     /*
      * MOVIMIENTO
      *
-     * Arriba/W avanzan.
-     * Abajo/S retroceden.
+     * W/S avanzan o retroceden en la dirección de la cámara.
+     * A/D se desplazan lateralmente (strafe) sin rotar.
      */
-    let mut movement_direction = 0.0;
+    let mut forward_input = 0.0;
 
-    if window.is_key_down(KeyboardKey::KEY_UP) || window.is_key_down(KeyboardKey::KEY_W) {
-        movement_direction += 1.0;
+    if window.is_key_down(KeyboardKey::KEY_W) {
+        forward_input += 1.0;
     }
 
-    if window.is_key_down(KeyboardKey::KEY_DOWN) || window.is_key_down(KeyboardKey::KEY_S) {
-        movement_direction -= 1.0;
+    if window.is_key_down(KeyboardKey::KEY_S) {
+        forward_input -= 1.0;
     }
 
-    if movement_direction == 0.0 {
+    let mut strafe_input = 0.0;
+
+    if window.is_key_down(KeyboardKey::KEY_D) {
+        strafe_input += 1.0;
+    }
+
+    if window.is_key_down(KeyboardKey::KEY_A) {
+        strafe_input -= 1.0;
+    }
+
+    if forward_input == 0.0 && strafe_input == 0.0 {
         return;
     }
 
-    let movement_distance = MOVE_SPEED * movement_direction * delta_time;
+    /*
+     * Vectores relativos a la cámara actual.
+     */
+    let forward_x = player.a.cos();
+
+    let forward_y = player.a.sin();
+
+    let right_x = -player.a.sin();
+
+    let right_y = player.a.cos();
+
+    let mut move_x = forward_x * forward_input + right_x * strafe_input;
+
+    let mut move_y = forward_y * forward_input + right_y * strafe_input;
 
     /*
-     * El coseno controla el movimiento horizontal.
-     * El seno controla el movimiento vertical.
+     * Normalizar el vector combinado evita que el movimiento
+     * diagonal (por ejemplo W+D) sea más rápido que un solo eje.
      */
-    let movement_x = player.a.cos() * movement_distance;
+    let move_magnitude = move_x.hypot(move_y);
 
-    let movement_y = player.a.sin() * movement_distance;
+    if move_magnitude > 1.0 {
+        move_x /= move_magnitude;
+        move_y /= move_magnitude;
+    }
+
+    let movement_distance = MOVE_SPEED * delta_time;
+
+    let movement_x = move_x * movement_distance;
+
+    let movement_y = move_y * movement_distance;
 
     let proposed_x = player.pos.x + movement_x;
     let proposed_y = player.pos.y + movement_y;

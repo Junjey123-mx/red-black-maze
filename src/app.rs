@@ -171,6 +171,14 @@ pub fn run() {
 
     window.set_target_fps(TARGET_FPS);
 
+    /*
+     * Captura y oculta el cursor para el control de cámara por
+     * mouse. El estado actual (Playing) es el único estado en
+     * ejecución real, por lo que basta con capturarlo una vez
+     * antes del bucle de juego.
+     */
+    window.disable_cursor();
+
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
