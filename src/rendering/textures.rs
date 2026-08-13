@@ -5,6 +5,7 @@ use raylib::core::error::InvalidImageError;
 use raylib::prelude::{Color, Image};
 
 use crate::player::WeaponState;
+use crate::world::EntitySprite;
 
 /// Recurso de textura decodificado y retenido en memoria de CPU,
 /// listo para ser muestreado píxel a píxel por el framebuffer
@@ -146,6 +147,15 @@ const WEAPON_TEXTURES: [(&str, &str); 3] = [
     ("weapon-recoil", "assets/textures/weapon/weapon_recoil.png"),
 ];
 
+/// Clave y ruta congeladas de la textura del Dealer.
+///
+/// Única correspondencia identidad/ruta para este recurso en todo
+/// el proyecto; el mapeo `EntitySprite -> textura` vive en
+/// `entity_texture`, nunca duplicado en `world/entity.rs` ni en
+/// `rendering/sprites.rs`.
+const DEALER_TEXTURE_KEY: &str = "entity-dealer";
+const DEALER_TEXTURE_PATH: &str = "assets/textures/sprites/enemies/dealer.png";
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -244,6 +254,26 @@ impl TextureManager {
             WeaponState::Idle => "weapon-idle",
             WeaponState::Fire => "weapon-fire",
             WeaponState::Recoil => "weapon-recoil",
+        };
+
+        self.get(key)
+    }
+
+    /// Carga, una única vez, la textura del Dealer.
+    ///
+    /// Reutiliza la API genérica `load` existente.
+    pub(crate) fn load_entity_textures(&mut self) -> Result<(), TextureError> {
+        self.load(DEALER_TEXTURE_KEY, DEALER_TEXTURE_PATH)
+    }
+
+    /// Textura ya cargada correspondiente a la identidad visual de
+    /// entidad solicitada.
+    ///
+    /// Resuelve únicamente el mapeo identidad -> textura ya
+    /// cargada; no controla comportamiento ni estado de la entidad.
+    pub(crate) fn entity_texture(&self, sprite: EntitySprite) -> Option<&TextureAsset> {
+        let key = match sprite {
+            EntitySprite::Dealer => DEALER_TEXTURE_KEY,
         };
 
         self.get(key)

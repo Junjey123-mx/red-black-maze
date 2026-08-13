@@ -59,6 +59,7 @@ pub(crate) struct Level {
     player_spawn: (usize, usize),
     goal: (usize, usize),
     torch_spawns: Vec<(usize, usize)>,
+    enemy_spawns: Vec<(usize, usize)>,
 }
 
 impl Level {
@@ -120,6 +121,13 @@ impl Level {
          */
         let torch_spawns = Self::find_cells(&cells, 't');
 
+        /*
+         * Los marcadores de aparición enemiga son opcionales: cero,
+         * uno o varios son válidos. La cantidad de Dealers no forma
+         * parte de la validación estructural del nivel.
+         */
+        let enemy_spawns = Self::find_cells(&cells, 'e');
+
         let height = cells.len();
 
         Ok(Self {
@@ -128,6 +136,7 @@ impl Level {
             player_spawn: player_spawn_cells[0],
             goal: goal_cells[0],
             torch_spawns,
+            enemy_spawns,
             cells,
         })
     }
@@ -190,5 +199,11 @@ impl Level {
     /// de antorcha. Puede estar vacío.
     pub(crate) fn torch_spawns(&self) -> &[(usize, usize)] {
         &self.torch_spawns
+    }
+
+    /// Posiciones (fila, columna) de todas las celdas de aparición
+    /// enemiga. Puede estar vacío.
+    pub(crate) fn enemy_spawns(&self) -> &[(usize, usize)] {
+        &self.enemy_spawns
     }
 }

@@ -35,12 +35,16 @@ impl Tile {
     /// atravesada por el jugador y por los rayos.
     ///
     /// `Torch` es transitable: es únicamente un marcador visual de
-    /// aparición de sprite, no una pared. `EnemySpawn` permanece
-    /// bloqueado hasta que exista un sistema de enemigos.
+    /// aparición de sprite, no una pared. `EnemySpawn` también es
+    /// transitable desde Tarea 23: es solo un marcador de aparición
+    /// de un `Entity` real, no una pared. Si permaneciera bloqueado,
+    /// un rayo terminaría exactamente sobre la posición del Dealer
+    /// y su propio billboard quedaría auto-ocluido detrás de esa
+    /// "pared".
     pub(crate) fn is_walkable(self) -> bool {
         matches!(
             self,
-            Tile::Empty | Tile::PlayerSpawn | Tile::Goal | Tile::Torch
+            Tile::Empty | Tile::PlayerSpawn | Tile::Goal | Tile::Torch | Tile::EnemySpawn
         )
     }
 }

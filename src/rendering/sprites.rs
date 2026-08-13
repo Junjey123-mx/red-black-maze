@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::Level;
+use crate::world::{Entity, EntityState, Level};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -223,6 +223,11 @@ struct BillboardItem<'a> {
 /// `torch_frame_index` es el cuadro de animación de antorcha
 /// decidido por `GameSession`; este renderer solo LEE ese índice
 /// para seleccionar la textura correspondiente, nunca lo avanza.
+///
+/// `entities` son los Dealers (y futuras entidades) activos de la
+/// sesión actual; este renderer solo LEE su posición, identidad
+/// visual y estado para decidir si/cómo dibujarlos, nunca los
+/// muta.
 pub(crate) fn render_world_sprites(
     framebuffer: &mut Framebuffer,
     level: &Level,
@@ -230,6 +235,7 @@ pub(crate) fn render_world_sprites(
     textures: &TextureManager,
     block_size: usize,
     torch_frame_index: usize,
+    entities: &[Entity],
     wall_depth_buffer: &[f32],
 ) {
     let mut items: Vec<BillboardItem> = Vec::new();
@@ -248,6 +254,26 @@ pub(crate) fn render_world_sprites(
         for &(row, column) in level.torch_spawns() {
             items.push(BillboardItem {
                 world_position: cell_center(row, column, block_size),
+                texture,
+                world_size: block_size as f32,
+            });
+        }
+    }
+
+    /*
+     * Una entidad `Dead` no se encola para dibujarse: T23 no puede
+     * producir legítimamente ese estado, pero el comportamiento
+     * visual queda definido de forma determinista para cuando T24
+     * lo alcance. No existe un sprite "muerto" separado en T23.
+     */
+    for entity in entities {
+        if entity.state() == EntityState::Dead {
+            continue;
+        }
+
+        if let Some(texture) = textures.entity_texture(entity.sprite()) {
+            items.push(BillboardItem {
+                world_position: entity.position(),
                 texture,
                 world_size: block_size as f32,
             });

@@ -2,7 +2,7 @@ use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
-use crate::raycasting::cast_hitscan;
+use crate::raycasting::{HitscanTarget, cast_hitscan};
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
@@ -72,16 +72,28 @@ impl App {
          * el disparo se acepta (Idle + enfriamiento agotado); un
          * clic rechazado no debe producir ningún hitscan.
          *
-         * Tarea 22 conecta ese evento aceptado al rayo central de
-         * hitscan puro. Aún no existen entidades reales (Tarea 23),
-         * así que se pasa un slice vacío de blancos: el disparo se
-         * resuelve geométricamente contra la pared, sin ningún
-         * efecto de mundo todavía.
+         * Tarea 23 alimenta el hitscan con blancos geométricos
+         * reales, uno por cada entidad activa de la sesión, en el
+         * MISMO orden que `GameSession::entities()` para que
+         * `target_index` siga correspondiendo 1:1 a esa lista. El
+         * resultado se descarta deliberadamente: aplicar daño,
+         * cambiar de estado o eliminar un Dealer pertenece a la
+         * Tarea 24.
          */
         if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
             && self.session.try_fire_weapon()
         {
-            let _shot_result = cast_hitscan(&self.session.level, &self.session.player, &[]);
+            let targets: Vec<HitscanTarget> = self
+                .session
+                .entities()
+                .iter()
+                .map(|entity| HitscanTarget {
+                    center: entity.position(),
+                    radius: entity.hit_radius(),
+                })
+                .collect();
+
+            let _shot_result = cast_hitscan(&self.session.level, &self.session.player, &targets);
         }
 
         /*
@@ -144,6 +156,7 @@ impl App {
                     &self.textures,
                     BLOCK_SIZE,
                     self.session.torch_frame_index(),
+                    self.session.entities(),
                     &wall_depth_buffer,
                 );
 
@@ -205,6 +218,11 @@ pub fn run() {
         return;
     }
 
+    if let Err(error) = texture_manager.load_entity_textures() {
+        eprintln!("Error al cargar las texturas de entidades: {error}");
+        return;
+    }
+
     let (mut window, raylib_thread) = raylib::init()
         .size(framebuffer_width, framebuffer_height)
         .title("Red-Black Maze")
@@ -227,7 +245,7 @@ pub fn run() {
 
     let mut app = App::new(
         level_manager,
-        GameSession::new(level, player),
+        GameSession::new(level, player, BLOCK_SIZE),
         texture_manager,
     );
 

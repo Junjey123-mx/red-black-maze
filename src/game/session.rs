@@ -1,5 +1,5 @@
 use crate::player::{Player, Weapon, WeaponState};
-use crate::world::Level;
+use crate::world::{Entity, Level};
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -63,22 +63,38 @@ pub(crate) struct GameSession {
     pub(crate) view_mode: ViewMode,
     torch_animation: TorchAnimationState,
     weapon: Weapon,
+    entities: Vec<Entity>,
 }
 
 impl GameSession {
     /// Crea una sesión a partir de un nivel y un jugador
     /// ya construidos.
     ///
-    /// Inicia mostrando el mapa 2D y con la animación de antorcha
-    /// en su cuadro inicial.
-    pub(crate) fn new(level: Level, player: Player) -> Self {
+    /// Inicia mostrando el mapa 2D, con la animación de antorcha en
+    /// su cuadro inicial, y crea exactamente un Dealer por cada
+    /// marcador `e` que el nivel haya descubierto, centrado en su
+    /// celda de aparición.
+    pub(crate) fn new(level: Level, player: Player, block_size: usize) -> Self {
+        let entities = level
+            .enemy_spawns()
+            .iter()
+            .map(|&(row, column)| Entity::dealer_at_cell(row, column, block_size))
+            .collect();
+
         Self {
             level,
             player,
             view_mode: ViewMode::Map2D,
             torch_animation: TorchAnimationState::new(),
             weapon: Weapon::new(),
+            entities,
         }
+    }
+
+    /// Entidades activas de la sesión actual (los Dealers
+    /// aparecidos a partir de los marcadores `e` del nivel).
+    pub(crate) fn entities(&self) -> &[Entity] {
+        &self.entities
     }
 
     /// Avanza la animación de antorcha según el tiempo transcurrido
