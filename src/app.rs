@@ -8,6 +8,7 @@ use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
+use crate::ui::WelcomeScreen;
 use crate::world::LevelManager;
 use raylib::prelude::*;
 
@@ -17,23 +18,56 @@ pub(crate) struct App {
     level_manager: LevelManager,
     session: GameSession,
     textures: TextureManager,
+    welcome: WelcomeScreen,
 }
 
 impl App {
-    fn new(level_manager: LevelManager, session: GameSession, textures: TextureManager) -> Self {
+    fn new(
+        level_manager: LevelManager,
+        session: GameSession,
+        textures: TextureManager,
+        welcome: WelcomeScreen,
+    ) -> Self {
         Self {
-            state: GameState::Playing,
+            state: GameState::Welcome,
             level_manager,
             session,
             textures,
+            welcome,
         }
     }
 
     fn update(&mut self, window: &RaylibHandle) {
         match self.state {
+            GameState::Welcome => self.update_welcome(window),
+
             GameState::Playing => self.update_playing(window),
 
-            GameState::Welcome | GameState::LevelSelect | GameState::Victory => {}
+            GameState::LevelSelect | GameState::Victory => {}
+        }
+    }
+
+    /// Avanza únicamente la presentación de Bienvenida (su Juego de
+    /// la Vida de fondo) y comprueba la activación de `PLAY`.
+    ///
+    /// NO ejecuta ninguna actualización de gameplay
+    /// (`update_playing`, arma, entidades, cámara): la partida
+    /// permanece completamente en pausa/oculta detrás de esta
+    /// pantalla.
+    fn update_welcome(&mut self, window: &RaylibHandle) {
+        self.welcome.update(window.get_frame_time());
+
+        /*
+         * ENTER es la activación requerida; SPACE se admite también
+         * porque es trivial y no introduce comportamiento de mouse
+         * nuevo. Un disparo aceptado solo cambia el estado hacia
+         * `LevelSelect` (Tarea 29 implementará esa pantalla); nunca
+         * entra directamente a `Playing` ni recrea `GameSession`.
+         */
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || window.is_key_pressed(KeyboardKey::KEY_SPACE)
+        {
+            self.state = GameState::LevelSelect;
         }
     }
 
@@ -147,9 +181,11 @@ impl App {
 
     fn render(&self, framebuffer: &mut Framebuffer) {
         match self.state {
+            GameState::Welcome => self.welcome.render(framebuffer),
+
             GameState::Playing => self.render_playing(framebuffer),
 
-            GameState::Welcome | GameState::LevelSelect | GameState::Victory => {}
+            GameState::LevelSelect | GameState::Victory => {}
         }
     }
 
@@ -292,9 +328,11 @@ pub fn run() {
 
     /*
      * Captura y oculta el cursor para el control de cámara por
-     * mouse. El estado actual (Playing) es el único estado en
-     * ejecución real, por lo que basta con capturarlo una vez
-     * antes del bucle de juego.
+     * mouse. Se captura una única vez antes del bucle de juego,
+     * independientemente del estado inicial (`Welcome`): la pantalla
+     * de Bienvenida se activa solo por teclado (ENTER/SPACE), por lo
+     * que no necesita el cursor visible, y esto preserva el
+     * comportamiento de cámara exacto que `Playing` ya tenía.
      */
     window.disable_cursor();
 
@@ -302,10 +340,13 @@ pub fn run() {
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
+    let welcome = WelcomeScreen::new(framebuffer_width, framebuffer_height);
+
     let mut app = App::new(
         level_manager,
         GameSession::new(level, player, BLOCK_SIZE),
         texture_manager,
+        welcome,
     );
 
     while !window.window_should_close() {
