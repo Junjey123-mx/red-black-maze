@@ -7,7 +7,7 @@ use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
-use crate::rendering::{render_minimap, render_weapon, render_world_sprites};
+use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
 use crate::world::LevelManager;
 use raylib::prelude::*;
 
@@ -213,6 +213,18 @@ impl App {
                     &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
+                );
+
+                /*
+                 * El HUD (vida/munición) se dibuja al final,
+                 * abajo-izquierda, leyendo instantáneas primitivas
+                 * de estado real ya existente en GameSession; no
+                 * posee ni modifica ese estado.
+                 */
+                render_hud(
+                    framebuffer,
+                    self.session.player_health(),
+                    self.session.weapon_ammo(),
                 );
             }
         }

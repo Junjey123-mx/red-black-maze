@@ -161,4 +161,16 @@ impl GameSession {
     pub(crate) fn try_fire_weapon(&mut self) -> bool {
         self.weapon.try_fire()
     }
+
+    /// Vida actual del jugador, para presentación (HUD) u otro
+    /// consumidor de solo lectura.
+    pub(crate) fn player_health(&self) -> i32 {
+        self.player.health()
+    }
+
+    /// Munición actual del arma, para presentación (HUD) u otro
+    /// consumidor de solo lectura.
+    pub(crate) fn weapon_ammo(&self) -> u32 {
+        self.weapon.ammo()
+    }
 }

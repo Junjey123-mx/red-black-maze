@@ -2,6 +2,14 @@ use crate::world::Level;
 use raylib::prelude::Vector2;
 use std::f32::consts::PI;
 
+/// Vida máxima e inicial del jugador.
+///
+/// Tarea 26 introduce esta vida como estado de PARTIDA real para
+/// alimentar el HUD; todavía no existe ningún sistema que la
+/// reduzca (eso pertenece a una tarea futura de combate contra el
+/// jugador).
+pub(crate) const PLAYER_MAX_HEALTH: i32 = 100;
+
 /// Representa al jugador dentro del laberinto.
 pub struct Player {
     /// Posición del jugador expresada en píxeles.
@@ -12,6 +20,9 @@ pub struct Player {
 
     /// Campo de visión total expresado en radianes.
     pub fov: f32,
+
+    /// Puntos de vida restantes del jugador.
+    health: i32,
 }
 
 impl Player {
@@ -34,6 +45,39 @@ impl Player {
 
             // Campo de visión total de 60 grados.
             fov: PI / 3.0,
+
+            health: PLAYER_MAX_HEALTH,
         }
+    }
+
+    /// Puntos de vida restantes del jugador.
+    pub(crate) fn health(&self) -> i32 {
+        self.health
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Construye un jugador con la misma inicialización que
+    /// `Player::from_level`, sin depender de leer un archivo de
+    /// nivel desde disco: la prueba solo necesita verificar el
+    /// estado de vida inicial, no el descubrimiento del spawn.
+    fn new_test_player() -> Player {
+        Player {
+            pos: Vector2::new(0.0, 0.0),
+            a: PI / 3.0,
+            fov: PI / 3.0,
+            health: PLAYER_MAX_HEALTH,
+        }
+    }
+
+    #[test]
+    fn new_player_starts_with_full_health() {
+        let player = new_test_player();
+
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+        assert_eq!(player.health(), 100);
     }
 }

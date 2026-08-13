@@ -1,4 +1,5 @@
 mod background;
+mod hud;
 mod minimap;
 mod sprites;
 mod textures;
@@ -8,6 +9,7 @@ pub mod framebuffer;
 pub mod map_2d;
 pub mod world_3d;
 
+pub(crate) use hud::render_hud;
 pub(crate) use minimap::render_minimap;
 pub(crate) use sprites::render_world_sprites;
 pub(crate) use textures::TextureManager;
