@@ -4,6 +4,8 @@ use std::fmt;
 use raylib::core::error::InvalidImageError;
 use raylib::prelude::{Color, Image};
 
+use crate::player::WeaponState;
+
 /// Recurso de textura decodificado y retenido en memoria de CPU,
 /// listo para ser muestreado píxel a píxel por el framebuffer
 /// de software sin volver a leer el archivo.
@@ -131,6 +133,19 @@ const TORCH_TEXTURES: [(&str, &str); 4] = [
     ),
 ];
 
+/// Catálogo centralizado y congelado de las tres texturas del arma
+/// en primera persona, una por cada `WeaponState`.
+///
+/// Esta es la ÚNICA correspondencia entre una ruta de recurso y su
+/// clave interna para las texturas del arma. El mapeo estado ->
+/// clave vive en `weapon_texture`; el temporizado de la máquina de
+/// estados NO vive aquí, sino en `Weapon` (`player/weapon.rs`).
+const WEAPON_TEXTURES: [(&str, &str); 3] = [
+    ("weapon-idle", "assets/textures/weapon/weapon_idle.png"),
+    ("weapon-fire", "assets/textures/weapon/weapon_fire.png"),
+    ("weapon-recoil", "assets/textures/weapon/weapon_recoil.png"),
+];
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -202,6 +217,34 @@ impl TextureManager {
     /// estado de juego hacia su recurso de textura.
     pub(crate) fn torch_texture(&self, frame_index: usize) -> Option<&TextureAsset> {
         let (key, _) = TORCH_TEXTURES.get(frame_index)?;
+
+        self.get(key)
+    }
+
+    /// Carga, una única vez, las tres texturas del arma en primera
+    /// persona.
+    ///
+    /// Reutiliza la API genérica `load` existente.
+    pub(crate) fn load_weapon_textures(&mut self) -> Result<(), TextureError> {
+        for (key, path) in WEAPON_TEXTURES {
+            self.load(key, path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Textura ya cargada correspondiente al estado visual del arma
+    /// solicitado.
+    ///
+    /// Resuelve únicamente el mapeo estado -> textura ya cargada;
+    /// no controla ni conoce el temporizado de la máquina de
+    /// estados.
+    pub(crate) fn weapon_texture(&self, state: WeaponState) -> Option<&TextureAsset> {
+        let key = match state {
+            WeaponState::Idle => "weapon-idle",
+            WeaponState::Fire => "weapon-fire",
+            WeaponState::Recoil => "weapon-recoil",
+        };
 
         self.get(key)
     }

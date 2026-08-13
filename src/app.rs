@@ -5,8 +5,8 @@ use crate::player::Player;
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
-use crate::rendering::render_world_sprites;
 use crate::rendering::world_3d::render_world;
+use crate::rendering::{render_weapon, render_world_sprites};
 use crate::world::LevelManager;
 use raylib::prelude::*;
 
@@ -54,6 +54,25 @@ impl App {
          * process_events.
          */
         self.session.update_torch_animation(window.get_frame_time());
+
+        /*
+         * Avanza la máquina de estados visual del arma ANTES de
+         * procesar el clic de este cuadro, de modo que un disparo
+         * aceptado ahora comience en `Fire` con tiempo cero y se
+         * renderice como `Fire` en este mismo cuadro, en lugar de
+         * consumir inmediatamente el delta_time del cuadro actual.
+         */
+        self.session.update_weapon(window.get_frame_time());
+
+        /*
+         * Clic izquierdo: evento PRESSED (no mantenido), para que
+         * un solo clic físico dispare como máximo un ciclo visual.
+         * Tarea 21 es puramente visual: no se realiza raycasting,
+         * daño ni ninguna otra consecuencia de mundo.
+         */
+        if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            self.session.try_fire_weapon();
+        }
 
         /*
          * M cambia entre la vista 2D y la vista 3D.
@@ -117,6 +136,14 @@ impl App {
                     self.session.torch_frame_index(),
                     &wall_depth_buffer,
                 );
+
+                /*
+                 * El arma se dibuja SIEMPRE al final, como
+                 * superposición en espacio de pantalla, para que
+                 * nunca quede oculta por paredes ni sprites de
+                 * mundo.
+                 */
+                render_weapon(framebuffer, &self.textures, self.session.weapon_state());
             }
         }
     }
@@ -160,6 +187,11 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_torch_textures() {
         eprintln!("Error al cargar las texturas de antorcha: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_weapon_textures() {
+        eprintln!("Error al cargar las texturas del arma: {error}");
         return;
     }
 

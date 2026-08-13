@@ -1,4 +1,4 @@
-use crate::player::Player;
+use crate::player::{Player, Weapon, WeaponState};
 use crate::world::Level;
 
 /// Modos de visualización disponibles.
@@ -62,6 +62,7 @@ pub(crate) struct GameSession {
     pub(crate) player: Player,
     pub(crate) view_mode: ViewMode,
     torch_animation: TorchAnimationState,
+    weapon: Weapon,
 }
 
 impl GameSession {
@@ -76,6 +77,7 @@ impl GameSession {
             player,
             view_mode: ViewMode::Map2D,
             torch_animation: TorchAnimationState::new(),
+            weapon: Weapon::new(),
         }
     }
 
@@ -88,5 +90,26 @@ impl GameSession {
     /// Cuadro de animación de antorcha actualmente activo.
     pub(crate) fn torch_frame_index(&self) -> usize {
         self.torch_animation.frame_index
+    }
+
+    /// Avanza la máquina de estados visual del arma según el tiempo
+    /// transcurrido desde la última actualización.
+    pub(crate) fn update_weapon(&mut self, delta_time: f32) {
+        self.weapon.update(delta_time);
+    }
+
+    /// Estado visual actualmente activo del arma.
+    pub(crate) fn weapon_state(&self) -> WeaponState {
+        self.weapon.state()
+    }
+
+    /// Intenta aceptar un evento de disparo, iniciando el ciclo
+    /// visual del arma.
+    ///
+    /// Retorna `true` si el disparo fue aceptado (útil en tareas
+    /// futuras para disparar el hitscan), `false` si el arma está
+    /// en enfriamiento o no está `Idle`.
+    pub(crate) fn try_fire_weapon(&mut self) -> bool {
+        self.weapon.try_fire()
     }
 }
