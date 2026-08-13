@@ -4,4 +4,4 @@ mod hitscan;
 
 pub(crate) use caster::cast_ray;
 pub(crate) use hit::RayHit;
-pub(crate) use hitscan::{HitscanTarget, cast_hitscan};
+pub(crate) use hitscan::{HitscanHit, HitscanTarget, cast_hitscan};

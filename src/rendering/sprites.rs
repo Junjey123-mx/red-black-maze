@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{Entity, EntityState, Level};
+use crate::world::{Entity, Level};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -261,17 +261,15 @@ pub(crate) fn render_world_sprites(
     }
 
     /*
-     * Una entidad `Dead` no se encola para dibujarse: T23 no puede
-     * producir legítimamente ese estado, pero el comportamiento
-     * visual queda definido de forma determinista para cuando T24
-     * lo alcance. No existe un sprite "muerto" separado en T23.
+     * Las cuatro combinaciones identidad+estado (incluida `Dead`)
+     * tienen una textura determinista propia desde Tarea 24: un
+     * Dealer muerto sigue siendo un billboard visible (cadáver),
+     * simplemente con otra textura, y participa del MISMO pipeline
+     * de proyección/ordenamiento/oclusión que cualquier otro
+     * sprite.
      */
     for entity in entities {
-        if entity.state() == EntityState::Dead {
-            continue;
-        }
-
-        if let Some(texture) = textures.entity_texture(entity.sprite()) {
+        if let Some(texture) = textures.entity_texture(entity.sprite(), entity.state()) {
             items.push(BillboardItem {
                 world_position: entity.position(),
                 texture,

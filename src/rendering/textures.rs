@@ -5,7 +5,7 @@ use raylib::core::error::InvalidImageError;
 use raylib::prelude::{Color, Image};
 
 use crate::player::WeaponState;
-use crate::world::EntitySprite;
+use crate::world::{EntitySprite, EntityState};
 
 /// Recurso de textura decodificado y retenido en memoria de CPU,
 /// listo para ser muestreado píxel a píxel por el framebuffer
@@ -147,14 +147,31 @@ const WEAPON_TEXTURES: [(&str, &str); 3] = [
     ("weapon-recoil", "assets/textures/weapon/weapon_recoil.png"),
 ];
 
-/// Clave y ruta congeladas de la textura del Dealer.
+/// Catálogo centralizado y congelado de las cuatro texturas de
+/// estado del Dealer: clave interna -> ruta del recurso.
 ///
-/// Única correspondencia identidad/ruta para este recurso en todo
-/// el proyecto; el mapeo `EntitySprite -> textura` vive en
-/// `entity_texture`, nunca duplicado en `world/entity.rs` ni en
-/// `rendering/sprites.rs`.
-const DEALER_TEXTURE_KEY: &str = "entity-dealer";
-const DEALER_TEXTURE_PATH: &str = "assets/textures/sprites/enemies/dealer.png";
+/// Esta es la ÚNICA correspondencia identidad+estado -> ruta de
+/// asset en todo el proyecto; el mapeo `(EntitySprite, EntityState)
+/// -> clave` vive en `entity_texture`, nunca duplicado en
+/// `world/entity.rs` ni en `rendering/sprites.rs`.
+const DEALER_TEXTURES: [(&str, &str); 4] = [
+    (
+        "entity-dealer-idle",
+        "assets/textures/sprites/enemies/dealer.png",
+    ),
+    (
+        "entity-dealer-alert",
+        "assets/textures/sprites/enemies/dealer_alert.png",
+    ),
+    (
+        "entity-dealer-hit",
+        "assets/textures/sprites/enemies/dealer_hit.png",
+    ),
+    (
+        "entity-dealer-dead",
+        "assets/textures/sprites/enemies/dealer_dead.png",
+    ),
+];
 
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
@@ -259,21 +276,34 @@ impl TextureManager {
         self.get(key)
     }
 
-    /// Carga, una única vez, la textura del Dealer.
+    /// Carga, una única vez, las cuatro texturas de estado del
+    /// Dealer del catálogo centralizado.
     ///
     /// Reutiliza la API genérica `load` existente.
     pub(crate) fn load_entity_textures(&mut self) -> Result<(), TextureError> {
-        self.load(DEALER_TEXTURE_KEY, DEALER_TEXTURE_PATH)
+        for (key, path) in DEALER_TEXTURES {
+            self.load(key, path)?;
+        }
+
+        Ok(())
     }
 
-    /// Textura ya cargada correspondiente a la identidad visual de
-    /// entidad solicitada.
+    /// Textura ya cargada correspondiente a la identidad visual y
+    /// al estado de comportamiento de la entidad solicitada.
     ///
-    /// Resuelve únicamente el mapeo identidad -> textura ya
-    /// cargada; no controla comportamiento ni estado de la entidad.
-    pub(crate) fn entity_texture(&self, sprite: EntitySprite) -> Option<&TextureAsset> {
-        let key = match sprite {
-            EntitySprite::Dealer => DEALER_TEXTURE_KEY,
+    /// Resuelve únicamente el mapeo identidad+estado -> textura ya
+    /// cargada; no controla ni conoce el temporizado o las
+    /// invariantes de combate de la entidad.
+    pub(crate) fn entity_texture(
+        &self,
+        sprite: EntitySprite,
+        state: EntityState,
+    ) -> Option<&TextureAsset> {
+        let key = match (sprite, state) {
+            (EntitySprite::Dealer, EntityState::Idle) => "entity-dealer-idle",
+            (EntitySprite::Dealer, EntityState::Alert) => "entity-dealer-alert",
+            (EntitySprite::Dealer, EntityState::Hit) => "entity-dealer-hit",
+            (EntitySprite::Dealer, EntityState::Dead) => "entity-dealer-dead",
         };
 
         self.get(key)

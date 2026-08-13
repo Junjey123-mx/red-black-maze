@@ -2,7 +2,7 @@ use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
-use crate::raycasting::{HitscanTarget, cast_hitscan};
+use crate::raycasting::{HitscanHit, HitscanTarget, cast_hitscan};
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
@@ -66,34 +66,68 @@ impl App {
         self.session.update_weapon(window.get_frame_time());
 
         /*
+         * Avanza el temporizador de `Hit` y la reevaluación de
+         * proximidad `Idle`/`Alert` de cada Dealer ANTES de procesar
+         * el clic de este cuadro, por la misma razón que el arma: un
+         * golpe aceptado este cuadro debe comenzar en `Hit` con su
+         * temporizador completo y renderizarse como `Hit` en este
+         * mismo cuadro, sin que la reevaluación de este mismo cuadro
+         * lo consuma primero.
+         */
+        self.session
+            .update_entities(window.get_frame_time(), BLOCK_SIZE);
+
+        /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
          * un solo clic físico dispare como máximo un intento de
          * disparo. `try_fire_weapon` es la única autoridad sobre si
          * el disparo se acepta (Idle + enfriamiento agotado); un
          * clic rechazado no debe producir ningún hitscan.
          *
-         * Tarea 23 alimenta el hitscan con blancos geométricos
-         * reales, uno por cada entidad activa de la sesión, en el
-         * MISMO orden que `GameSession::entities()` para que
-         * `target_index` siga correspondiendo 1:1 a esa lista. El
-         * resultado se descarta deliberadamente: aplicar daño,
-         * cambiar de estado o eliminar un Dealer pertenece a la
-         * Tarea 24.
+         * Tarea 24 alimenta el hitscan únicamente con Dealers VIVOS.
+         * Como los `Dead` se filtran, el índice dentro de `targets`
+         * ya no coincide necesariamente con el índice dentro de
+         * `GameSession.entities()`; `target_entity_indices` conserva
+         * esa correspondencia explícita en el mismo orden de
+         * iteración (sin ordenar/invertir/deduplicar), de modo que
+         * `target_entity_indices[target_index]` siempre resuelve al
+         * índice real de la entidad.
          */
         if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
             && self.session.try_fire_weapon()
         {
-            let targets: Vec<HitscanTarget> = self
-                .session
-                .entities()
-                .iter()
-                .map(|entity| HitscanTarget {
+            let mut targets: Vec<HitscanTarget> = Vec::new();
+
+            let mut target_entity_indices: Vec<usize> = Vec::new();
+
+            for (entity_index, entity) in self.session.entities().iter().enumerate() {
+                if entity.is_dead() {
+                    continue;
+                }
+
+                target_entity_indices.push(entity_index);
+
+                targets.push(HitscanTarget {
                     center: entity.position(),
                     radius: entity.hit_radius(),
-                })
-                .collect();
+                });
+            }
 
-            let _shot_result = cast_hitscan(&self.session.level, &self.session.player, &targets);
+            let shot_result = cast_hitscan(&self.session.level, &self.session.player, &targets);
+
+            /*
+             * Un impacto de pared/fallo no produce daño de entidad.
+             * Un impacto de blanco resuelve exactamente un Dealer:
+             * el hitscan ya decidió cuál es el más cercano antes de
+             * la pared, así que aquí solo se traduce ese índice
+             * filtrado de vuelta al índice real y se aplica el daño
+             * controlado a través de `GameSession`.
+             */
+            if let HitscanHit::Target { target_index, .. } = shot_result {
+                if let Some(&entity_index) = target_entity_indices.get(target_index) {
+                    self.session.damage_entity(entity_index);
+                }
+            }
         }
 
         /*

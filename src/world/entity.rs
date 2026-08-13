@@ -2,9 +2,14 @@ use raylib::prelude::Vector2;
 
 /// Estado de combate/comportamiento de una entidad.
 ///
-/// En Tarea 23 toda entidad permanece en `Idle`: `Alert`, `Hit` y
-/// `Dead` existen como parte del modelo, pero ninguna transición
-/// real hacia ellos ocurre todavía (eso pertenece a Tarea 24).
+/// Precedencia de estado (de mayor a menor prioridad):
+///
+/// ```text
+/// Dead   -> terminal, ninguna otra transición puede sobrescribirlo
+/// Hit    -> prioridad temporal mientras el temporizador de golpe > 0
+/// Alert  -> jugador dentro de la distancia de alerta
+/// Idle   -> jugador fuera de la distancia de alerta
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntityState {
     Idle,
@@ -32,6 +37,17 @@ const DEALER_MAX_HEALTH: i32 = 100;
 /// la celda de aparición.
 const DEALER_HIT_RADIUS: f32 = 12.0;
 
+/// Duración visual del estado `Hit` tras un golpe no letal.
+///
+/// 0.15s es claramente observable (varios cuadros a 60 FPS) sin
+/// bloquear la reevaluación de proximidad por mucho tiempo.
+const DEALER_HIT_DURATION_SECONDS: f32 = 0.15;
+
+/// Distancia de alerta, expresada en celdas de mapa. El jugador
+/// dentro de esta distancia hace que un Dealer con vida y sin golpe
+/// activo pase a `Alert`; fuera de ella vuelve a `Idle`.
+const DEALER_ALERT_DISTANCE_CELLS: f32 = 4.0;
+
 /// Entidad de dominio del mundo/juego: posición, vida, estado de
 /// comportamiento, identidad visual y radio de impacto.
 ///
@@ -44,6 +60,7 @@ pub(crate) struct Entity {
     state: EntityState,
     sprite: EntitySprite,
     hit_radius: f32,
+    hit_time_remaining: f32,
 }
 
 impl Entity {
@@ -63,6 +80,7 @@ impl Entity {
             state: EntityState::Idle,
             sprite: EntitySprite::Dealer,
             hit_radius: DEALER_HIT_RADIUS,
+            hit_time_remaining: 0.0,
         }
     }
 
@@ -93,9 +111,77 @@ impl Entity {
     }
 
     /// Indica si la entidad está muerta.
-    #[allow(dead_code)]
     pub(crate) fn is_dead(&self) -> bool {
         self.state == EntityState::Dead
+    }
+
+    /// Aplica daño controlado a la entidad.
+    ///
+    /// Una entidad ya `Dead` ignora cualquier daño adicional; un
+    /// `amount` no positivo también se ignora. En caso contrario la
+    /// vida se recorta con un piso de `0` (nunca queda negativa). Si
+    /// la vida llega a `0` la entidad pasa a `Dead` de forma
+    /// terminal; en caso contrario pasa a `Hit` y (re)inicia su
+    /// temporizador de golpe.
+    pub(crate) fn apply_damage(&mut self, amount: i32) {
+        if self.state == EntityState::Dead {
+            return;
+        }
+
+        if amount <= 0 {
+            return;
+        }
+
+        self.health = (self.health - amount).max(0);
+
+        if self.health == 0 {
+            self.state = EntityState::Dead;
+            self.hit_time_remaining = 0.0;
+        } else {
+            self.state = EntityState::Hit;
+            self.hit_time_remaining = DEALER_HIT_DURATION_SECONDS;
+        }
+    }
+
+    /// Avanza el comportamiento estático de la entidad: decrementa
+    /// el temporizador de `Hit` y, cuando ya no hay golpe activo,
+    /// reevalúa `Idle`/`Alert` según la distancia al jugador.
+    ///
+    /// `Dead` es terminal y esta función retorna inmediatamente sin
+    /// alterar nada. Mientras `hit_time_remaining` siga siendo
+    /// positivo, `Hit` NO es sobrescrito por la reevaluación de
+    /// proximidad, ni siquiera dentro de la misma llamada: la
+    /// entidad no se mueve, no ataca y no persigue; esto es
+    /// únicamente reconocimiento visual por distancia, sin línea de
+    /// visión.
+    pub(crate) fn update(&mut self, player_position: Vector2, delta_time: f32, block_size: usize) {
+        if self.state == EntityState::Dead {
+            return;
+        }
+
+        if self.state == EntityState::Hit {
+            if delta_time.is_finite() && delta_time > 0.0 {
+                self.hit_time_remaining = (self.hit_time_remaining - delta_time).max(0.0);
+            }
+
+            if self.hit_time_remaining > 0.0 {
+                return;
+            }
+        }
+
+        let alert_distance = block_size as f32 * DEALER_ALERT_DISTANCE_CELLS;
+
+        let dx = self.position.x - player_position.x;
+
+        let dy = self.position.y - player_position.y;
+
+        let distance_squared = dx * dx + dy * dy;
+
+        self.state = if distance_squared <= alert_distance * alert_distance {
+            EntityState::Alert
+        } else {
+            EntityState::Idle
+        };
     }
 }
 
@@ -134,5 +220,131 @@ mod tests {
 
         assert!(entity.hit_radius() > 0.0);
         assert!(entity.hit_radius() < 48.0);
+    }
+
+    #[test]
+    fn non_lethal_damage_reduces_health_and_enters_hit() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+
+        assert_eq!(entity.health(), 50);
+        assert_eq!(entity.state(), EntityState::Hit);
+    }
+
+    #[test]
+    fn lethal_damage_zeroes_health_and_enters_dead() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert_eq!(entity.health(), 0);
+        assert_eq!(entity.state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn health_never_goes_below_zero() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert_eq!(entity.health(), 0);
+        assert_eq!(entity.state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn damage_to_dead_entity_does_nothing() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert!(entity.is_dead());
+
+        entity.apply_damage(50);
+
+        assert_eq!(entity.health(), 0);
+        assert_eq!(entity.state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn nearby_player_makes_idle_dealer_alert() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.016, 48);
+
+        assert_eq!(entity.state(), EntityState::Alert);
+    }
+
+    #[test]
+    fn far_player_keeps_alert_dealer_idle() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.016, 48);
+
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        entity.update(far_player, 0.016, 48);
+
+        assert_eq!(entity.state(), EntityState::Idle);
+    }
+
+    #[test]
+    fn hit_state_survives_while_timer_is_active() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        // Un delta pequeño no debe agotar el temporizador de 0.15s.
+        entity.update(near_player, 0.016, 48);
+
+        assert_eq!(entity.state(), EntityState::Hit);
+    }
+
+    #[test]
+    fn hit_recovers_to_awareness_after_timer_expires() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        // Delta mayor que la duración de Hit (0.15s): debe expirar
+        // y reevaluar la proximidad en la misma llamada.
+        entity.update(far_player, 0.20, 48);
+
+        assert_eq!(entity.state(), EntityState::Idle);
+    }
+
+    #[test]
+    fn dead_remains_dead_across_updates() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert!(entity.is_dead());
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.5, 48);
+
+        assert_eq!(entity.state(), EntityState::Dead);
+        assert!(entity.is_dead());
     }
 }

@@ -8,6 +8,11 @@ pub(crate) enum ViewMode {
     World3D,
 }
 
+/// Daño aplicado a un Dealer por cada disparo aceptado que lo
+/// impacta. Con `DEALER_MAX_HEALTH = 100` (definido en
+/// `world::entity`), un Dealer muere tras exactamente dos golpes.
+const DEALER_DAMAGE_PER_HIT: i32 = 50;
+
 /// Duración aproximada de cada cuadro de la animación de antorcha.
 const TORCH_FRAME_DURATION: f32 = 0.1;
 
@@ -95,6 +100,34 @@ impl GameSession {
     /// aparecidos a partir de los marcadores `e` del nivel).
     pub(crate) fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+
+    /// Avanza el comportamiento estático (temporizador de `Hit` y
+    /// reevaluación de proximidad `Idle`/`Alert`) de cada entidad
+    /// según la posición actual del jugador.
+    ///
+    /// Ninguna entidad se mueve, ataca ni persigue: esto es
+    /// únicamente el temporizado/reconocimiento por distancia que
+    /// `Entity::update` ya implementa de forma pura.
+    pub(crate) fn update_entities(&mut self, delta_time: f32, block_size: usize) {
+        let player_position = self.player.pos;
+
+        for entity in &mut self.entities {
+            entity.update(player_position, delta_time, block_size);
+        }
+    }
+
+    /// Aplica el daño de un golpe de Dealer aceptado a la entidad
+    /// indicada, con verificación segura de límites.
+    ///
+    /// Un `entity_index` fuera de rango se ignora sin entrar en
+    /// pánico. La cantidad de daño y la invariante de salud/estado
+    /// son responsabilidad exclusiva de `Entity::apply_damage`; este
+    /// método solo coordina el acceso indexado seguro.
+    pub(crate) fn damage_entity(&mut self, entity_index: usize) {
+        if let Some(entity) = self.entities.get_mut(entity_index) {
+            entity.apply_damage(DEALER_DAMAGE_PER_HIT);
+        }
     }
 
     /// Avanza la animación de antorcha según el tiempo transcurrido
