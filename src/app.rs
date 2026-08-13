@@ -8,7 +8,7 @@ use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
-use crate::ui::WelcomeScreen;
+use crate::ui::{LevelSelectScreen, WelcomeScreen};
 use crate::world::LevelManager;
 use raylib::prelude::*;
 
@@ -19,6 +19,7 @@ pub(crate) struct App {
     session: GameSession,
     textures: TextureManager,
     welcome: WelcomeScreen,
+    level_select: LevelSelectScreen,
 }
 
 impl App {
@@ -27,6 +28,7 @@ impl App {
         session: GameSession,
         textures: TextureManager,
         welcome: WelcomeScreen,
+        level_select: LevelSelectScreen,
     ) -> Self {
         Self {
             state: GameState::Welcome,
@@ -34,6 +36,7 @@ impl App {
             session,
             textures,
             welcome,
+            level_select,
         }
     }
 
@@ -41,9 +44,11 @@ impl App {
         match self.state {
             GameState::Welcome => self.update_welcome(window),
 
+            GameState::LevelSelect => self.update_level_select(window),
+
             GameState::Playing => self.update_playing(window),
 
-            GameState::LevelSelect | GameState::Victory => {}
+            GameState::Victory => {}
         }
     }
 
@@ -69,6 +74,72 @@ impl App {
         {
             self.state = GameState::LevelSelect;
         }
+    }
+
+    /// Avanza únicamente la presentación de Selección de Nivel (su
+    /// propio Juego de la Vida de fondo, independiente del de
+    /// Bienvenida) y procesa navegación/activación por teclado.
+    ///
+    /// Orden determinista de entrada: ESC se comprueba primero y
+    /// retorna de inmediato (nunca puede coincidir con una
+    /// activación de ENTER en el mismo cuadro); luego navegación;
+    /// luego ENTER. NO ejecuta ninguna actualización de gameplay
+    /// mientras este menú está activo.
+    fn update_level_select(&mut self, window: &RaylibHandle) {
+        self.level_select.update(window.get_frame_time());
+
+        if window.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            self.state = GameState::Welcome;
+
+            return;
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            self.level_select
+                .select_previous(self.level_manager.level_count());
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
+        {
+            self.level_select
+                .select_next(self.level_manager.level_count());
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            self.start_selected_level();
+        }
+    }
+
+    /// Carga el nivel actualmente seleccionado a través de
+    /// `LevelManager::load` (única autoridad de rutas de archivo;
+    /// esta pantalla nunca conoce una ruta), y solo si la carga
+    /// tiene éxito construye un `Player`/`GameSession` COMPLETAMENTE
+    /// nuevos y reemplaza `self.session` de forma atómica antes de
+    /// entrar a `Playing`.
+    ///
+    /// `Player::from_level` es infalible en la arquitectura actual
+    /// (solo lee el spawn ya validado por `Level::load`), por lo que
+    /// no existe un segundo punto de fallo tras la carga del nivel.
+    /// Si la carga falla, se reporta el error, `self.session` NO se
+    /// toca y el estado permanece en `LevelSelect`.
+    fn start_selected_level(&mut self) {
+        let index = self.level_select.selected_index();
+
+        let level = match self.level_manager.load(index) {
+            Ok(level) => level,
+
+            Err(error) => {
+                eprintln!("Error al cargar el nivel seleccionado: {error}");
+
+                return;
+            }
+        };
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        self.session = GameSession::new(level, player, BLOCK_SIZE);
+
+        self.state = GameState::Playing;
     }
 
     fn update_playing(&mut self, window: &RaylibHandle) {
@@ -183,9 +254,11 @@ impl App {
         match self.state {
             GameState::Welcome => self.welcome.render(framebuffer),
 
+            GameState::LevelSelect => self.level_select.render(framebuffer, &self.level_manager),
+
             GameState::Playing => self.render_playing(framebuffer),
 
-            GameState::LevelSelect | GameState::Victory => {}
+            GameState::Victory => {}
         }
     }
 
@@ -318,8 +391,20 @@ pub fn run() {
         return;
     }
 
+    /*
+     * La ventana se muestra al doble de la resolución lógica del
+     * framebuffer. `Framebuffer::swap_buffers` ya dibuja su textura
+     * escalada al tamaño real de pantalla (`draw_texture_pro`), así
+     * que duplicar solo las dimensiones de la ventana no afecta la
+     * resolución lógica usada por el raycasting ni por el mapa 2D.
+     */
+    const WINDOW_SCALE: i32 = 2;
+
     let (mut window, raylib_thread) = raylib::init()
-        .size(framebuffer_width, framebuffer_height)
+        .size(
+            framebuffer_width * WINDOW_SCALE,
+            framebuffer_height * WINDOW_SCALE,
+        )
         .title("Red-Black Maze")
         .log_level(TraceLogLevel::LOG_WARNING)
         .build();
@@ -336,17 +421,32 @@ pub fn run() {
      */
     window.disable_cursor();
 
+    /*
+     * Tarea 29 (requerido): por defecto, Raylib trata ESC como
+     * tecla de salida de la ventana (`window_should_close()`
+     * reporta true tanto por el ícono de cierre como por ESC). Eso
+     * haría que ESC en `LevelSelect` cerrara la aplicación en vez
+     * de volver a `Welcome`. `set_exit_key(None)` desactiva
+     * únicamente esa asociación ESC->salida; el cierre por el
+     * ícono/botón de la ventana no depende de la tecla de salida y
+     * sigue funcionando exactamente igual.
+     */
+    window.set_exit_key(None);
+
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
     let welcome = WelcomeScreen::new(framebuffer_width, framebuffer_height);
 
+    let level_select = LevelSelectScreen::new(framebuffer_width, framebuffer_height);
+
     let mut app = App::new(
         level_manager,
         GameSession::new(level, player, BLOCK_SIZE),
         texture_manager,
         welcome,
+        level_select,
     );
 
     while !window.window_should_close() {
