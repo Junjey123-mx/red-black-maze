@@ -7,7 +7,7 @@ use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
-use crate::rendering::{render_weapon, render_world_sprites};
+use crate::rendering::{render_minimap, render_weapon, render_world_sprites};
 use crate::world::LevelManager;
 use raylib::prelude::*;
 
@@ -201,6 +201,19 @@ impl App {
                  * mundo.
                  */
                 render_weapon(framebuffer, &self.textures, self.session.weapon_state());
+
+                /*
+                 * El minimapa se dibuja al final como superposición
+                 * arriba-derecha sobre la vista 3D ya completa; no
+                 * es un segundo viewport y no reduce el tamaño del
+                 * mundo/framebuffer/proyección.
+                 */
+                render_minimap(
+                    framebuffer,
+                    &self.session.level,
+                    &self.session.player,
+                    BLOCK_SIZE,
+                );
             }
         }
     }
