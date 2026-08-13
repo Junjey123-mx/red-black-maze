@@ -2,6 +2,7 @@ use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
+use crate::raycasting::cast_hitscan;
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
@@ -66,12 +67,21 @@ impl App {
 
         /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
-         * un solo clic físico dispare como máximo un ciclo visual.
-         * Tarea 21 es puramente visual: no se realiza raycasting,
-         * daño ni ninguna otra consecuencia de mundo.
+         * un solo clic físico dispare como máximo un intento de
+         * disparo. `try_fire_weapon` es la única autoridad sobre si
+         * el disparo se acepta (Idle + enfriamiento agotado); un
+         * clic rechazado no debe producir ningún hitscan.
+         *
+         * Tarea 22 conecta ese evento aceptado al rayo central de
+         * hitscan puro. Aún no existen entidades reales (Tarea 23),
+         * así que se pasa un slice vacío de blancos: el disparo se
+         * resuelve geométricamente contra la pared, sin ningún
+         * efecto de mundo todavía.
          */
-        if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-            self.session.try_fire_weapon();
+        if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+            && self.session.try_fire_weapon()
+        {
+            let _shot_result = cast_hitscan(&self.session.level, &self.session.player, &[]);
         }
 
         /*
