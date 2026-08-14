@@ -173,4 +173,148 @@ impl GameSession {
     pub(crate) fn weapon_ammo(&self) -> u32 {
         self.weapon.ammo()
     }
+
+    /// Indica si el jugador se encuentra actualmente dentro de la
+    /// celda de meta (`Level::goal`).
+    ///
+    /// Consulta pura de solo lectura: no modifica `Player`, `Level`
+    /// ni ningún otro estado, no carga niveles y no decide la
+    /// transición de estado de la aplicación (eso es
+    /// responsabilidad de `App`). Es la única fuente de verdad para
+    /// "¿se completó el nivel?"; no existe un booleano
+    /// `victory`/`completed` duplicado en ningún otro lugar.
+    pub(crate) fn has_reached_goal(&self, block_size: usize) -> bool {
+        let (goal_row, goal_column) = self.level.goal();
+
+        point_reaches_goal(
+            self.player.pos.x,
+            self.player.pos.y,
+            goal_row,
+            goal_column,
+            block_size,
+        )
+    }
+}
+
+/// Comprueba si el punto de mundo `(player_x, player_y)` cae dentro
+/// de la celda de meta `(goal_row, goal_column)`, usando el mismo
+/// convenio fila/columna que el resto del proyecto
+/// (`column * block_size <= x < (column + 1) * block_size`, y
+/// análogamente para `y`/fila).
+///
+/// Función pura y libre de E/S, extraída de `has_reached_goal` para
+/// poder probar directamente todos los casos límite sin construir
+/// un `Level`/`Player`/`GameSession` completo.
+///
+/// Retorna `false` de forma segura (sin pánico ni división por
+/// cero) para `block_size == 0`, coordenadas no finitas, o
+/// coordenadas negativas.
+fn point_reaches_goal(
+    player_x: f32,
+    player_y: f32,
+    goal_row: usize,
+    goal_column: usize,
+    block_size: usize,
+) -> bool {
+    if block_size == 0 {
+        return false;
+    }
+
+    if !player_x.is_finite() || !player_y.is_finite() {
+        return false;
+    }
+
+    if player_x < 0.0 || player_y < 0.0 {
+        return false;
+    }
+
+    let column = (player_x / block_size as f32).floor() as usize;
+
+    let row = (player_y / block_size as f32).floor() as usize;
+
+    row == goal_row && column == goal_column
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BLOCK_SIZE: usize = 48;
+
+    #[test]
+    fn player_center_inside_goal_cell_is_true() {
+        assert!(point_reaches_goal(
+            3.0 * 48.0 + 24.0,
+            2.0 * 48.0 + 24.0,
+            2,
+            3,
+            BLOCK_SIZE
+        ));
+    }
+
+    #[test]
+    fn player_center_inside_adjacent_cell_is_false() {
+        assert!(!point_reaches_goal(
+            4.0 * 48.0 + 24.0,
+            2.0 * 48.0 + 24.0,
+            2,
+            3,
+            BLOCK_SIZE
+        ));
+    }
+
+    #[test]
+    fn position_just_before_goal_cell_boundary_is_false() {
+        let just_before = 3.0 * 48.0 - 0.001;
+
+        assert!(!point_reaches_goal(
+            just_before,
+            2.0 * 48.0 + 24.0,
+            2,
+            3,
+            BLOCK_SIZE
+        ));
+    }
+
+    #[test]
+    fn position_at_lower_left_inclusive_boundary_is_true() {
+        assert!(point_reaches_goal(3.0 * 48.0, 2.0 * 48.0, 2, 3, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn position_at_upper_right_exclusive_boundary_is_false() {
+        // Exactamente en el borde superior/derecho de la celda meta
+        // ya pertenece, por convención [min, max), a la SIGUIENTE
+        // celda (fila 3, columna 4), no a la celda meta (2, 3).
+        assert!(!point_reaches_goal(
+            4.0 * 48.0,
+            3.0 * 48.0,
+            2,
+            3,
+            BLOCK_SIZE
+        ));
+    }
+
+    #[test]
+    fn zero_block_size_is_false() {
+        assert!(!point_reaches_goal(
+            3.0 * 48.0 + 24.0,
+            2.0 * 48.0 + 24.0,
+            2,
+            3,
+            0
+        ));
+    }
+
+    #[test]
+    fn non_finite_position_is_false() {
+        assert!(!point_reaches_goal(f32::NAN, 0.0, 0, 0, BLOCK_SIZE));
+        assert!(!point_reaches_goal(0.0, f32::INFINITY, 0, 0, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn negative_position_is_false() {
+        assert!(!point_reaches_goal(-1.0, 0.0, 0, 0, BLOCK_SIZE));
+        assert!(!point_reaches_goal(0.0, -1.0, 0, 0, BLOCK_SIZE));
+    }
 }

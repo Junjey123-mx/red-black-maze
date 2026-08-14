@@ -8,8 +8,8 @@ use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
-use crate::ui::{LevelSelectScreen, WelcomeScreen};
-use crate::world::LevelManager;
+use crate::ui::{LevelSelectScreen, VictoryAction, VictoryScreen, WelcomeScreen};
+use crate::world::{Level, LevelManager};
 use raylib::prelude::*;
 
 /// Coordina el estado de la aplicación y la sesión de juego activa.
@@ -20,6 +20,7 @@ pub(crate) struct App {
     textures: TextureManager,
     welcome: WelcomeScreen,
     level_select: LevelSelectScreen,
+    victory: VictoryScreen,
 }
 
 impl App {
@@ -29,6 +30,7 @@ impl App {
         textures: TextureManager,
         welcome: WelcomeScreen,
         level_select: LevelSelectScreen,
+        victory: VictoryScreen,
     ) -> Self {
         Self {
             state: GameState::Welcome,
@@ -37,6 +39,7 @@ impl App {
             textures,
             welcome,
             level_select,
+            victory,
         }
     }
 
@@ -48,7 +51,7 @@ impl App {
 
             GameState::Playing => self.update_playing(window),
 
-            GameState::Victory => {}
+            GameState::Victory => self.update_victory(window),
         }
     }
 
@@ -135,11 +138,7 @@ impl App {
             }
         };
 
-        let player = Player::from_level(&level, BLOCK_SIZE);
-
-        self.session = GameSession::new(level, player, BLOCK_SIZE);
-
-        self.state = GameState::Playing;
+        self.replace_session_with_level(level);
     }
 
     fn update_playing(&mut self, window: &RaylibHandle) {
@@ -152,6 +151,23 @@ impl App {
             &self.session.level,
             BLOCK_SIZE,
         );
+
+        /*
+         * Comprobación de meta DESPUÉS del movimiento de este
+         * cuadro: si el jugador acaba de entrar a la celda de meta,
+         * la partida termina aquí mismo. `on_enter` reinicia la
+         * selección de Victoria según si existe un nivel siguiente
+         * (Tarea 30), y el `return` inmediato evita que el resto de
+         * esta función (arma, entidades, hitscan, alternar vista)
+         * siga ejecutando gameplay sobre un nivel ya completado.
+         */
+        if self.session.has_reached_goal(BLOCK_SIZE) {
+            self.victory.on_enter(self.level_manager.has_next());
+
+            self.state = GameState::Victory;
+
+            return;
+        }
 
         /*
          * Avanza la animación de antorcha según el tiempo real
@@ -250,6 +266,85 @@ impl App {
         }
     }
 
+    /// Avanza únicamente la presentación de Victoria (su propio
+    /// Juego de la Vida de fondo, independiente de las otras
+    /// pantallas) y procesa navegación/activación por teclado.
+    ///
+    /// Orden determinista de entrada: navegación primero, luego
+    /// ENTER; como máximo una acción se ejecuta por llamada. NO
+    /// ejecuta ninguna actualización de gameplay mientras esta
+    /// pantalla está activa: la partida completada permanece
+    /// congelada/oculta detrás de ella.
+    fn update_victory(&mut self, window: &RaylibHandle) {
+        self.victory.update(window.get_frame_time());
+
+        let has_next_level = self.level_manager.has_next();
+
+        if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            self.victory.select_previous(has_next_level);
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
+        {
+            self.victory.select_next(has_next_level);
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            if let Some(action) = self.victory.selected_action(has_next_level) {
+                self.perform_victory_action(action);
+            }
+        }
+    }
+
+    /// Ejecuta la acción de Victoria ya resuelta por
+    /// `VictoryScreen::selected_action` (nunca `NextLevel` cuando no
+    /// hay nivel siguiente: eso ya es `None` antes de llegar aquí).
+    fn perform_victory_action(&mut self, action: VictoryAction) {
+        match action {
+            VictoryAction::NextLevel => match self.level_manager.next() {
+                Ok(Some(level)) => self.replace_session_with_level(level),
+
+                // Nivel final: no existe ambigüedad porque la UI ya
+                // deshabilita esta acción, pero se maneja de forma
+                // segura de todas formas: permanece en Victoria, sin
+                // reemplazar la sesión, sin envolver al nivel 1.
+                Ok(None) => {}
+
+                Err(error) => {
+                    eprintln!("Error al cargar el siguiente nivel: {error}");
+                }
+            },
+
+            VictoryAction::Retry => match self.level_manager.restart() {
+                Ok(level) => self.replace_session_with_level(level),
+
+                Err(error) => {
+                    eprintln!("Error al reiniciar el nivel: {error}");
+                }
+            },
+
+            VictoryAction::MainMenu => {
+                self.state = GameState::Welcome;
+            }
+        }
+    }
+
+    /// Construye un `Player`/`GameSession` completamente nuevos a
+    /// partir de `level` ya cargado con éxito, reemplaza
+    /// `self.session` de forma atómica, y entra a `Playing`.
+    ///
+    /// Único punto compartido por Selección de Nivel (Tarea 29),
+    /// `NEXT LEVEL` y `RETRY` (Tarea 30): los tres solo difieren en
+    /// CÓMO obtuvieron `level` (`LevelManager::load`/`next`/
+    /// `restart`), nunca en cómo se construye la sesión resultante.
+    fn replace_session_with_level(&mut self, level: Level) {
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        self.session = GameSession::new(level, player, BLOCK_SIZE);
+
+        self.state = GameState::Playing;
+    }
+
     fn render(&self, framebuffer: &mut Framebuffer) {
         match self.state {
             GameState::Welcome => self.welcome.render(framebuffer),
@@ -258,7 +353,9 @@ impl App {
 
             GameState::Playing => self.render_playing(framebuffer),
 
-            GameState::Victory => {}
+            GameState::Victory => self
+                .victory
+                .render(framebuffer, self.level_manager.has_next()),
         }
     }
 
@@ -441,12 +538,15 @@ pub fn run() {
 
     let level_select = LevelSelectScreen::new(framebuffer_width, framebuffer_height);
 
+    let victory = VictoryScreen::new(framebuffer_width, framebuffer_height);
+
     let mut app = App::new(
         level_manager,
         GameSession::new(level, player, BLOCK_SIZE),
         texture_manager,
         welcome,
         level_select,
+        victory,
     );
 
     while !window.window_should_close() {

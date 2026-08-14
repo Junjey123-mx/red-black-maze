@@ -102,6 +102,17 @@ impl LevelManager {
         self.load(self.current)
     }
 
+    /// Indica si existe un nivel siguiente en el catálogo después
+    /// del actual.
+    ///
+    /// Consulta pura de solo lectura: no muta `current`, no carga
+    /// ningún archivo y no expone ninguna ruta. Pensada para que la
+    /// UI (Victoria) sepa, ANTES de activar `NEXT LEVEL`, si esa
+    /// acción está disponible.
+    pub(crate) fn has_next(&self) -> bool {
+        self.current + 1 < self.levels.len()
+    }
+
     /// Carga el siguiente nivel del catálogo, si existe.
     ///
     /// Retorna `Ok(None)` sin cambiar `current` cuando el nivel
@@ -144,6 +155,43 @@ mod tests {
         let manager = LevelManager::new();
 
         assert_eq!(manager.level_name(3), None);
+    }
+
+    #[test]
+    fn has_next_is_true_on_the_fresh_first_level() {
+        let manager = LevelManager::new();
+
+        assert!(manager.has_next());
+    }
+
+    #[test]
+    fn has_next_is_true_after_loading_the_second_level() {
+        let mut manager = LevelManager::new();
+
+        manager.load(1).expect("el índice 1 debe cargar");
+
+        assert!(manager.has_next());
+    }
+
+    #[test]
+    fn has_next_is_false_on_the_last_level() {
+        let mut manager = LevelManager::new();
+
+        manager.load(2).expect("el índice 2 debe cargar");
+
+        assert!(!manager.has_next());
+    }
+
+    #[test]
+    fn has_next_does_not_mutate_current() {
+        let mut manager = LevelManager::new();
+
+        manager.load(1).expect("el índice 1 debe cargar");
+
+        let _ = manager.has_next();
+        let _ = manager.has_next();
+
+        assert_eq!(manager.current().name, "Black Club");
     }
 
     #[test]
