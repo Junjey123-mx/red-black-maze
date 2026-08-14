@@ -3,7 +3,7 @@ use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
 use crate::raycasting::cast_ray;
-use crate::world::Level;
+use crate::world::{Level, LevelTheme};
 use raylib::prelude::Color;
 
 /// Obtiene el color de una pared según el carácter
@@ -131,6 +131,7 @@ pub(crate) fn render_world(
     player: &Player,
     block_size: usize,
     textures: &TextureManager,
+    theme: LevelTheme,
 ) -> Vec<f32> {
     let screen_width = framebuffer.width().max(1);
 
@@ -138,7 +139,7 @@ pub(crate) fn render_world(
 
     let mut wall_depth_buffer = Vec::with_capacity(screen_width as usize);
 
-    draw_background(framebuffer);
+    draw_background(framebuffer, theme);
 
     let half_width = screen_width as f32 / 2.0;
 

@@ -2,10 +2,25 @@ use std::fmt;
 
 use super::level::{Level, LevelError};
 
+/// Identidad semántica de la ambientación visual final de un nivel.
+///
+/// Metadatos de DOMINIO puro: no contiene ningún `raylib::Color` ni
+/// ningún otro tipo de la capa de rendering. La capa de rendering
+/// (`rendering::background`) es quien traduce este valor a colores
+/// concretos; `World`/`LevelManager` solo identifican QUÉ tema
+/// corresponde a cada nivel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LevelTheme {
+    CrimsonEntrance,
+    BlackClub,
+    HouseOfCards,
+}
+
 /// Metadatos de un nivel del catálogo.
 pub(crate) struct LevelInfo {
     pub(crate) name: &'static str,
     pub(crate) path: &'static str,
+    pub(crate) theme: LevelTheme,
 }
 
 /// Catálogo explícito de los niveles disponibles.
@@ -13,14 +28,17 @@ const LEVELS: [LevelInfo; 3] = [
     LevelInfo {
         name: "Crimson Entrance",
         path: "./levels/level_01.txt",
+        theme: LevelTheme::CrimsonEntrance,
     },
     LevelInfo {
         name: "Black Club",
         path: "./levels/level_02.txt",
+        theme: LevelTheme::BlackClub,
     },
     LevelInfo {
         name: "House of Cards",
         path: "./levels/level_03.txt",
+        theme: LevelTheme::HouseOfCards,
     },
 ];
 
@@ -192,6 +210,15 @@ mod tests {
         let _ = manager.has_next();
 
         assert_eq!(manager.current().name, "Black Club");
+    }
+
+    #[test]
+    fn catalog_maps_each_index_to_its_expected_theme() {
+        let manager = LevelManager::new();
+
+        assert_eq!(manager.levels[0].theme, LevelTheme::CrimsonEntrance);
+        assert_eq!(manager.levels[1].theme, LevelTheme::BlackClub);
+        assert_eq!(manager.levels[2].theme, LevelTheme::HouseOfCards);
     }
 
     #[test]

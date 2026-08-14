@@ -518,7 +518,10 @@ impl<'aud> App<'aud> {
 
             ViewMode::World3D => {
                 /*
-                 * Vista en primera persona.
+                 * Vista en primera persona. El tema visual (cielo/
+                 * suelo) proviene del catálogo de `LevelManager`,
+                 * único dueño de qué `LevelTheme` corresponde al
+                 * nivel activo; no se duplica en `GameSession`.
                  */
                 let wall_depth_buffer = render_world(
                     framebuffer,
@@ -526,6 +529,7 @@ impl<'aud> App<'aud> {
                     &self.session.player,
                     BLOCK_SIZE,
                     &self.textures,
+                    self.level_manager.current().theme,
                 );
 
                 render_world_sprites(

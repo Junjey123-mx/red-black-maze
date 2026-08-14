@@ -9,5 +9,5 @@ pub(crate) use entity::{
     Entity, EntityDamageOutcome, EntitySprite, EntityState, EntityStateTransition,
 };
 pub(crate) use level::{Level, LevelError};
-pub(crate) use level_manager::{LevelManager, LevelManagerError};
+pub(crate) use level_manager::{LevelManager, LevelManagerError, LevelTheme};
 pub(crate) use tile::Tile;
