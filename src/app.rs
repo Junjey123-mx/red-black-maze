@@ -1,3 +1,4 @@
+use crate::audio::AudioManager;
 use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
@@ -13,7 +14,12 @@ use crate::world::{Level, LevelManager};
 use raylib::prelude::*;
 
 /// Coordina el estado de la aplicación y la sesión de juego activa.
-pub(crate) struct App {
+///
+/// El parámetro de vida `'aud` es el que impone `AudioManager`
+/// (a través de `Music<'aud>`, atada por `raylib-rs` a la
+/// `RaylibAudio` que la cargó en `run()`); `App` simplemente lo
+/// propaga para poder poseer un único `AudioManager` centralizado.
+pub(crate) struct App<'aud> {
     state: GameState,
     level_manager: LevelManager,
     session: GameSession,
@@ -21,9 +27,10 @@ pub(crate) struct App {
     welcome: WelcomeScreen,
     level_select: LevelSelectScreen,
     victory: VictoryScreen,
+    audio: AudioManager<'aud>,
 }
 
-impl App {
+impl<'aud> App<'aud> {
     fn new(
         level_manager: LevelManager,
         session: GameSession,
@@ -31,6 +38,7 @@ impl App {
         welcome: WelcomeScreen,
         level_select: LevelSelectScreen,
         victory: VictoryScreen,
+        audio: AudioManager<'aud>,
     ) -> Self {
         Self {
             state: GameState::Welcome,
@@ -40,10 +48,20 @@ impl App {
             welcome,
             level_select,
             victory,
+            audio,
         }
     }
 
     fn update(&mut self, window: &RaylibHandle) {
+        /*
+         * La música de fondo es independiente del `GameState`: se
+         * actualiza exactamente una vez por cuadro, sin importar la
+         * pantalla activa, para que el stream siga sonando a través
+         * de Welcome/LevelSelect/Playing/Victory. No-op seguro si no
+         * hay pista cargada.
+         */
+        self.audio.update();
+
         match self.state {
             GameState::Welcome => self.update_welcome(window),
 
@@ -540,6 +558,24 @@ pub fn run() {
 
     let victory = VictoryScreen::new(framebuffer_width, framebuffer_height);
 
+    /*
+     * Inicialización del dispositivo de audio EXACTAMENTE una vez
+     * por ejecución. Si falla (drivers ausentes, dispositivo
+     * ocupado, etc.), se reporta una única advertencia y la
+     * aplicación continúa sin música: `raylib_audio` queda en `Err`,
+     * `audio_device` en `None`, y `AudioManager::new` recibe `None`,
+     * degradando todas sus operaciones a no-ops seguros.
+     */
+    let raylib_audio = RaylibAudio::init_audio_device();
+
+    if let Err(error) = &raylib_audio {
+        eprintln!("Error al inicializar el dispositivo de audio: {error}");
+    }
+
+    let audio_device = raylib_audio.as_ref().ok();
+
+    let audio = AudioManager::new(audio_device);
+
     let mut app = App::new(
         level_manager,
         GameSession::new(level, player, BLOCK_SIZE),
@@ -547,6 +583,7 @@ pub fn run() {
         welcome,
         level_select,
         victory,
+        audio,
     );
 
     while !window.window_should_close() {
