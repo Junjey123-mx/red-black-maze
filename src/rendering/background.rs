@@ -9,6 +9,14 @@ use raylib::prelude::Color;
 /// aquí, no en el dominio.
 struct BackgroundPalette {
     ceiling_top: Color,
+
+    /// Parada intermedia opcional del degradado de cielo (banda de
+    /// humo). `None` preserva EXACTAMENTE el degradado de dos
+    /// paradas que ya usaban Crimson Entrance/el fondo heredado: es
+    /// literalmente la misma llamada a `lerp_color` de antes de
+    /// Tarea 34, sin ninguna rama nueva para esos temas.
+    ceiling_mid: Option<Color>,
+
     ceiling_horizon: Color,
     floor_near: Color,
     floor_far: Color,
@@ -16,8 +24,8 @@ struct BackgroundPalette {
 }
 
 /// Apariencia plana previa a Tarea 33, preservada EXACTAMENTE para
-/// Black Club/House of Cards hasta que sus propias tareas (T34/T35)
-/// definan su paleta final.
+/// House of Cards hasta que su propia Tarea 35 defina su paleta
+/// final.
 const LEGACY_CEILING: Color = Color::new(28, 20, 24, 255);
 const LEGACY_FLOOR: Color = Color::new(12, 12, 16, 255);
 
@@ -27,20 +35,38 @@ fn palette_for_theme(theme: LevelTheme) -> BackgroundPalette {
     match theme {
         LevelTheme::CrimsonEntrance => BackgroundPalette {
             ceiling_top: Color::new(0x05, 0x05, 0x05, 255),
+            ceiling_mid: None,
             ceiling_horizon: Color::new(0x3A, 0x07, 0x0A, 255),
             floor_near: Color::new(0x25, 0x25, 0x25, 255),
             floor_far: Color::new(0x1A, 0x1A, 0x1A, 255),
             floor_accent: Color::new(0x4A, 0x0B, 0x10, 255),
         },
 
-        // Black Club y House of Cards conservan la apariencia previa
-        // a Tarea 33 sin cambios: `ceiling_top == ceiling_horizon` y
-        // `floor_near == floor_far == floor_accent` colapsan la
-        // interpolación/las bandas de acento a un color plano
-        // idéntico al que ya dibujaba `draw_background` antes de
-        // existir esta paleta.
-        LevelTheme::BlackClub | LevelTheme::HouseOfCards => BackgroundPalette {
+        // Negro casi puro -> gris humo (parada intermedia) -> rojo
+        // vino casi negro, tal como especifica el Plan Maestro de
+        // Tarea 34. El suelo reutiliza EXACTAMENTE el mismo mecanismo
+        // de tres colores (near/far/accent) que ya introdujo Tarea
+        // 33 para el suelo de Crimson: ningún código de dibujo nuevo
+        // fue necesario para el suelo.
+        LevelTheme::BlackClub => BackgroundPalette {
+            ceiling_top: Color::new(0x03, 0x03, 0x03, 255),
+            ceiling_mid: Some(Color::new(0x1A, 0x1A, 0x1A, 255)),
+            ceiling_horizon: Color::new(0x22, 0x04, 0x06, 255),
+            floor_near: Color::new(0x20, 0x20, 0x20, 255),
+            floor_far: Color::new(0x2B, 0x2B, 0x2B, 255),
+            floor_accent: Color::new(0x3E, 0x0A, 0x0F, 255),
+        },
+
+        // House of Cards conserva la apariencia previa a Tarea 33
+        // sin cambios: `ceiling_top == ceiling_horizon`,
+        // `ceiling_mid == None` y `floor_near == floor_far ==
+        // floor_accent` colapsan la interpolación/las bandas de
+        // acento a un color plano idéntico al que ya dibujaba
+        // `draw_background` antes de existir esta paleta. Reservado
+        // para Tarea 35.
+        LevelTheme::HouseOfCards => BackgroundPalette {
             ceiling_top: LEGACY_CEILING,
+            ceiling_mid: None,
             ceiling_horizon: LEGACY_CEILING,
             floor_near: LEGACY_FLOOR,
             floor_far: LEGACY_FLOOR,
@@ -83,10 +109,11 @@ const FLOOR_ACCENT_ROW_PERIOD: i32 = 17;
 ///
 /// El cielo interpola linealmente desde `ceiling_top` (borde
 /// superior de pantalla) hasta `ceiling_horizon` (línea de
-/// horizonte); el suelo interpola desde `floor_near` (horizonte)
-/// hacia `floor_far` (borde inferior), con bandas horizontales
-/// estáticas y dispersas de `floor_accent`. Para Black Club/House of
-/// Cards esto colapsa exactamente al color plano previo a Tarea 33
+/// horizonte), con una parada intermedia opcional `ceiling_mid`; el
+/// suelo interpola desde `floor_near` (horizonte) hacia `floor_far`
+/// (borde inferior), con bandas horizontales estáticas y dispersas
+/// de `floor_accent`. Para House of Cards (aún sin tema final) esto
+/// colapsa exactamente al color plano previo a Tarea 33
 /// (§`palette_for_theme`).
 pub(super) fn draw_background(framebuffer: &mut Framebuffer, theme: LevelTheme) {
     let width = framebuffer.width();
@@ -102,7 +129,24 @@ pub(super) fn draw_background(framebuffer: &mut Framebuffer, theme: LevelTheme) 
             0.0
         };
 
-        let color = lerp_color(palette.ceiling_top, palette.ceiling_horizon, t);
+        let color = match palette.ceiling_mid {
+            /*
+             * Degradado de tres paradas (0.0 -> 0.5 -> 1.0): negro
+             * casi puro -> humo -> rojo vino casi negro. Es la misma
+             * `lerp_color` pura de dos argumentos, aplicada dos
+             * veces sobre la mitad correspondiente de `t`.
+             */
+            Some(mid) if t < 0.5 => lerp_color(palette.ceiling_top, mid, t / 0.5),
+
+            Some(mid) => lerp_color(mid, palette.ceiling_horizon, (t - 0.5) / 0.5),
+
+            /*
+             * Sin parada intermedia: degradado clásico de dos
+             * paradas, IDÉNTICO al que usaban Crimson Entrance y el
+             * fondo heredado antes de Tarea 34.
+             */
+            None => lerp_color(palette.ceiling_top, palette.ceiling_horizon, t),
+        };
 
         framebuffer.set_current_color(color);
 
@@ -186,10 +230,11 @@ mod tests {
     }
 
     #[test]
-    fn black_club_still_selects_the_legacy_flat_background() {
-        let palette = palette_for_theme(LevelTheme::BlackClub);
+    fn house_of_cards_still_selects_the_legacy_flat_background() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
         assert_eq!(palette.ceiling_top, LEGACY_CEILING);
+        assert_eq!(palette.ceiling_mid, None);
         assert_eq!(palette.ceiling_horizon, LEGACY_CEILING);
         assert_eq!(palette.floor_near, LEGACY_FLOOR);
         assert_eq!(palette.floor_far, LEGACY_FLOOR);
@@ -197,13 +242,27 @@ mod tests {
     }
 
     #[test]
-    fn house_of_cards_still_selects_the_legacy_flat_background() {
-        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+    fn crimson_entrance_ceiling_has_no_mid_stop() {
+        let palette = palette_for_theme(LevelTheme::CrimsonEntrance);
 
-        assert_eq!(palette.ceiling_top, LEGACY_CEILING);
-        assert_eq!(palette.ceiling_horizon, LEGACY_CEILING);
-        assert_eq!(palette.floor_near, LEGACY_FLOOR);
-        assert_eq!(palette.floor_far, LEGACY_FLOOR);
-        assert_eq!(palette.floor_accent, LEGACY_FLOOR);
+        assert_eq!(palette.ceiling_mid, None);
+    }
+
+    #[test]
+    fn black_club_ceiling_matches_the_exact_planned_three_stop_gradient() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(palette.ceiling_top, Color::new(0x03, 0x03, 0x03, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x1A, 0x1A, 0x1A, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x22, 0x04, 0x06, 255));
+    }
+
+    #[test]
+    fn black_club_floor_palette_matches_the_plan_maestro_family() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(palette.floor_near, Color::new(0x20, 0x20, 0x20, 255));
+        assert_eq!(palette.floor_far, Color::new(0x2B, 0x2B, 0x2B, 255));
+        assert_eq!(palette.floor_accent, Color::new(0x3E, 0x0A, 0x0F, 255));
     }
 }
