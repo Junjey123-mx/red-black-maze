@@ -1,12 +1,14 @@
 use crate::audio::{AudioManager, SoundEffect};
-use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
+use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
 use crate::raycasting::{HitscanHit, HitscanTarget, cast_hitscan};
 use crate::rendering::TextureManager;
 use crate::rendering::framebuffer::Framebuffer;
-use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
+use crate::rendering::map_2d::{
+    compute_display_cell_size, render_fov_rays, render_maze, render_player,
+};
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
 use crate::ui::{LevelSelectScreen, VictoryAction, VictoryScreen, WelcomeScreen};
@@ -502,18 +504,41 @@ impl<'aud> App<'aud> {
         match self.session.view_mode {
             ViewMode::Map2D => {
                 /*
-                 * Vista superior.
+                 * Vista superior. `display_cell_size` (Tarea 35)
+                 * escala el nivel COMPLETO para que quepa dentro de
+                 * la resolución lógica fija del framebuffer,
+                 * independientemente de sus dimensiones reales
+                 * (13×9 sigue usando 48px/celda tal como antes;
+                 * House of Cards, 17×13, usa una celda más pequeña).
+                 * `BLOCK_SIZE` sigue siendo la única escala de MUNDO
+                 * usada por colisión/raycasting/posición del
+                 * jugador.
                  */
-                render_maze(framebuffer, &self.session.level, BLOCK_SIZE);
+                let display_cell_size = compute_display_cell_size(
+                    framebuffer.width(),
+                    framebuffer.height(),
+                    self.session.level.width(),
+                    self.session.level.height(),
+                    BLOCK_SIZE,
+                );
+
+                render_maze(framebuffer, &self.session.level, display_cell_size);
 
                 render_fov_rays(
                     framebuffer,
                     &self.session.level,
                     &self.session.player,
                     MAP_RAYS,
+                    display_cell_size,
+                    BLOCK_SIZE,
                 );
 
-                render_player(framebuffer, &self.session.player);
+                render_player(
+                    framebuffer,
+                    &self.session.player,
+                    display_cell_size,
+                    BLOCK_SIZE,
+                );
             }
 
             ViewMode::World3D => {
@@ -593,14 +618,20 @@ pub fn run() {
         }
     };
 
-    let maze_height = level.height();
-    let maze_width = level.width();
+    /*
+     * Resolución lógica FIJA (Tarea 35): independiente de las
+     * dimensiones de `level`. Antes se derivaba de
+     * `level.width()/height() * BLOCK_SIZE`, acoplando el tamaño de
+     * ventana al nivel inicial; con niveles de tamaños distintos
+     * (Crimson/Black Club en 13×9, House of Cards en 17×13) ese
+     * acoplamiento ya no tiene sentido. `Map2D` (que sí necesita
+     * encajar el nivel completo en esta resolución fija) resuelve su
+     * propia escala de visualización por separado; el framebuffer en
+     * sí nunca cambia de tamaño según el nivel activo.
+     */
+    let framebuffer_width = FRAMEBUFFER_WIDTH;
 
-    let framebuffer_width =
-        i32::try_from(maze_width * BLOCK_SIZE).expect("El ancho del laberinto es demasiado grande");
-
-    let framebuffer_height = i32::try_from(maze_height * BLOCK_SIZE)
-        .expect("La altura del laberinto es demasiado grande");
+    let framebuffer_height = FRAMEBUFFER_HEIGHT;
 
     let player = Player::from_level(&level, BLOCK_SIZE);
 

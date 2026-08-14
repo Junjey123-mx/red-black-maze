@@ -21,13 +21,25 @@ struct BackgroundPalette {
     floor_near: Color,
     floor_far: Color,
     floor_accent: Color,
+
+    /// Estrategia de dibujo del suelo. Pertenece EXCLUSIVAMENTE a
+    /// esta capa de rendering (nunca a `world`/`LevelTheme`): es
+    /// pura decisión de presentación.
+    floor_pattern: FloorPattern,
 }
 
-/// Apariencia plana previa a Tarea 33, preservada EXACTAMENTE para
-/// House of Cards hasta que su propia Tarea 35 defina su paleta
-/// final.
-const LEGACY_CEILING: Color = Color::new(28, 20, 24, 255);
-const LEGACY_FLOOR: Color = Color::new(12, 12, 16, 255);
+/// Estrategia de dibujo del suelo de la vista 3D.
+///
+/// `Bands`: el mecanismo original de Tarea 33 (interpolación
+/// horizonte->fondo + bandas horizontales dispersas de acento).
+/// `GeometricMosaic`: patrón ornamental estático adicional para
+/// House of Cards (Tarea 35), basado únicamente en coordenadas de
+/// píxel de pantalla.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloorPattern {
+    Bands,
+    GeometricMosaic,
+}
 
 /// Traduce la identidad semántica de tema hacia su paleta concreta
 /// de colores. Única correspondencia tema -> colores del proyecto.
@@ -40,6 +52,7 @@ fn palette_for_theme(theme: LevelTheme) -> BackgroundPalette {
             floor_near: Color::new(0x25, 0x25, 0x25, 255),
             floor_far: Color::new(0x1A, 0x1A, 0x1A, 255),
             floor_accent: Color::new(0x4A, 0x0B, 0x10, 255),
+            floor_pattern: FloorPattern::Bands,
         },
 
         // Negro casi puro -> gris humo (parada intermedia) -> rojo
@@ -55,22 +68,23 @@ fn palette_for_theme(theme: LevelTheme) -> BackgroundPalette {
             floor_near: Color::new(0x20, 0x20, 0x20, 255),
             floor_far: Color::new(0x2B, 0x2B, 0x2B, 255),
             floor_accent: Color::new(0x3E, 0x0A, 0x0F, 255),
+            floor_pattern: FloorPattern::Bands,
         },
 
-        // House of Cards conserva la apariencia previa a Tarea 33
-        // sin cambios: `ceiling_top == ceiling_horizon`,
-        // `ceiling_mid == None` y `floor_near == floor_far ==
-        // floor_accent` colapsan la interpolación/las bandas de
-        // acento a un color plano idéntico al que ya dibujaba
-        // `draw_background` antes de existir esta paleta. Reservado
-        // para Tarea 35.
+        // Negro absoluto -> rojo vino profundo (parada intermedia)
+        // -> rojo sangre prominente en el horizonte: la progresión
+        // final de intensidad del Plan Maestro para Tarea 35. El
+        // suelo usa el mosaico geométrico ornamental (único tema que
+        // lo hace), reflejando que House of Cards es visualmente más
+        // rico que Crimson Entrance/Black Club.
         LevelTheme::HouseOfCards => BackgroundPalette {
-            ceiling_top: LEGACY_CEILING,
-            ceiling_mid: None,
-            ceiling_horizon: LEGACY_CEILING,
-            floor_near: LEGACY_FLOOR,
-            floor_far: LEGACY_FLOOR,
-            floor_accent: LEGACY_FLOOR,
+            ceiling_top: Color::new(0x00, 0x00, 0x00, 255),
+            ceiling_mid: Some(Color::new(0x30, 0x05, 0x08, 255)),
+            ceiling_horizon: Color::new(0x6B, 0x0D, 0x14, 255),
+            floor_near: Color::new(0x22, 0x22, 0x22, 255),
+            floor_far: Color::new(0x14, 0x14, 0x14, 255),
+            floor_accent: Color::new(0x4C, 0x0B, 0x10, 255),
+            floor_pattern: FloorPattern::GeometricMosaic,
         },
     }
 }
@@ -104,6 +118,23 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
 /// tiempo, por lo que no anima ni parpadea.
 const FLOOR_ACCENT_ROW_PERIOD: i32 = 17;
 
+/// Separación, en píxeles de pantalla, de la retícula diagonal del
+/// mosaico geométrico de House of Cards.
+const MOSAIC_PERIOD: i32 = 24;
+
+/// Patrón ornamental estático de House of Cards: marca únicamente
+/// las intersecciones de dos familias de líneas diagonales
+/// espaciadas `MOSAIC_PERIOD` píxeles entre sí, produciendo una
+/// retícula dispersa de puntos (motivo tipo "diamante de carta") en
+/// vez de una cuadrícula densa y brillante.
+///
+/// Función pura de coordenadas de PANTALLA únicamente: no depende de
+/// la posición del jugador, del tiempo ni de ninguna fuente de
+/// aleatoriedad, por lo que no anima ni parpadea.
+fn is_mosaic_accent_pixel(x: i32, y: i32) -> bool {
+    (x + y).rem_euclid(MOSAIC_PERIOD) == 0 && (x - y).rem_euclid(MOSAIC_PERIOD) == 0
+}
+
 /// Dibuja el cielo y el suelo de la vista 3D según la paleta
 /// resuelta para `theme`.
 ///
@@ -111,10 +142,9 @@ const FLOOR_ACCENT_ROW_PERIOD: i32 = 17;
 /// superior de pantalla) hasta `ceiling_horizon` (línea de
 /// horizonte), con una parada intermedia opcional `ceiling_mid`; el
 /// suelo interpola desde `floor_near` (horizonte) hacia `floor_far`
-/// (borde inferior), con bandas horizontales estáticas y dispersas
-/// de `floor_accent`. Para House of Cards (aún sin tema final) esto
-/// colapsa exactamente al color plano previo a Tarea 33
-/// (§`palette_for_theme`).
+/// (borde inferior), con acento aplicado según `floor_pattern`:
+/// bandas horizontales dispersas (`Bands`) o retícula diagonal
+/// dispersa (`GeometricMosaic`, exclusiva de House of Cards).
 pub(super) fn draw_background(framebuffer: &mut Framebuffer, theme: LevelTheme) {
     let width = framebuffer.width();
     let height = framebuffer.height();
@@ -160,16 +190,45 @@ pub(super) fn draw_background(framebuffer: &mut Framebuffer, theme: LevelTheme) 
     for y in half_height..height {
         let t = (y - half_height) as f32 / floor_span as f32;
 
-        let color = if y % FLOOR_ACCENT_ROW_PERIOD == 0 {
-            palette.floor_accent
-        } else {
-            lerp_color(palette.floor_near, palette.floor_far, t)
-        };
+        match palette.floor_pattern {
+            /*
+             * Mecanismo ORIGINAL de Tarea 33, sin cambios: una única
+             * llamada a `set_current_color` por fila.
+             */
+            FloorPattern::Bands => {
+                let color = if y % FLOOR_ACCENT_ROW_PERIOD == 0 {
+                    palette.floor_accent
+                } else {
+                    lerp_color(palette.floor_near, palette.floor_far, t)
+                };
 
-        framebuffer.set_current_color(color);
+                framebuffer.set_current_color(color);
 
-        for x in 0..width {
-            framebuffer.point(x, y);
+                for x in 0..width {
+                    framebuffer.point(x, y);
+                }
+            }
+
+            /*
+             * Mosaico geométrico: cada píxel puede requerir un color
+             * distinto (base o acento disperso), así que el color se
+             * decide dentro del bucle de columnas.
+             */
+            FloorPattern::GeometricMosaic => {
+                let base_color = lerp_color(palette.floor_near, palette.floor_far, t);
+
+                for x in 0..width {
+                    let color = if is_mosaic_accent_pixel(x, y) {
+                        palette.floor_accent
+                    } else {
+                        base_color
+                    };
+
+                    framebuffer.set_current_color(color);
+
+                    framebuffer.point(x, y);
+                }
+            }
         }
     }
 }
@@ -230,15 +289,87 @@ mod tests {
     }
 
     #[test]
-    fn house_of_cards_still_selects_the_legacy_flat_background() {
+    fn house_of_cards_ceiling_matches_the_exact_planned_three_stop_gradient() {
         let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
-        assert_eq!(palette.ceiling_top, LEGACY_CEILING);
+        assert_eq!(palette.ceiling_top, Color::new(0x00, 0x00, 0x00, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x30, 0x05, 0x08, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x6B, 0x0D, 0x14, 255));
+    }
+
+    #[test]
+    fn house_of_cards_floor_palette_matches_the_plan_maestro_family() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_eq!(palette.floor_near, Color::new(0x22, 0x22, 0x22, 255));
+        assert_eq!(palette.floor_far, Color::new(0x14, 0x14, 0x14, 255));
+        assert_eq!(palette.floor_accent, Color::new(0x4C, 0x0B, 0x10, 255));
+    }
+
+    #[test]
+    fn house_of_cards_floor_uses_the_geometric_mosaic_pattern() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_eq!(palette.floor_pattern, FloorPattern::GeometricMosaic);
+    }
+
+    #[test]
+    fn crimson_and_black_club_floors_still_use_plain_bands() {
+        assert_eq!(
+            palette_for_theme(LevelTheme::CrimsonEntrance).floor_pattern,
+            FloorPattern::Bands
+        );
+
+        assert_eq!(
+            palette_for_theme(LevelTheme::BlackClub).floor_pattern,
+            FloorPattern::Bands
+        );
+    }
+
+    #[test]
+    fn mosaic_accent_pixels_are_sparse_not_a_dense_grid() {
+        let mut accent_count = 0;
+
+        for y in 0..100 {
+            for x in 0..100 {
+                if is_mosaic_accent_pixel(x, y) {
+                    accent_count += 1;
+                }
+            }
+        }
+
+        // 10 000 muestras: la retícula dispersa debe cubrir
+        // claramente menos de una cuadrícula densa (que marcaría
+        // ~2500+ píxeles con este mismo período en una sola familia
+        // de diagonales); aquí exigimos varios órdenes de magnitud
+        // menos para confirmar que es un acento disperso, no un
+        // patrón dominante.
+        assert!(accent_count > 0);
+        assert!(accent_count < 200);
+    }
+
+    #[test]
+    fn black_club_palette_remains_exact_after_house_of_cards_changes() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(palette.ceiling_top, Color::new(0x03, 0x03, 0x03, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x1A, 0x1A, 0x1A, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x22, 0x04, 0x06, 255));
+        assert_eq!(palette.floor_near, Color::new(0x20, 0x20, 0x20, 255));
+        assert_eq!(palette.floor_far, Color::new(0x2B, 0x2B, 0x2B, 255));
+        assert_eq!(palette.floor_accent, Color::new(0x3E, 0x0A, 0x0F, 255));
+    }
+
+    #[test]
+    fn crimson_entrance_palette_remains_exact_after_house_of_cards_changes() {
+        let palette = palette_for_theme(LevelTheme::CrimsonEntrance);
+
+        assert_eq!(palette.ceiling_top, Color::new(0x05, 0x05, 0x05, 255));
         assert_eq!(palette.ceiling_mid, None);
-        assert_eq!(palette.ceiling_horizon, LEGACY_CEILING);
-        assert_eq!(palette.floor_near, LEGACY_FLOOR);
-        assert_eq!(palette.floor_far, LEGACY_FLOOR);
-        assert_eq!(palette.floor_accent, LEGACY_FLOOR);
+        assert_eq!(palette.ceiling_horizon, Color::new(0x3A, 0x07, 0x0A, 255));
+        assert_eq!(palette.floor_near, Color::new(0x25, 0x25, 0x25, 255));
+        assert_eq!(palette.floor_far, Color::new(0x1A, 0x1A, 0x1A, 255));
+        assert_eq!(palette.floor_accent, Color::new(0x4A, 0x0B, 0x10, 255));
     }
 
     #[test]
