@@ -1,5 +1,5 @@
 use crate::player::{Player, Weapon, WeaponState};
-use crate::world::{Entity, Level};
+use crate::world::{Entity, EntityDamageOutcome, EntityStateTransition, Level};
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -104,29 +104,46 @@ impl GameSession {
 
     /// Avanza el comportamiento estático (temporizador de `Hit` y
     /// reevaluación de proximidad `Idle`/`Alert`) de cada entidad
-    /// según la posición actual del jugador.
+    /// según la posición actual del jugador, y reporta ÚNICAMENTE
+    /// las transiciones de estado que realmente ocurrieron
+    /// (`Entity::update` ya distingue "cambio real" de "sin
+    /// cambio").
     ///
     /// Ninguna entidad se mueve, ataca ni persigue: esto es
     /// únicamente el temporizado/reconocimiento por distancia que
-    /// `Entity::update` ya implementa de forma pura.
-    pub(crate) fn update_entities(&mut self, delta_time: f32, block_size: usize) {
+    /// `Entity::update` ya implementa de forma pura. Este tipo de
+    /// resultado es dominio puro (`EntityStateTransition`), sin
+    /// vocabulario de audio/presentación: quien interpreta el evento
+    /// (`App`) decide qué hacer con él.
+    pub(crate) fn update_entities(
+        &mut self,
+        delta_time: f32,
+        block_size: usize,
+    ) -> Vec<EntityStateTransition> {
         let player_position = self.player.pos;
 
-        for entity in &mut self.entities {
-            entity.update(player_position, delta_time, block_size);
-        }
+        self.entities
+            .iter_mut()
+            .filter_map(|entity| entity.update(player_position, delta_time, block_size))
+            .collect()
     }
 
     /// Aplica el daño de un golpe de Dealer aceptado a la entidad
-    /// indicada, con verificación segura de límites.
+    /// indicada, con verificación segura de límites, y reporta el
+    /// resultado semántico (`EntityDamageOutcome`) para que quien
+    /// interpreta el evento (`App`) pueda distinguir un golpe real de
+    /// un evento sin efecto sin inferirlo de `EntityState`.
     ///
-    /// Un `entity_index` fuera de rango se ignora sin entrar en
-    /// pánico. La cantidad de daño y la invariante de salud/estado
-    /// son responsabilidad exclusiva de `Entity::apply_damage`; este
-    /// método solo coordina el acceso indexado seguro.
-    pub(crate) fn damage_entity(&mut self, entity_index: usize) {
-        if let Some(entity) = self.entities.get_mut(entity_index) {
-            entity.apply_damage(DEALER_DAMAGE_PER_HIT);
+    /// Un `entity_index` fuera de rango produce `EntityDamageOutcome::None`
+    /// sin entrar en pánico. La cantidad de daño y la invariante de
+    /// salud/estado son responsabilidad exclusiva de
+    /// `Entity::apply_damage`; este método solo coordina el acceso
+    /// indexado seguro.
+    pub(crate) fn damage_entity(&mut self, entity_index: usize) -> EntityDamageOutcome {
+        match self.entities.get_mut(entity_index) {
+            Some(entity) => entity.apply_damage(DEALER_DAMAGE_PER_HIT),
+
+            None => EntityDamageOutcome::None,
         }
     }
 

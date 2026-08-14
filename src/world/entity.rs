@@ -26,6 +26,33 @@ pub(crate) enum EntitySprite {
     Dealer,
 }
 
+/// Transición real de `EntityState` observada durante una llamada a
+/// `Entity::update`. Deliberadamente ajena a audio/presentación: es
+/// dominio puro (QUÉ cambió), no CÓMO se comunica al jugador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EntityStateTransition {
+    pub(crate) from: EntityState,
+    pub(crate) to: EntityState,
+}
+
+/// Resultado semántico de un intento de daño sobre una entidad, para
+/// que quien orquesta el combate (`GameSession`/`App`) distinga un
+/// golpe real de un evento sin efecto, sin inferirlo indirectamente
+/// de `EntityState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntityDamageOutcome {
+    /// La entidad ya estaba muerta, o `amount` no era positivo: no
+    /// se aplicó ningún daño.
+    None,
+
+    /// Daño no letal aplicado: la entidad sobrevive y entra/permanece
+    /// en `Hit`.
+    Hit,
+
+    /// Daño letal aplicado: la entidad acaba de morir.
+    Killed,
+}
+
 /// Vida máxima inicial de un Dealer.
 const DEALER_MAX_HEALTH: i32 = 100;
 
@@ -115,21 +142,24 @@ impl Entity {
         self.state == EntityState::Dead
     }
 
-    /// Aplica daño controlado a la entidad.
+    /// Aplica daño controlado a la entidad y reporta el resultado
+    /// semántico del intento (`EntityDamageOutcome`), para que quien
+    /// orquesta el combate pueda distinguir un golpe real de un
+    /// evento sin efecto sin inferirlo de `EntityState`.
     ///
     /// Una entidad ya `Dead` ignora cualquier daño adicional; un
-    /// `amount` no positivo también se ignora. En caso contrario la
-    /// vida se recorta con un piso de `0` (nunca queda negativa). Si
-    /// la vida llega a `0` la entidad pasa a `Dead` de forma
-    /// terminal; en caso contrario pasa a `Hit` y (re)inicia su
-    /// temporizador de golpe.
-    pub(crate) fn apply_damage(&mut self, amount: i32) {
+    /// `amount` no positivo también se ignora (`None` en ambos
+    /// casos). En caso contrario la vida se recorta con un piso de
+    /// `0` (nunca queda negativa). Si la vida llega a `0` la entidad
+    /// pasa a `Dead` de forma terminal (`Killed`); en caso contrario
+    /// pasa a `Hit` y (re)inicia su temporizador de golpe (`Hit`).
+    pub(crate) fn apply_damage(&mut self, amount: i32) -> EntityDamageOutcome {
         if self.state == EntityState::Dead {
-            return;
+            return EntityDamageOutcome::None;
         }
 
         if amount <= 0 {
-            return;
+            return EntityDamageOutcome::None;
         }
 
         self.health = (self.health - amount).max(0);
@@ -137,15 +167,23 @@ impl Entity {
         if self.health == 0 {
             self.state = EntityState::Dead;
             self.hit_time_remaining = 0.0;
+
+            EntityDamageOutcome::Killed
         } else {
             self.state = EntityState::Hit;
             self.hit_time_remaining = DEALER_HIT_DURATION_SECONDS;
+
+            EntityDamageOutcome::Hit
         }
     }
 
     /// Avanza el comportamiento estático de la entidad: decrementa
     /// el temporizador de `Hit` y, cuando ya no hay golpe activo,
     /// reevalúa `Idle`/`Alert` según la distancia al jugador.
+    /// Reporta `Some(EntityStateTransition)` únicamente cuando el
+    /// estado ACTUALMENTE cambió durante esta llamada; `None` si
+    /// permanece igual (incluyendo `Dead` y `Hit` con temporizador
+    /// aún activo).
     ///
     /// `Dead` es terminal y esta función retorna inmediatamente sin
     /// alterar nada. Mientras `hit_time_remaining` siga siendo
@@ -154,10 +192,17 @@ impl Entity {
     /// entidad no se mueve, no ataca y no persigue; esto es
     /// únicamente reconocimiento visual por distancia, sin línea de
     /// visión.
-    pub(crate) fn update(&mut self, player_position: Vector2, delta_time: f32, block_size: usize) {
+    pub(crate) fn update(
+        &mut self,
+        player_position: Vector2,
+        delta_time: f32,
+        block_size: usize,
+    ) -> Option<EntityStateTransition> {
         if self.state == EntityState::Dead {
-            return;
+            return None;
         }
+
+        let previous_state = self.state;
 
         if self.state == EntityState::Hit {
             if delta_time.is_finite() && delta_time > 0.0 {
@@ -165,7 +210,7 @@ impl Entity {
             }
 
             if self.hit_time_remaining > 0.0 {
-                return;
+                return None;
             }
         }
 
@@ -182,6 +227,15 @@ impl Entity {
         } else {
             EntityState::Idle
         };
+
+        if self.state == previous_state {
+            None
+        } else {
+            Some(EntityStateTransition {
+                from: previous_state,
+                to: self.state,
+            })
+        }
     }
 }
 
@@ -346,5 +400,183 @@ mod tests {
 
         assert_eq!(entity.state(), EntityState::Dead);
         assert!(entity.is_dead());
+    }
+
+    // --- EntityDamageOutcome ---
+
+    #[test]
+    fn non_lethal_damage_returns_hit_outcome() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        assert_eq!(entity.apply_damage(50), EntityDamageOutcome::Hit);
+        assert_eq!(entity.health(), 50);
+    }
+
+    #[test]
+    fn lethal_damage_returns_killed_outcome() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+
+        assert_eq!(entity.apply_damage(50), EntityDamageOutcome::Killed);
+        assert_eq!(entity.health(), 0);
+    }
+
+    #[test]
+    fn damage_to_dead_entity_returns_none_outcome() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert!(entity.is_dead());
+
+        assert_eq!(entity.apply_damage(50), EntityDamageOutcome::None);
+    }
+
+    #[test]
+    fn non_positive_damage_returns_none_outcome() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        assert_eq!(entity.apply_damage(0), EntityDamageOutcome::None);
+        assert_eq!(entity.apply_damage(-10), EntityDamageOutcome::None);
+        assert_eq!(entity.health(), DEALER_MAX_HEALTH);
+    }
+
+    #[test]
+    fn health_semantics_follow_100_50_0() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        assert_eq!(entity.health(), 100);
+
+        entity.apply_damage(50);
+        assert_eq!(entity.health(), 50);
+
+        entity.apply_damage(50);
+        assert_eq!(entity.health(), 0);
+    }
+
+    // --- EntityStateTransition ---
+
+    #[test]
+    fn idle_to_alert_reports_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        let transition = entity.update(near_player, 0.016, 48);
+
+        assert_eq!(
+            transition,
+            Some(EntityStateTransition {
+                from: EntityState::Idle,
+                to: EntityState::Alert,
+            })
+        );
+    }
+
+    #[test]
+    fn alert_to_idle_reports_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.016, 48);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        let transition = entity.update(far_player, 0.016, 48);
+
+        assert_eq!(
+            transition,
+            Some(EntityStateTransition {
+                from: EntityState::Alert,
+                to: EntityState::Idle,
+            })
+        );
+    }
+
+    #[test]
+    fn idle_to_idle_reports_no_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        let transition = entity.update(far_player, 0.016, 48);
+
+        assert_eq!(transition, None);
+        assert_eq!(entity.state(), EntityState::Idle);
+    }
+
+    #[test]
+    fn hit_to_idle_after_expiry_reports_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        let transition = entity.update(far_player, 0.20, 48);
+
+        assert_eq!(
+            transition,
+            Some(EntityStateTransition {
+                from: EntityState::Hit,
+                to: EntityState::Idle,
+            })
+        );
+    }
+
+    #[test]
+    fn hit_to_alert_after_expiry_reports_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        let transition = entity.update(near_player, 0.20, 48);
+
+        assert_eq!(
+            transition,
+            Some(EntityStateTransition {
+                from: EntityState::Hit,
+                to: EntityState::Alert,
+            })
+        );
+    }
+
+    #[test]
+    fn hit_still_active_reports_no_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        let transition = entity.update(near_player, 0.016, 48);
+
+        assert_eq!(transition, None);
+        assert_eq!(entity.state(), EntityState::Hit);
+    }
+
+    #[test]
+    fn dead_update_reports_no_transition() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert!(entity.is_dead());
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        let transition = entity.update(near_player, 0.5, 48);
+
+        assert_eq!(transition, None);
+        assert_eq!(entity.state(), EntityState::Dead);
     }
 }

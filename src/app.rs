@@ -1,4 +1,4 @@
-use crate::audio::AudioManager;
+use crate::audio::{AudioManager, SoundEffect};
 use crate::config::{BLOCK_SIZE, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
@@ -10,8 +10,15 @@ use crate::rendering::map_2d::{render_fov_rays, render_maze, render_player};
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
 use crate::ui::{LevelSelectScreen, VictoryAction, VictoryScreen, WelcomeScreen};
-use crate::world::{Level, LevelManager};
+use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
+
+/// Umbral de desplazamiento (al cuadrado, en píxeles^2) por encima
+/// del cual un cuadro cuenta como "el jugador se movió realmente"
+/// para efectos de pasos. Filtra el ruido de punto flotante de un
+/// movimiento bloqueado por colisión (posición idéntica) sin exigir
+/// una igualdad exacta.
+const FOOTSTEP_MOVEMENT_EPSILON_SQUARED: f32 = 0.001;
 
 /// Coordina el estado de la aplicación y la sesión de juego activa.
 ///
@@ -54,13 +61,14 @@ impl<'aud> App<'aud> {
 
     fn update(&mut self, window: &RaylibHandle) {
         /*
-         * La música de fondo es independiente del `GameState`: se
-         * actualiza exactamente una vez por cuadro, sin importar la
-         * pantalla activa, para que el stream siga sonando a través
-         * de Welcome/LevelSelect/Playing/Victory. No-op seguro si no
-         * hay pista cargada.
+         * La música de fondo y los cooldowns anti-spam de audio son
+         * independientes del `GameState`: se actualizan exactamente
+         * una vez por cuadro, sin importar la pantalla activa, para
+         * que el stream siga sonando a través de
+         * Welcome/LevelSelect/Playing/Victory. No-op seguro si no
+         * hay pista/efectos cargados.
          */
-        self.audio.update();
+        self.audio.update(window.get_frame_time());
 
         match self.state {
             GameState::Welcome => self.update_welcome(window),
@@ -94,6 +102,8 @@ impl<'aud> App<'aud> {
             || window.is_key_pressed(KeyboardKey::KEY_SPACE)
         {
             self.state = GameState::LevelSelect;
+
+            self.audio.play_sound(SoundEffect::MenuSelect);
         }
     }
 
@@ -116,17 +126,37 @@ impl<'aud> App<'aud> {
         }
 
         if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            let selection_before = self.level_select.selected_index();
+
             self.level_select
                 .select_previous(self.level_manager.level_count());
+
+            if self.level_select.selected_index() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
         }
 
         if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
         {
+            let selection_before = self.level_select.selected_index();
+
             self.level_select
                 .select_next(self.level_manager.level_count());
+
+            if self.level_select.selected_index() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
         }
 
+        /*
+         * La confirmación `MenuSelect` corresponde a la ACTIVACIÓN
+         * del menú (la pulsación de ENTER en sí), no al éxito de la
+         * carga: incluso si `start_selected_level` falla y reporta su
+         * propio error, el usuario sí activó la acción.
+         */
         if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            self.audio.play_sound(SoundEffect::MenuSelect);
+
             self.start_selected_level();
         }
     }
@@ -161,14 +191,30 @@ impl<'aud> App<'aud> {
 
     fn update_playing(&mut self, window: &RaylibHandle) {
         /*
-         * Movimiento y rotación del jugador.
+         * Movimiento y rotación del jugador. Se observa la posición
+         * antes/después para alimentar la cadencia de pasos con
+         * desplazamiento REAL: un jugador empujando contra una pared
+         * no produce una posición distinta, así que no cuenta como
+         * movimiento aunque W/A/S/D esté mantenido.
          */
+        let position_before = self.session.player.pos;
+
         process_events(
             window,
             &mut self.session.player,
             &self.session.level,
             BLOCK_SIZE,
         );
+
+        let position_after = self.session.player.pos;
+
+        let dx = position_after.x - position_before.x;
+
+        let dy = position_after.y - position_before.y;
+
+        let moved = (dx * dx + dy * dy) > FOOTSTEP_MOVEMENT_EPSILON_SQUARED;
+
+        self.audio.update_footsteps(moved, window.get_frame_time());
 
         /*
          * Comprobación de meta DESPUÉS del movimiento de este
@@ -177,12 +223,18 @@ impl<'aud> App<'aud> {
          * selección de Victoria según si existe un nivel siguiente
          * (Tarea 30), y el `return` inmediato evita que el resto de
          * esta función (arma, entidades, hitscan, alternar vista)
-         * siga ejecutando gameplay sobre un nivel ya completado.
+         * siga ejecutando gameplay sobre un nivel ya completado. El
+         * efecto `Victory` suena EXACTAMENTE en esta transición
+         * (Playing -> Victory causada por la meta), nunca en cuadros
+         * posteriores mientras la pantalla de Victoria ya está
+         * activa.
          */
         if self.session.has_reached_goal(BLOCK_SIZE) {
             self.victory.on_enter(self.level_manager.has_next());
 
             self.state = GameState::Victory;
+
+            self.audio.play_sound(SoundEffect::Victory);
 
             return;
         }
@@ -213,8 +265,27 @@ impl<'aud> App<'aud> {
          * mismo cuadro, sin que la reevaluación de este mismo cuadro
          * lo consuma primero.
          */
-        self.session
-            .update_entities(window.get_frame_time(), BLOCK_SIZE);
+        /*
+         * `update_entities` reporta solo las transiciones de estado
+         * que REALMENTE ocurrieron este cuadro (dominio puro, sin
+         * vocabulario de audio). Aquí, y únicamente aquí, se traduce
+         * cada transición de reconocimiento/recuperación a su efecto
+         * de sonido: `-> Alert` sí, `-> Idle` sí; `-> Hit`/`-> Dead`
+         * NO se mapean desde esta vía porque esos ya se resuelven
+         * como resultado explícito de `damage_entity` más abajo.
+         */
+        for transition in self
+            .session
+            .update_entities(window.get_frame_time(), BLOCK_SIZE)
+        {
+            match transition.to {
+                EntityState::Alert => self.audio.play_sound(SoundEffect::EnemyAlert),
+
+                EntityState::Idle => self.audio.play_sound(SoundEffect::EnemyIdle),
+
+                EntityState::Hit | EntityState::Dead => {}
+            }
+        }
 
         /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
@@ -235,6 +306,16 @@ impl<'aud> App<'aud> {
         if window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
             && self.session.try_fire_weapon()
         {
+            /*
+             * `Shoot` representa el disparo del arma en sí, ya
+             * aceptado por `try_fire_weapon` (cooldown agotado y
+             * arma `Idle`). Suena exactamente una vez aquí,
+             * independientemente de qué resuelva después el
+             * hitscan: un disparo aceptado con impacto de pared o de
+             * Dealer todavía produce exactamente un `Shoot`.
+             */
+            self.audio.play_sound(SoundEffect::Shoot);
+
             let mut targets: Vec<HitscanTarget> = Vec::new();
 
             let mut target_entity_indices: Vec<usize> = Vec::new();
@@ -255,16 +336,36 @@ impl<'aud> App<'aud> {
             let shot_result = cast_hitscan(&self.session.level, &self.session.player, &targets);
 
             /*
-             * Un impacto de pared/fallo no produce daño de entidad.
-             * Un impacto de blanco resuelve exactamente un Dealer:
-             * el hitscan ya decidió cuál es el más cercano antes de
-             * la pared, así que aquí solo se traduce ese índice
-             * filtrado de vuelta al índice real y se aplica el daño
-             * controlado a través de `GameSession`.
+             * Un impacto de pared produce `WallHit` y ningún daño de
+             * entidad. Un impacto de blanco resuelve exactamente un
+             * Dealer: el hitscan ya decidió cuál es el más cercano
+             * antes de la pared, así que aquí solo se traduce ese
+             * índice filtrado de vuelta al índice real y se aplica
+             * el daño controlado a través de `GameSession`, cuyo
+             * resultado semántico (`EntityDamageOutcome`) decide
+             * `EnemyHit` (no letal) o `EnemyDeath` (letal) sin
+             * inferirlo del `EntityState` resultante. Un golpe letal
+             * nunca también reproduce `EnemyHit`.
              */
-            if let HitscanHit::Target { target_index, .. } = shot_result {
-                if let Some(&entity_index) = target_entity_indices.get(target_index) {
-                    self.session.damage_entity(entity_index);
+            match shot_result {
+                HitscanHit::Target { target_index, .. } => {
+                    if let Some(&entity_index) = target_entity_indices.get(target_index) {
+                        match self.session.damage_entity(entity_index) {
+                            EntityDamageOutcome::Hit => {
+                                self.audio.play_sound(SoundEffect::EnemyHit);
+                            }
+
+                            EntityDamageOutcome::Killed => {
+                                self.audio.play_sound(SoundEffect::EnemyDeath);
+                            }
+
+                            EntityDamageOutcome::None => {}
+                        }
+                    }
+                }
+
+                HitscanHit::Wall(_) => {
+                    self.audio.play_sound(SoundEffect::WallHit);
                 }
             }
         }
@@ -299,16 +400,36 @@ impl<'aud> App<'aud> {
         let has_next_level = self.level_manager.has_next();
 
         if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            let selection_before = self.victory.selected_index();
+
             self.victory.select_previous(has_next_level);
+
+            if self.victory.selected_index() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
         }
 
         if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
         {
+            let selection_before = self.victory.selected_index();
+
             self.victory.select_next(has_next_level);
+
+            if self.victory.selected_index() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
         }
 
+        /*
+         * `MenuSelect` solo suena para una acción EJECUTABLE:
+         * `selected_action` ya retorna `None` para `NEXT LEVEL`
+         * deshabilitado en el nivel final, así que esa fila nunca
+         * llega a reproducir el sonido.
+         */
         if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
             if let Some(action) = self.victory.selected_action(has_next_level) {
+                self.audio.play_sound(SoundEffect::MenuSelect);
+
                 self.perform_victory_action(action);
             }
         }
