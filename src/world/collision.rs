@@ -20,7 +20,7 @@ fn is_point_walkable(level: &Level, x: f32, y: f32, block_size: usize) -> bool {
 ///
 /// Esto evita que solamente el centro del jugador sea considerado
 /// y que sus bordes atraviesen una pared.
-pub(crate) fn can_occupy(level: &Level, x: f32, y: f32, block_size: usize) -> bool {
+pub fn can_occupy(level: &Level, x: f32, y: f32, block_size: usize) -> bool {
     let collision_points = [
         (x - COLLISION_RADIUS, y - COLLISION_RADIUS),
         (x + COLLISION_RADIUS, y - COLLISION_RADIUS),

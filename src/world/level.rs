@@ -6,7 +6,7 @@ use super::tile::Tile;
 
 /// Error al cargar o validar un nivel.
 #[derive(Debug, Clone)]
-pub(crate) enum LevelError {
+pub enum LevelError {
     Empty,
     EmptyFirstRow,
     InconsistentRowWidth {
@@ -52,7 +52,7 @@ impl fmt::Display for LevelError {
 /// `Level` es la fuente de verdad en tiempo de ejecución del mapa:
 /// descubre la celda de aparición del jugador y la meta para que
 /// los demás sistemas no tengan que buscarlas por su cuenta.
-pub(crate) struct Level {
+pub struct Level {
     cells: Vec<Vec<char>>,
     width: usize,
     height: usize,
@@ -64,7 +64,7 @@ pub(crate) struct Level {
 
 impl Level {
     /// Carga y valida un nivel desde un archivo de texto.
-    pub(crate) fn load(filename: &str) -> Result<Self, LevelError> {
+    pub fn load(filename: &str) -> Result<Self, LevelError> {
         let file = File::open(filename).expect("No se pudo abrir el archivo del laberinto");
 
         let reader = BufReader::new(file);
@@ -157,17 +157,17 @@ impl Level {
     }
 
     /// Ancho del nivel en celdas.
-    pub(crate) fn width(&self) -> usize {
+    pub fn width(&self) -> usize {
         self.width
     }
 
     /// Alto del nivel en celdas.
-    pub(crate) fn height(&self) -> usize {
+    pub fn height(&self) -> usize {
         self.height
     }
 
     /// Acceso seguro al carácter crudo de una celda.
-    pub(crate) fn cell_at(&self, row: usize, column: usize) -> Option<char> {
+    pub fn cell_at(&self, row: usize, column: usize) -> Option<char> {
         self.cells.get(row).and_then(|row| row.get(column)).copied()
     }
 
@@ -181,17 +181,17 @@ impl Level {
     ///
     /// Retorna `false` para posiciones fuera de los límites del
     /// nivel y para cualquier carácter no reconocido.
-    pub(crate) fn is_walkable(&self, row: usize, column: usize) -> bool {
+    pub fn is_walkable(&self, row: usize, column: usize) -> bool {
         self.tile_at(row, column).is_some_and(Tile::is_walkable)
     }
 
     /// Posición (fila, columna) de la celda de aparición del jugador.
-    pub(crate) fn player_spawn(&self) -> (usize, usize) {
+    pub fn player_spawn(&self) -> (usize, usize) {
         self.player_spawn
     }
 
     /// Posición (fila, columna) de la meta.
-    pub(crate) fn goal(&self) -> (usize, usize) {
+    pub fn goal(&self) -> (usize, usize) {
         self.goal
     }
 
