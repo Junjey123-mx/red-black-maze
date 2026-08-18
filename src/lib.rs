@@ -10,4 +10,9 @@ pub mod world;
 
 // Compatibilidad temporal: rendering::map_2d y rendering::world_3d
 // todavía dependen de este módulo hasta su migración en tareas futuras.
-mod player;
+//
+// `pub` desde Tarea 37: `Player` es el tipo que `cast_ray`/
+// `cast_hitscan` toman como parámetro; para que esas funciones
+// públicas sean genuinamente invocables desde `tests/`, `Player`
+// debe ser alcanzable por una ruta pública.
+pub mod player;

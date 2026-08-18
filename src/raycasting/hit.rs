@@ -2,7 +2,7 @@ use raylib::prelude::Vector2;
 
 /// Resultado del cálculo de un único rayo.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RayHit {
+pub struct RayHit {
     /// Distancia desde el jugador hasta el punto exacto de impacto.
     pub(crate) distance: f32,
 
@@ -15,4 +15,21 @@ pub(crate) struct RayHit {
     /// Coordenada horizontal normalizada a lo largo de la cara
     /// golpeada, en el rango `[0.0, 1.0)`.
     pub(crate) texture_offset: f32,
+}
+
+impl RayHit {
+    /// Distancia desde el jugador hasta el punto exacto de impacto.
+    pub fn distance(&self) -> f32 {
+        self.distance
+    }
+
+    /// Carácter de la pared golpeada.
+    pub fn tile(&self) -> char {
+        self.tile
+    }
+
+    /// Posición exacta del impacto en el borde de la celda.
+    pub fn position(&self) -> Vector2 {
+        self.position
+    }
 }

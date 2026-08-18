@@ -2,7 +2,7 @@ use super::background::draw_background;
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::raycasting::cast_ray;
+use crate::raycasting::{cast_ray, ray_angle_for_column};
 use crate::world::{Level, LevelTheme};
 use raylib::prelude::Color;
 
@@ -157,18 +157,19 @@ pub(crate) fn render_world(
      * Cada columna de la pantalla representa un rayo.
      */
     for screen_x in 0..screen_width {
-        let ray_fraction = (screen_x as f32 + 0.5) / screen_width as f32;
-
         /*
-         * Distribuir el rayo desde:
-         *
-         * a - fov/2
-         *
-         * hasta:
-         *
-         * a + fov/2
+         * Distribuye el rayo de esta columna a lo largo del abanico
+         * de FOV, desde `a - fov/2` hasta `a + fov/2`
+         * (`raycasting::ray_angle_for_column`, extraída en Tarea 37
+         * a partir de esta misma fórmula, sin cambio de
+         * comportamiento).
          */
-        let ray_angle = player.a - player.fov / 2.0 + player.fov * ray_fraction;
+        let ray_angle = ray_angle_for_column(
+            player.a,
+            screen_x as usize,
+            screen_width as usize,
+            player.fov,
+        );
 
         let ray_hit = cast_ray(level, player, ray_angle);
 

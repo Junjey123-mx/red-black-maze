@@ -232,11 +232,22 @@ impl<'aud> App<'aud> {
          * activa.
          */
         if self.session.has_reached_goal(BLOCK_SIZE) {
-            self.victory.on_enter(self.level_manager.has_next());
+            let previous_state = self.state;
 
-            self.state = GameState::Victory;
+            /*
+             * `GameState::after_goal_check` (Tarea 37) es la ÚNICA
+             * regla de decisión de la transición Playing -> Victory;
+             * `App` solo coordina los efectos secundarios (selección
+             * de Victoria, sonido) cuando esa regla realmente
+             * produjo un cambio de estado.
+             */
+            self.state = previous_state.after_goal_check(true);
 
-            self.audio.play_sound(SoundEffect::Victory);
+            if self.state != previous_state {
+                self.victory.on_enter(self.level_manager.has_next());
+
+                self.audio.play_sound(SoundEffect::Victory);
+            }
 
             return;
         }

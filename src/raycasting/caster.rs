@@ -13,7 +13,7 @@ const DIRECTION_EPSILON: f32 = 1e-6;
 /// Lanza un único rayo desde el jugador y calcula dónde impacta.
 ///
 /// `ray_angle` representa la dirección específica del rayo.
-pub(crate) fn cast_ray(level: &Level, player: &Player, ray_angle: f32) -> RayHit {
+pub fn cast_ray(level: &Level, player: &Player, ray_angle: f32) -> RayHit {
     const STEP_SIZE: f32 = 1.0;
 
     let direction_x = ray_angle.cos();

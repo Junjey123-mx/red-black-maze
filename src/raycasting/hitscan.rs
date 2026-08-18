@@ -14,12 +14,12 @@ use super::{RayHit, cast_ray};
 /// puede probar intersección de rayo. Tarea 23 construirá estos
 /// valores a partir de entidades reales.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HitscanTarget {
+pub struct HitscanTarget {
     /// Centro del círculo blanco, en píxeles de mundo.
-    pub(crate) center: Vector2,
+    pub center: Vector2,
 
     /// Radio del círculo blanco, en píxeles de mundo.
-    pub(crate) radius: f32,
+    pub radius: f32,
 }
 
 /// Resultado de un disparo hitscan: o bien impactó el blanco
@@ -28,7 +28,7 @@ pub(crate) struct HitscanTarget {
 /// de la pared y el disparo se resuelve contra el rayo de pared ya
 /// existente.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum HitscanHit {
+pub enum HitscanHit {
     Target { target_index: usize, distance: f32 },
     Wall(RayHit),
 }
@@ -134,11 +134,7 @@ fn nearest_target_before_wall(
 /// geométrico más cercano de `targets` que quede estrictamente antes
 /// de esa distancia de pared. Si ningún blanco cumple esa condición,
 /// el disparo se resuelve contra la pared.
-pub(crate) fn cast_hitscan(
-    level: &Level,
-    player: &Player,
-    targets: &[HitscanTarget],
-) -> HitscanHit {
+pub fn cast_hitscan(level: &Level, player: &Player, targets: &[HitscanTarget]) -> HitscanHit {
     let wall_hit = cast_ray(level, player, player.a);
 
     let direction = Vector2::new(player.a.cos(), player.a.sin());

@@ -26,6 +26,23 @@ pub struct Player {
 }
 
 impl Player {
+    /// Construye un jugador en una posición y orientación
+    /// arbitrarias, con vida máxima inicial.
+    ///
+    /// Constructor de dominio genérico (Tarea 37): a diferencia de
+    /// `from_level`, no depende de descubrir una celda de aparición
+    /// en un `Level`, por lo que sirve para construir jugadores en
+    /// posiciones exactas conocidas (por ejemplo, geometría de
+    /// prueba determinista para raycasting/hitscan).
+    pub fn new(pos: Vector2, a: f32, fov: f32) -> Self {
+        Self {
+            pos,
+            a,
+            fov,
+            health: PLAYER_MAX_HEALTH,
+        }
+    }
+
     /// Coloca al jugador en el centro de la celda de aparición
     /// que el nivel ya descubrió.
     pub(crate) fn from_level(level: &Level, block_size: usize) -> Self {

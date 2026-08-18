@@ -44,7 +44,7 @@ const LEVELS: [LevelInfo; 3] = [
 
 /// Error al administrar el catálogo de niveles.
 #[derive(Debug, Clone)]
-pub(crate) enum LevelManagerError {
+pub enum LevelManagerError {
     InvalidIndex(usize),
     Load(LevelError),
 }
@@ -62,14 +62,14 @@ impl fmt::Display for LevelManagerError {
 }
 
 /// Administra el catálogo de niveles y cuál está activo.
-pub(crate) struct LevelManager {
+pub struct LevelManager {
     levels: &'static [LevelInfo],
     current: usize,
 }
 
 impl LevelManager {
     /// Crea el administrador con el catálogo explícito de niveles.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             levels: &LEVELS,
             current: 0,
@@ -102,7 +102,7 @@ impl LevelManager {
     /// Carga explícitamente el nivel indicado por índice.
     ///
     /// `current` solo se actualiza después de una carga exitosa.
-    pub(crate) fn load(&mut self, index: usize) -> Result<Level, LevelManagerError> {
+    pub fn load(&mut self, index: usize) -> Result<Level, LevelManagerError> {
         let info = self
             .levels
             .get(index)
@@ -116,7 +116,7 @@ impl LevelManager {
     }
 
     /// Vuelve a cargar el nivel actual desde disco.
-    pub(crate) fn restart(&mut self) -> Result<Level, LevelManagerError> {
+    pub fn restart(&mut self) -> Result<Level, LevelManagerError> {
         self.load(self.current)
     }
 
@@ -127,7 +127,7 @@ impl LevelManager {
     /// ningún archivo y no expone ninguna ruta. Pensada para que la
     /// UI (Victoria) sepa, ANTES de activar `NEXT LEVEL`, si esa
     /// acción está disponible.
-    pub(crate) fn has_next(&self) -> bool {
+    pub fn has_next(&self) -> bool {
         self.current + 1 < self.levels.len()
     }
 
@@ -135,7 +135,7 @@ impl LevelManager {
     ///
     /// Retorna `Ok(None)` sin cambiar `current` cuando el nivel
     /// actual ya es el último del catálogo.
-    pub(crate) fn next(&mut self) -> Result<Option<Level>, LevelManagerError> {
+    pub fn next(&mut self) -> Result<Option<Level>, LevelManagerError> {
         let next_index = self.current + 1;
 
         if next_index >= self.levels.len() {
