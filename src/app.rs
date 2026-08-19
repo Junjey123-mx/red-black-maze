@@ -715,7 +715,26 @@ pub fn run() {
      */
     window.set_exit_key(None);
 
-    let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
+    /*
+     * Tarea 38: la textura de presentación GPU persistente se crea
+     * aquí, UNA sola vez, junto con el framebuffer lógico; cada
+     * cuadro del bucle principal solo actualiza sus píxeles
+     * (`Framebuffer::swap_buffers`), sin volver a crear/destruir
+     * ningún recurso GPU.
+     */
+    let mut framebuffer = match Framebuffer::new(
+        framebuffer_width,
+        framebuffer_height,
+        &mut window,
+        &raylib_thread,
+    ) {
+        Ok(framebuffer) => framebuffer,
+
+        Err(error) => {
+            eprintln!("Error al crear el framebuffer: {error}");
+            return;
+        }
+    };
 
     framebuffer.set_background_color(Color::new(12, 12, 16, 255));
 
