@@ -7,6 +7,7 @@ pub(crate) enum WeaponState {
     Idle,
     Fire,
     Recoil,
+    Reload,
 }
 
 /// Duración del estado visual de disparo.
@@ -18,12 +19,18 @@ const RECOIL_DURATION: f32 = 0.10;
 /// Intervalo mínimo entre disparos aceptados.
 const FIRE_COOLDOWN: f32 = 0.25;
 
-/// Munición inicial del arma.
-const INITIAL_AMMO: u32 = 6;
+/// Capacidad máxima del cargador.
+const MAGAZINE_CAPACITY: u32 = 6;
+
+/// Munición de reserva inicial (fuera del cargador).
+const INITIAL_RESERVE_AMMO: u32 = 18;
+
+/// Duración de la recarga, en segundos.
+const RELOAD_DURATION: f32 = 0.8;
 
 /// Estado de PARTIDA del arma: máquina de estados visual, su
 /// temporizado, el enfriamiento entre disparos aceptados y su
-/// munición real.
+/// munición real (cargador + reserva).
 ///
 /// No posee daño, alcance, dispersión, referencia a enemigos,
 /// sonido ni textura: eso pertenece a otros módulos (hitscan,
@@ -34,19 +41,21 @@ pub(crate) struct Weapon {
     state: WeaponState,
     state_elapsed: f32,
     cooldown_remaining: f32,
-    ammo: u32,
+    magazine: u32,
+    reserve: u32,
 }
 
 impl Weapon {
     /// Crea un arma lista para disparar: `Idle`, sin tiempo
-    /// acumulado, sin enfriamiento pendiente y con munición inicial
-    /// completa.
+    /// acumulado, sin enfriamiento pendiente, cargador lleno y
+    /// reserva inicial completa.
     pub(crate) fn new() -> Self {
         Self {
             state: WeaponState::Idle,
             state_elapsed: 0.0,
             cooldown_remaining: 0.0,
-            ammo: INITIAL_AMMO,
+            magazine: MAGAZINE_CAPACITY,
+            reserve: INITIAL_RESERVE_AMMO,
         }
     }
 
@@ -62,20 +71,26 @@ impl Weapon {
         self.cooldown_remaining
     }
 
-    /// Munición restante.
+    /// Munición restante en el cargador.
     pub(crate) fn ammo(&self) -> u32 {
-        self.ammo
+        self.magazine
+    }
+
+    /// Munición restante en la reserva (fuera del cargador).
+    pub(crate) fn reserve_ammo(&self) -> u32 {
+        self.reserve
     }
 
     /// Intenta iniciar un ciclo de disparo visual.
     ///
-    /// Solo se acepta si el arma está en `Idle`, el enfriamiento ya
-    /// llegó a cero, Y queda munición; en ese caso consume una
-    /// unidad de munición, pasa a `Fire`, reinicia el tiempo del
+    /// Solo se acepta si el arma está en `Idle` (por lo tanto NUNCA
+    /// durante `Reload`), el enfriamiento ya llegó a cero, Y queda
+    /// munición en el cargador; en ese caso consume una unidad de
+    /// munición del cargador, pasa a `Fire`, reinicia el tiempo del
     /// estado y recarga el enfriamiento, retornando `true`.
     ///
     /// En cualquier otro caso (estado/enfriamiento no listos, o
-    /// munición agotada) ni el estado activo ni la munición se
+    /// cargador agotado) ni el estado activo ni la munición se
     /// alteran, y retorna `false`. Este booleano es el evento de
     /// disparo aceptado que el hitscan consume; la munición NUNCA
     /// se decrementa antes de esta comprobación de elegibilidad, ni
@@ -85,11 +100,11 @@ impl Weapon {
             return false;
         }
 
-        if self.ammo == 0 {
+        if self.magazine == 0 {
             return false;
         }
 
-        self.ammo -= 1;
+        self.magazine -= 1;
         self.state = WeaponState::Fire;
         self.state_elapsed = 0.0;
         self.cooldown_remaining = FIRE_COOLDOWN;
@@ -97,13 +112,54 @@ impl Weapon {
         true
     }
 
+    /// Intenta iniciar una recarga.
+    ///
+    /// Solo se acepta desde `Idle` (nunca durante `Fire`/`Recoil`/ya
+    /// `Reload`), y solo si el cargador NO está lleno y queda
+    /// munición en la reserva; en ese caso pasa a `Reload` y reinicia
+    /// el tiempo del estado, retornando `true`. La munición NO se
+    /// transfiere aquí — solo al completarse la recarga en `update`
+    /// — para que un `Retry`/interrupción antes de completarse nunca
+    /// otorgue munición gratis.
+    ///
+    /// Si el cargador ya está lleno, si la reserva está en cero, o si
+    /// el arma no está en `Idle` (incluyendo si ya está recargando),
+    /// no se altera ningún estado y retorna `false`.
+    pub(crate) fn try_start_reload(&mut self) -> bool {
+        if self.state != WeaponState::Idle {
+            return false;
+        }
+
+        if self.magazine >= MAGAZINE_CAPACITY || self.reserve == 0 {
+            return false;
+        }
+
+        self.state = WeaponState::Reload;
+        self.state_elapsed = 0.0;
+
+        true
+    }
+
+    /// Transfiere de la reserva al cargador la cantidad exacta
+    /// necesaria para llenarlo, sin exceder la reserva disponible.
+    fn complete_reload(&mut self) {
+        let needed = MAGAZINE_CAPACITY - self.magazine;
+
+        let loaded = needed.min(self.reserve);
+
+        self.magazine += loaded;
+        self.reserve -= loaded;
+    }
+
     /// Avanza el temporizado del arma según el tiempo transcurrido.
     ///
     /// Decrementa el enfriamiento de forma independiente del estado
-    /// visual, y avanza `Fire -> Recoil -> Idle` conservando el
-    /// remanente de tiempo entre transiciones, de modo que un
-    /// `delta_time` grande pueda cruzar varios estados en una sola
-    /// llamada sin perder tiempo fraccional ni quedar atascado.
+    /// visual, y avanza `Fire -> Recoil -> Idle` o `Reload -> Idle`
+    /// (transfiriendo munición de la reserva al cargador exactamente
+    /// al completarse) conservando el remanente de tiempo entre
+    /// transiciones, de modo que un `delta_time` grande pueda cruzar
+    /// varios estados en una sola llamada sin perder tiempo
+    /// fraccional ni quedar atascado.
     ///
     /// Un `delta_time` no finito o no positivo se ignora sin alterar
     /// el estado.
@@ -120,6 +176,7 @@ impl Weapon {
             let current_duration = match self.state {
                 WeaponState::Fire => FIRE_DURATION,
                 WeaponState::Recoil => RECOIL_DURATION,
+                WeaponState::Reload => RELOAD_DURATION,
                 WeaponState::Idle => return,
             };
 
@@ -131,11 +188,19 @@ impl Weapon {
 
             let overflow = self.state_elapsed - current_duration;
 
-            self.state = match self.state {
-                WeaponState::Fire => WeaponState::Recoil,
-                WeaponState::Recoil => WeaponState::Idle,
+            match self.state {
+                WeaponState::Fire => self.state = WeaponState::Recoil,
+
+                WeaponState::Recoil => self.state = WeaponState::Idle,
+
+                WeaponState::Reload => {
+                    self.complete_reload();
+
+                    self.state = WeaponState::Idle;
+                }
+
                 WeaponState::Idle => return,
-            };
+            }
 
             self.state_elapsed = 0.0;
             remaining_delta = overflow;
@@ -240,5 +305,321 @@ mod tests {
 
         assert_eq!(weapon.state(), WeaponState::Idle);
         assert_eq!(weapon.ammo(), 0);
+    }
+
+    #[test]
+    fn new_weapon_starts_with_eighteen_reserve() {
+        let weapon = Weapon::new();
+
+        assert_eq!(weapon.ammo(), 6);
+        assert_eq!(weapon.reserve_ammo(), 18);
+    }
+
+    #[test]
+    fn cannot_start_reload_with_a_full_magazine() {
+        let mut weapon = Weapon::new();
+
+        assert_eq!(weapon.ammo(), 6);
+        assert!(!weapon.try_start_reload());
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn reload_starts_when_magazine_is_partial() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+        assert_eq!(weapon.state(), WeaponState::Reload);
+    }
+
+    #[test]
+    fn reload_does_not_transfer_ammo_immediately() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert_eq!(weapon.ammo(), 5);
+
+        // El disparo aceptado ya está resuelto (`Idle`), así que
+        // `try_start_reload` se acepta aquí, pero la transferencia
+        // de munición NO ocurre hasta que `update` complete el
+        // temporizador de recarga (probado en
+        // `reload_completes_after_duration`).
+        assert!(weapon.try_start_reload());
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        assert_eq!(weapon.ammo(), 5);
+        assert_eq!(weapon.reserve_ammo(), 18);
+    }
+
+    #[test]
+    fn cannot_fire_while_reloading() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        assert!(!weapon.try_fire());
+        assert_eq!(weapon.ammo(), 5);
+    }
+
+    #[test]
+    fn reload_completes_after_duration() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        // Justo antes de completarse, sigue en Reload.
+        weapon.update(RELOAD_DURATION - 0.01);
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        weapon.update(0.02);
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn partial_reload_calculation_four_to_six() {
+        let mut weapon = Weapon::new();
+
+        for _ in 0..2 {
+            assert!(weapon.try_fire());
+            advance_until_ready(&mut weapon);
+        }
+
+        assert_eq!(weapon.ammo(), 4);
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.ammo(), 6);
+        assert_eq!(weapon.reserve_ammo(), 16);
+    }
+
+    #[test]
+    fn empty_magazine_reload_zero_to_six() {
+        let mut weapon = Weapon::new();
+
+        for _ in 0..6 {
+            assert!(weapon.try_fire());
+            advance_until_ready(&mut weapon);
+        }
+
+        assert_eq!(weapon.ammo(), 0);
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.ammo(), 6);
+        assert_eq!(weapon.reserve_ammo(), 12);
+    }
+
+    #[test]
+    fn insufficient_reserve_loads_only_what_is_available() {
+        let mut weapon = Weapon::new();
+
+        // Vaciar el cargador y la reserva por completo: cada ciclo
+        // dispara el cargador lleno (6) y recarga lo que la reserva
+        // aún tenga. Con 18 de reserva más el cargador inicial de 6
+        // (24 balas en total = 4 cargadores completos), hacen falta
+        // 4 ciclos de disparo para agotar ambos (el cuarto ciclo no
+        // encuentra reserva para recargar después de disparar).
+        for _ in 0..4 {
+            for _ in 0..6 {
+                assert!(weapon.try_fire());
+                advance_until_ready(&mut weapon);
+            }
+
+            if weapon.reserve_ammo() > 0 {
+                assert!(weapon.try_start_reload());
+                weapon.update(RELOAD_DURATION + 0.01);
+            }
+        }
+
+        assert_eq!(weapon.ammo(), 0);
+        assert_eq!(weapon.reserve_ammo(), 0);
+    }
+
+    #[test]
+    fn insufficient_reserve_partial_load_example() {
+        let mut weapon = Weapon::new();
+
+        // Dos ciclos completos de disparo(6)+recarga(6) llevan la
+        // reserva de 18 a 6 (18-6-6=6), dejando cargador y reserva
+        // llenos/parciales respectivamente en mag=6, reserve=6.
+        for _ in 0..2 {
+            for _ in 0..6 {
+                assert!(weapon.try_fire());
+                advance_until_ready(&mut weapon);
+            }
+
+            assert!(weapon.try_start_reload());
+            weapon.update(RELOAD_DURATION + 0.01);
+        }
+
+        assert_eq!(weapon.ammo(), 6);
+        assert_eq!(weapon.reserve_ammo(), 6);
+
+        // Disparar solo 3 y recargar: `needed = 6 - 3 = 3`, que la
+        // reserva (6) cubre por completo, dejando mag=6, reserve=3.
+        for _ in 0..3 {
+            assert!(weapon.try_fire());
+            advance_until_ready(&mut weapon);
+        }
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.ammo(), 6);
+        assert_eq!(weapon.reserve_ammo(), 3);
+
+        // Vaciar el cargador por completo: mag=0, reserve=3 — el
+        // ejemplo exacto del contrato de recarga (0/3 -> 3/0).
+        for _ in 0..6 {
+            assert!(weapon.try_fire());
+            advance_until_ready(&mut weapon);
+        }
+
+        assert_eq!(weapon.ammo(), 0);
+        assert_eq!(weapon.reserve_ammo(), 3);
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.ammo(), 3);
+        assert_eq!(weapon.reserve_ammo(), 0);
+    }
+
+    #[test]
+    fn reserve_zero_prevents_reload() {
+        let mut weapon = Weapon::new();
+
+        // 4 ciclos de disparo agotan las 24 balas totales (cargador
+        // inicial de 6 + reserva de 18); el cuarto ciclo no
+        // encuentra reserva disponible para recargar.
+        for _ in 0..4 {
+            for _ in 0..6 {
+                assert!(weapon.try_fire());
+                advance_until_ready(&mut weapon);
+            }
+
+            if weapon.reserve_ammo() > 0 {
+                assert!(weapon.try_start_reload());
+                weapon.update(RELOAD_DURATION + 0.01);
+            }
+        }
+
+        assert_eq!(weapon.reserve_ammo(), 0);
+        assert_eq!(weapon.ammo(), 0);
+
+        assert!(!weapon.try_start_reload());
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn starting_reload_again_while_reloading_does_not_reset_timer() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        weapon.update(RELOAD_DURATION - 0.01);
+
+        // Un segundo intento de recarga mientras ya se está
+        // recargando debe rechazarse y NO reiniciar el temporizador.
+        assert!(!weapon.try_start_reload());
+
+        weapon.update(0.02);
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn reload_is_frame_time_based() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        // Muchos cuadros pequeños deben sumar lo mismo que un único
+        // cuadro grande.
+        for _ in 0..79 {
+            weapon.update(0.01);
+        }
+
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        weapon.update(0.05);
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn weapon_returns_to_idle_after_reload_completion() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn fire_works_again_after_reload() {
+        let mut weapon = Weapon::new();
+
+        for _ in 0..6 {
+            assert!(weapon.try_fire());
+            advance_until_ready(&mut weapon);
+        }
+
+        assert_eq!(weapon.ammo(), 0);
+
+        assert!(weapon.try_start_reload());
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.ammo(), 6);
+
+        assert!(weapon.try_fire());
+        assert_eq!(weapon.ammo(), 5);
+    }
+
+    #[test]
+    fn ammo_never_goes_negative_or_underflows() {
+        let mut weapon = Weapon::new();
+
+        for _ in 0..4 {
+            for _ in 0..6 {
+                assert!(weapon.try_fire());
+                advance_until_ready(&mut weapon);
+            }
+
+            if weapon.reserve_ammo() > 0 {
+                assert!(weapon.try_start_reload());
+                weapon.update(RELOAD_DURATION + 0.01);
+            }
+        }
+
+        // Cargador y reserva agotados; ni try_fire ni try_start_reload
+        // deben producir underflow (`u32`, esto pancharía en debug).
+        assert!(!weapon.try_fire());
+        assert!(!weapon.try_start_reload());
+
+        assert_eq!(weapon.ammo(), 0);
+        assert_eq!(weapon.reserve_ammo(), 0);
     }
 }

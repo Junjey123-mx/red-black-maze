@@ -72,6 +72,14 @@ const HEART_ICON: [u8; 5] = [0b01010, 0b11111, 0b11111, 0b01110, 0b00100];
 /// Fuente bitmap 5x5 del ícono de diamante de naipe (munición).
 const DIAMOND_ICON: [u8; 5] = [0b00100, 0b01110, 0b11111, 0b01110, 0b00100];
 
+/// Ancho lógico del glifo "/" que separa cargador de reserva.
+const SLASH_WIDTH: i32 = 3;
+
+/// Glifo bitmap 3x5 de "/", en la misma fuente/estilo que
+/// `DIGIT_FONT`: reutiliza `draw_glyph`, no carga ninguna textura de
+/// fuente nueva.
+const SLASH_GLYPH: [u8; 5] = [0b001, 0b001, 0b010, 0b100, 0b100];
+
 /// Descompone `value` en sus dígitos decimales, rellenando con
 /// ceros a la izquierda hasta alcanzar `min_digits`.
 ///
@@ -169,14 +177,20 @@ fn draw_digits(
 /// abajo-izquierda sobre la vista `World3D`.
 ///
 /// Es puramente presentación: recibe instantáneas primitivas
-/// (`health`, `ammo`) ya leídas por el llamador; no posee ni
-/// modifica `Player`, `Weapon` ni `GameSession`, no lee entrada, y
-/// no dispara ni cura. `health`/`ammo` son los ÚNICOS valores que
-/// determinan lo que se dibuja: no existe ningún literal `100`/`06`
-/// de visualización en este módulo, solo constantes de geometría de
-/// glifo y la vida/munición inicial del dominio (que viven en
-/// `player.rs`/`weapon.rs`, no aquí).
-pub(crate) fn render_hud(framebuffer: &mut Framebuffer, health: i32, ammo: u32) {
+/// (`health`, `magazine_ammo`, `reserve_ammo`) ya leídas por el
+/// llamador; no posee ni modifica `Player`, `Weapon` ni
+/// `GameSession`, no lee entrada, y no dispara ni cura ni recarga.
+/// Estos valores son los ÚNICOS que determinan lo que se dibuja: no
+/// existe ningún literal `100`/`06`/`18` de visualización en este
+/// módulo, solo constantes de geometría de glifo y la vida/munición
+/// inicial del dominio (que viven en `player.rs`/`weapon.rs`, no
+/// aquí).
+pub(crate) fn render_hud(
+    framebuffer: &mut Framebuffer,
+    health: i32,
+    magazine_ammo: u32,
+    reserve_ammo: u32,
+) {
     let framebuffer_width = framebuffer.width();
 
     let framebuffer_height = framebuffer.height();
@@ -223,14 +237,37 @@ pub(crate) fn render_hud(framebuffer: &mut Framebuffer, health: i32, ammo: u32) 
         HUD_RED,
     );
 
-    let ammo_digits_x = diamond_x + (GLYPH_WIDTH + GLYPH_GAP) * GLYPH_SCALE;
+    let magazine_digits_x = diamond_x + (GLYPH_WIDTH + GLYPH_GAP) * GLYPH_SCALE;
 
-    let ammo_digits = digits_of(ammo as i64, AMMO_MIN_DIGITS);
+    let magazine_digits = digits_of(magazine_ammo as i64, AMMO_MIN_DIGITS);
+
+    let after_magazine_x = draw_digits(
+        framebuffer,
+        &magazine_digits,
+        magazine_digits_x,
+        origin_y,
+        HUD_IVORY,
+    );
+
+    let slash_x = after_magazine_x + GLYPH_GAP * GLYPH_SCALE;
+
+    draw_glyph(
+        framebuffer,
+        &SLASH_GLYPH,
+        SLASH_WIDTH,
+        slash_x,
+        origin_y,
+        HUD_IVORY,
+    );
+
+    let reserve_digits_x = slash_x + (SLASH_WIDTH + GLYPH_GAP) * GLYPH_SCALE;
+
+    let reserve_digits = digits_of(reserve_ammo as i64, AMMO_MIN_DIGITS);
 
     draw_digits(
         framebuffer,
-        &ammo_digits,
-        ammo_digits_x,
+        &reserve_digits,
+        reserve_digits_x,
         origin_y,
         HUD_IVORY,
     );

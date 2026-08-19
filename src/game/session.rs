@@ -1,5 +1,9 @@
+use raylib::prelude::Vector2;
+
 use crate::player::{Player, Weapon, WeaponState};
-use crate::world::{Entity, EntityDamageOutcome, EntityStateTransition, Level};
+use crate::world::{
+    DistanceField, Entity, EntityDamageOutcome, EntityState, EntityStateTransition, Level,
+};
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -102,19 +106,27 @@ impl GameSession {
         &self.entities
     }
 
-    /// Avanza el comportamiento estático (temporizador de `Hit` y
-    /// reevaluación de proximidad `Idle`/`Alert`) de cada entidad
-    /// según la posición actual del jugador, y reporta ÚNICAMENTE
-    /// las transiciones de estado que realmente ocurrieron
-    /// (`Entity::update` ya distingue "cambio real" de "sin
-    /// cambio").
+    /// Avanza el comportamiento de cada entidad (temporizador de
+    /// `Hit`, reevaluación de proximidad `Idle`/`Alert`, y
+    /// persecución mientras esté `Alert`) según la posición actual
+    /// del jugador, y reporta ÚNICAMENTE las transiciones de estado
+    /// que realmente ocurrieron (`Entity::update` ya distingue
+    /// "cambio real" de "sin cambio").
     ///
-    /// Ninguna entidad se mueve, ataca ni persigue: esto es
-    /// únicamente el temporizado/reconocimiento por distancia que
-    /// `Entity::update` ya implementa de forma pura. Este tipo de
-    /// resultado es dominio puro (`EntityStateTransition`), sin
-    /// vocabulario de audio/presentación: quien interpreta el evento
-    /// (`App`) decide qué hacer con él.
+    /// Ninguna entidad ataca: la persecución solo mueve la posición
+    /// de los Dealers `Alert` hacia el jugador, respetando la
+    /// geometría del laberinto vía `world::DistanceField` (BFS de 4
+    /// direcciones sobre `Level`, la misma autoridad de
+    /// transitabilidad que colisión/raycasting). El campo de
+    /// distancias se calcula A LO SUMO una vez por cuadro,
+    /// compartido entre todas las entidades `Alert` (nunca uno por
+    /// Dealer), y se omite por completo si ninguna entidad está
+    /// `Alert` este cuadro.
+    ///
+    /// El resultado reportado es dominio puro
+    /// (`EntityStateTransition`), sin vocabulario de audio/
+    /// presentación: quien interpreta el evento (`App`) decide qué
+    /// hacer con él.
     pub(crate) fn update_entities(
         &mut self,
         delta_time: f32,
@@ -122,9 +134,30 @@ impl GameSession {
     ) -> Vec<EntityStateTransition> {
         let player_position = self.player.pos;
 
+        let any_alert = self
+            .entities
+            .iter()
+            .any(|entity| entity.state() == EntityState::Alert);
+
+        let distance_field = any_alert.then(|| {
+            let player_cell = world_to_cell(player_position, block_size);
+
+            DistanceField::from_level(&self.level, player_cell)
+        });
+
         self.entities
             .iter_mut()
-            .filter_map(|entity| entity.update(player_position, delta_time, block_size))
+            .filter_map(|entity| {
+                let pursuit_target = distance_field.as_ref().and_then(|field| {
+                    let entity_cell = world_to_cell(entity.position(), block_size);
+
+                    field
+                        .step_toward_origin(entity_cell)
+                        .map(|(row, column)| cell_center(row, column, block_size))
+                });
+
+                entity.update(player_position, delta_time, block_size, pursuit_target)
+            })
             .collect()
     }
 
@@ -179,6 +212,17 @@ impl GameSession {
         self.weapon.try_fire()
     }
 
+    /// Intenta iniciar una recarga del arma (tecla R).
+    ///
+    /// Retorna `true` si la recarga fue aceptada (cargador no lleno,
+    /// reserva disponible, arma en `Idle`), `false` en cualquier
+    /// otro caso. La transferencia real de munición ocurre más
+    /// tarde, dentro de `update_weapon`, al completarse el
+    /// temporizador — nunca aquí.
+    pub(crate) fn try_start_weapon_reload(&mut self) -> bool {
+        self.weapon.try_start_reload()
+    }
+
     /// Vida actual del jugador, para presentación (HUD) u otro
     /// consumidor de solo lectura.
     pub(crate) fn player_health(&self) -> i32 {
@@ -189,6 +233,12 @@ impl GameSession {
     /// consumidor de solo lectura.
     pub(crate) fn weapon_ammo(&self) -> u32 {
         self.weapon.ammo()
+    }
+
+    /// Munición de reserva del arma (fuera del cargador), para
+    /// presentación (HUD) u otro consumidor de solo lectura.
+    pub(crate) fn weapon_reserve_ammo(&self) -> u32 {
+        self.weapon.reserve_ammo()
     }
 
     /// Indica si el jugador se encuentra actualmente dentro de la
@@ -211,6 +261,39 @@ impl GameSession {
             block_size,
         )
     }
+}
+
+/// Convierte una posición de mundo (píxeles) a su celda de
+/// cuadrícula `(fila, columna)`, con el mismo convenio
+/// `floor(coordenada / block_size)` que usan `raycasting::caster` y
+/// `world::collision`. `block_size == 0` o coordenadas no
+/// finitas/negativas se resuelven de forma segura a `(0, 0)` en vez
+/// de entrar en pánico: `DistanceField::from_level` ya trata
+/// cualquier origen fuera de rango o no transitable como
+/// "inalcanzable", así que un valor degenerado aquí nunca produce
+/// persecución incorrecta, solo la desactiva con seguridad.
+fn world_to_cell(position: Vector2, block_size: usize) -> (usize, usize) {
+    if block_size == 0 || !position.x.is_finite() || !position.y.is_finite() {
+        return (0, 0);
+    }
+
+    let column = (position.x / block_size as f32).floor().max(0.0) as usize;
+
+    let row = (position.y / block_size as f32).floor().max(0.0) as usize;
+
+    (row, column)
+}
+
+/// Centro, en píxeles de mundo, de la celda `(row, column)`. Misma
+/// convención de centrado que `Player::from_level`/
+/// `Entity::dealer_at_cell`/`rendering::sprites::cell_center`.
+fn cell_center(row: usize, column: usize, block_size: usize) -> Vector2 {
+    let half_block = block_size as f32 / 2.0;
+
+    Vector2::new(
+        column as f32 * block_size as f32 + half_block,
+        row as f32 * block_size as f32 + half_block,
+    )
 }
 
 /// Comprueba si el punto de mundo `(player_x, player_y)` cae dentro

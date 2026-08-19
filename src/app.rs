@@ -337,6 +337,23 @@ impl<'aud> App<'aud> {
         self.session.update_weapon(window.get_frame_time());
 
         /*
+         * Tecla R: evento PRESSED (no mantenido/`is_key_down`), para
+         * que mantener R presionada no reinicie continuamente el
+         * temporizador de recarga. Es un canal de entrada
+         * INDEPENDIENTE del movimiento/rotación (ya procesados
+         * arriba en `process_events`) y del clic de disparo (más
+         * abajo): sostener W, mover el mouse, Y presionar R en el
+         * mismo cuadro inician movimiento + rotación + recarga sin
+         * que ninguno bloquee a los otros. `try_start_weapon_reload`
+         * es la única autoridad sobre si la recarga se acepta
+         * (`Idle`, cargador no lleno, reserva > 0); un intento
+         * rechazado no altera ningún estado.
+         */
+        if window.is_key_pressed(KeyboardKey::KEY_R) {
+            self.session.try_start_weapon_reload();
+        }
+
+        /*
          * Avanza el temporizador de `Hit` y la reevaluación de
          * proximidad `Idle`/`Alert` de cada Dealer ANTES de procesar
          * el clic de este cuadro, por la misma razón que el arma: un
@@ -677,6 +694,7 @@ impl<'aud> App<'aud> {
                     framebuffer,
                     self.session.player_health(),
                     self.session.weapon_ammo(),
+                    self.session.weapon_reserve_ammo(),
                 );
             }
         }

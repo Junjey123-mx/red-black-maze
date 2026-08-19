@@ -75,6 +75,26 @@ const DEALER_HIT_DURATION_SECONDS: f32 = 0.15;
 /// activo pase a `Alert`; fuera de ella vuelve a `Idle`.
 const DEALER_ALERT_DISTANCE_CELLS: f32 = 4.0;
 
+/// Velocidad de persecución del Dealer, en píxeles de mundo por
+/// segundo.
+///
+/// El jugador se mueve a 150 px/s (`MOVE_SPEED`,
+/// `input/controller.rs`). Este valor es exactamente la mitad
+/// (50%), dentro del rango deliberadamente conservador (40%-65%) que
+/// mantiene al jugador capaz de distanciarse/maniobrar frente a un
+/// Dealer en persecución: la persecución crea presión, no una
+/// carrera que el jugador no pueda ganar.
+const DEALER_PURSUIT_SPEED: f32 = 75.0;
+
+/// Distancia mínima, expresada en celdas de mapa, a la que el Dealer
+/// deja de avanzar hacia su siguiente punto de ruta. Evita que la
+/// entidad oscile/tiemble al llegar exactamente al centro de una
+/// celda; en la práctica el propio `DistanceField` ya detiene la
+/// persecución al entrar a la celda del jugador (distancia 0), así
+/// que este umbral solo protege el último tramo de cada paso
+/// intermedio.
+const DEALER_PURSUIT_STOP_DISTANCE_CELLS: f32 = 0.05;
+
 /// Entidad de dominio del mundo/juego: posición, vida, estado de
 /// comportamiento, identidad visual y radio de impacto.
 ///
@@ -177,26 +197,34 @@ impl Entity {
         }
     }
 
-    /// Avanza el comportamiento estático de la entidad: decrementa
-    /// el temporizador de `Hit` y, cuando ya no hay golpe activo,
-    /// reevalúa `Idle`/`Alert` según la distancia al jugador.
-    /// Reporta `Some(EntityStateTransition)` únicamente cuando el
-    /// estado ACTUALMENTE cambió durante esta llamada; `None` si
-    /// permanece igual (incluyendo `Dead` y `Hit` con temporizador
-    /// aún activo).
+    /// Avanza el comportamiento de la entidad: decrementa el
+    /// temporizador de `Hit` y, cuando ya no hay golpe activo,
+    /// reevalúa `Idle`/`Alert` según la distancia al jugador, y —
+    /// únicamente si el estado resultante es `Alert` — avanza hacia
+    /// `pursuit_target`. Reporta `Some(EntityStateTransition)`
+    /// únicamente cuando el estado ACTUALMENTE cambió durante esta
+    /// llamada; `None` si permanece igual (incluyendo `Dead` y `Hit`
+    /// con temporizador aún activo).
     ///
     /// `Dead` es terminal y esta función retorna inmediatamente sin
-    /// alterar nada. Mientras `hit_time_remaining` siga siendo
-    /// positivo, `Hit` NO es sobrescrito por la reevaluación de
-    /// proximidad, ni siquiera dentro de la misma llamada: la
-    /// entidad no se mueve, no ataca y no persigue; esto es
-    /// únicamente reconocimiento visual por distancia, sin línea de
-    /// visión.
+    /// alterar nada (nunca se mueve). Mientras `hit_time_remaining`
+    /// siga siendo positivo, `Hit` NO es sobrescrito por la
+    /// reevaluación de proximidad, ni siquiera dentro de la misma
+    /// llamada, y la entidad NO se mueve durante esa reacción.
+    ///
+    /// `pursuit_target`, si existe, es la posición de mundo (centro
+    /// de la siguiente celda transitable en la ruta hacia el
+    /// jugador) ya resuelta por el llamador (`GameSession`, usando
+    /// `world::DistanceField` sobre el `Level` real); esta función
+    /// NO conoce `Level` ni calcula ninguna ruta, solo avanza hacia
+    /// el punto ya decidido. Esto preserva la pureza de `Entity`
+    /// (sin dependencia de mundo/mapa) exactamente como antes.
     pub(crate) fn update(
         &mut self,
         player_position: Vector2,
         delta_time: f32,
         block_size: usize,
+        pursuit_target: Option<Vector2>,
     ) -> Option<EntityStateTransition> {
         if self.state == EntityState::Dead {
             return None;
@@ -228,6 +256,10 @@ impl Entity {
             EntityState::Idle
         };
 
+        if self.state == EntityState::Alert {
+            self.pursue(pursuit_target, delta_time, block_size);
+        }
+
         if self.state == previous_state {
             None
         } else {
@@ -235,6 +267,55 @@ impl Entity {
                 from: previous_state,
                 to: self.state,
             })
+        }
+    }
+
+    /// Avanza la posición hacia `target` a `DEALER_PURSUIT_SPEED`
+    /// px/s, respetando `delta_time` (movimiento independiente del
+    /// framerate, igual que `process_events` del jugador).
+    ///
+    /// No-op seguro si `target` es `None` (sin ruta disponible, por
+    /// ejemplo el jugador ya está en la misma celda), o si
+    /// `delta_time` no es finito/positivo. Nunca sobrepasa `target`:
+    /// si el paso de este cuadro alcanzaría o superaría la
+    /// distancia restante, la posición se ajusta EXACTAMENTE a
+    /// `target` en vez de overshoot, evitando oscilación.
+    ///
+    /// Como `target` es siempre el centro de una celda transitable
+    /// 4-conectada a la celda actual (resuelta por
+    /// `DistanceField::step_toward_origin`), el segmento recto entre
+    /// ambos centros permanece dentro de la unión de esas dos celdas
+    /// abiertas: nunca cruza una pared ni corta una esquina
+    /// bloqueada.
+    fn pursue(&mut self, target: Option<Vector2>, delta_time: f32, block_size: usize) {
+        let Some(target) = target else {
+            return;
+        };
+
+        if !delta_time.is_finite() || delta_time <= 0.0 {
+            return;
+        }
+
+        let dx = target.x - self.position.x;
+
+        let dy = target.y - self.position.y;
+
+        let distance = dx.hypot(dy);
+
+        let stop_distance = block_size as f32 * DEALER_PURSUIT_STOP_DISTANCE_CELLS;
+
+        if distance <= stop_distance {
+            return;
+        }
+
+        let step = DEALER_PURSUIT_SPEED * delta_time;
+
+        if step >= distance {
+            self.position = target;
+        } else {
+            self.position.x += dx / distance * step;
+
+            self.position.y += dy / distance * step;
         }
     }
 }
@@ -330,7 +411,7 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        entity.update(near_player, 0.016, 48);
+        entity.update(near_player, 0.016, 48, None);
 
         assert_eq!(entity.state(), EntityState::Alert);
     }
@@ -341,13 +422,13 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        entity.update(near_player, 0.016, 48);
+        entity.update(near_player, 0.016, 48, None);
 
         assert_eq!(entity.state(), EntityState::Alert);
 
         let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
 
-        entity.update(far_player, 0.016, 48);
+        entity.update(far_player, 0.016, 48, None);
 
         assert_eq!(entity.state(), EntityState::Idle);
     }
@@ -363,7 +444,7 @@ mod tests {
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
         // Un delta pequeño no debe agotar el temporizador de 0.15s.
-        entity.update(near_player, 0.016, 48);
+        entity.update(near_player, 0.016, 48, None);
 
         assert_eq!(entity.state(), EntityState::Hit);
     }
@@ -380,7 +461,7 @@ mod tests {
 
         // Delta mayor que la duración de Hit (0.15s): debe expirar
         // y reevaluar la proximidad en la misma llamada.
-        entity.update(far_player, 0.20, 48);
+        entity.update(far_player, 0.20, 48, None);
 
         assert_eq!(entity.state(), EntityState::Idle);
     }
@@ -396,7 +477,7 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        entity.update(near_player, 0.5, 48);
+        entity.update(near_player, 0.5, 48, None);
 
         assert_eq!(entity.state(), EntityState::Dead);
         assert!(entity.is_dead());
@@ -464,7 +545,7 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        let transition = entity.update(near_player, 0.016, 48);
+        let transition = entity.update(near_player, 0.016, 48, None);
 
         assert_eq!(
             transition,
@@ -481,12 +562,12 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        entity.update(near_player, 0.016, 48);
+        entity.update(near_player, 0.016, 48, None);
         assert_eq!(entity.state(), EntityState::Alert);
 
         let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
 
-        let transition = entity.update(far_player, 0.016, 48);
+        let transition = entity.update(far_player, 0.016, 48, None);
 
         assert_eq!(
             transition,
@@ -503,7 +584,7 @@ mod tests {
 
         let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
 
-        let transition = entity.update(far_player, 0.016, 48);
+        let transition = entity.update(far_player, 0.016, 48, None);
 
         assert_eq!(transition, None);
         assert_eq!(entity.state(), EntityState::Idle);
@@ -518,7 +599,7 @@ mod tests {
 
         let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
 
-        let transition = entity.update(far_player, 0.20, 48);
+        let transition = entity.update(far_player, 0.20, 48, None);
 
         assert_eq!(
             transition,
@@ -538,7 +619,7 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        let transition = entity.update(near_player, 0.20, 48);
+        let transition = entity.update(near_player, 0.20, 48, None);
 
         assert_eq!(
             transition,
@@ -557,7 +638,7 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        let transition = entity.update(near_player, 0.016, 48);
+        let transition = entity.update(near_player, 0.016, 48, None);
 
         assert_eq!(transition, None);
         assert_eq!(entity.state(), EntityState::Hit);
@@ -574,9 +655,172 @@ mod tests {
 
         let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
 
-        let transition = entity.update(near_player, 0.5, 48);
+        let transition = entity.update(near_player, 0.5, 48, None);
 
         assert_eq!(transition, None);
         assert_eq!(entity.state(), EntityState::Dead);
+    }
+
+    // --- Persecución (Alert pursuit) ---
+
+    #[test]
+    fn alert_dealer_moves_closer_to_a_given_pursuit_target() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        // Primero entra a Alert (sin objetivo de persecución todavía).
+        entity.update(near_player, 0.016, 48, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        let start_position = entity.position();
+
+        let target = Vector2::new(start_position.x + 48.0, start_position.y);
+
+        let distance_before = (target.x - start_position.x).hypot(target.y - start_position.y);
+
+        entity.update(near_player, 0.1, 48, Some(target));
+
+        let distance_after = (target.x - entity.position().x).hypot(target.y - entity.position().y);
+
+        assert!(distance_after < distance_before);
+        // Todavía no debe haber sobrepasado el objetivo con un solo
+        // paso de 0.1s a 75px/s (7.5px < 48px de distancia inicial).
+        assert!(distance_after > 0.0);
+    }
+
+    #[test]
+    fn idle_dealer_does_not_move_even_with_a_pursuit_target() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        let start_position = entity.position();
+
+        let target = Vector2::new(start_position.x + 48.0, start_position.y);
+
+        entity.update(far_player, 0.1, 48, Some(target));
+
+        assert_eq!(entity.state(), EntityState::Idle);
+        assert_eq!(entity.position().x, start_position.x);
+        assert_eq!(entity.position().y, start_position.y);
+    }
+
+    #[test]
+    fn hit_dealer_does_not_move_during_hit_reaction_even_with_a_pursuit_target() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.apply_damage(50);
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        let start_position = entity.position();
+
+        let target = Vector2::new(start_position.x + 48.0, start_position.y);
+
+        // Delta pequeño: el temporizador de Hit (0.15s) sigue activo.
+        entity.update(near_player, 0.016, 48, Some(target));
+
+        assert_eq!(entity.state(), EntityState::Hit);
+        assert_eq!(entity.position().x, start_position.x);
+        assert_eq!(entity.position().y, start_position.y);
+    }
+
+    #[test]
+    fn dead_dealer_never_moves_even_with_a_pursuit_target() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        entity.apply_damage(50);
+        entity.apply_damage(50);
+
+        assert!(entity.is_dead());
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        let start_position = entity.position();
+
+        let target = Vector2::new(start_position.x + 48.0, start_position.y);
+
+        entity.update(near_player, 0.5, 48, Some(target));
+
+        assert_eq!(entity.state(), EntityState::Dead);
+        assert_eq!(entity.position().x, start_position.x);
+        assert_eq!(entity.position().y, start_position.y);
+    }
+
+    #[test]
+    fn pursuit_step_scales_with_delta_time() {
+        let mut small_delta_entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let mut large_delta_entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(
+            small_delta_entity.position().x + 10.0,
+            small_delta_entity.position().y,
+        );
+
+        small_delta_entity.update(near_player, 0.016, 48, None);
+        large_delta_entity.update(near_player, 0.016, 48, None);
+
+        let start = small_delta_entity.position();
+
+        let target = Vector2::new(start.x + 480.0, start.y);
+
+        small_delta_entity.update(near_player, 0.01, 48, Some(target));
+        large_delta_entity.update(near_player, 0.02, 48, Some(target));
+
+        let small_moved = small_delta_entity.position().x - start.x;
+
+        let large_moved = large_delta_entity.position().x - start.x;
+
+        // El doble de delta_time produce (aproximadamente) el doble
+        // de avance: movimiento independiente del framerate.
+        assert!(large_moved > small_moved);
+        assert!((large_moved - 2.0 * small_moved).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pursuit_snaps_to_target_instead_of_overshooting() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.016, 48, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        let start = entity.position();
+
+        // Objetivo a 5px: por encima del umbral de parada (2.4px a
+        // block_size=48) pero por debajo del paso de este cuadro
+        // (0.1s a 75px/s = 7.5px), que lo sobrepasaría si no se
+        // recortara.
+        let target = Vector2::new(start.x + 5.0, start.y);
+
+        entity.update(near_player, 0.1, 48, Some(target));
+
+        assert_eq!(entity.position().x, target.x);
+        assert_eq!(entity.position().y, target.y);
+    }
+
+    #[test]
+    fn pursuit_ignores_non_finite_or_non_positive_delta_time() {
+        let mut entity = Entity::dealer_at_cell(0, 0, 48);
+
+        let near_player = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(near_player, 0.016, 48, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        let start = entity.position();
+
+        let target = Vector2::new(start.x + 48.0, start.y);
+
+        entity.update(near_player, 0.0, 48, Some(target));
+        entity.update(near_player, -1.0, 48, Some(target));
+        entity.update(near_player, f32::NAN, 48, Some(target));
+
+        assert_eq!(entity.position().x, start.x);
+        assert_eq!(entity.position().y, start.y);
     }
 }

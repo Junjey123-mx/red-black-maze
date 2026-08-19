@@ -268,7 +268,13 @@ impl TextureManager {
     /// estados.
     pub(crate) fn weapon_texture(&self, state: WeaponState) -> Option<&TextureAsset> {
         let key = match state {
-            WeaponState::Idle => "weapon-idle",
+            /*
+             * `Reload` reutiliza la textura de `Idle`: Tarea 38.C
+             * prioriza la recarga funcional + HUD sobre una animación
+             * dedicada, y explícitamente prohíbe cargar un nuevo PNG
+             * de arma. No hay ninguna textura "weapon-reload".
+             */
+            WeaponState::Idle | WeaponState::Reload => "weapon-idle",
             WeaponState::Fire => "weapon-fire",
             WeaponState::Recoil => "weapon-recoil",
         };
