@@ -72,7 +72,7 @@ impl<'aud> App<'aud> {
         }
     }
 
-    fn update(&mut self, window: &RaylibHandle) {
+    fn update(&mut self, window: &mut RaylibHandle) {
         /*
          * La música de fondo y los cooldowns anti-spam de audio son
          * independientes del `GameState`: se actualizan exactamente
@@ -83,6 +83,8 @@ impl<'aud> App<'aud> {
          */
         self.audio.update(window.get_frame_time());
 
+        let previous_state = self.state;
+
         match self.state {
             GameState::Welcome => self.update_welcome(window),
 
@@ -91,6 +93,52 @@ impl<'aud> App<'aud> {
             GameState::Playing => self.update_playing(window),
 
             GameState::Victory => self.update_victory(window),
+        }
+
+        self.sync_cursor_capture(window, previous_state);
+    }
+
+    /// Mantiene el ciclo de vida del cursor atado al `GameState`
+    /// actual, en vez de capturarlo una única vez de forma global al
+    /// arrancar la aplicación (comportamiento previo a Tarea 38.C,
+    /// que dejaba el cursor permanentemente inutilizable en
+    /// Welcome/LevelSelect/Victory).
+    ///
+    /// Al ENTRAR a `Playing` (transición detectada este mismo
+    /// cuadro), captura el cursor para el control de cámara por
+    /// mouse; al SALIR de `Playing` hacia cualquier otro estado, lo
+    /// libera para que los menús vuelvan a ser utilizables.
+    ///
+    /// Mientras `Playing` permanece activo (sin transición), esta
+    /// función reafirma la captura DEFENSIVAMENTE solo si
+    /// `is_cursor_hidden()` reporta que en algún momento dejó de
+    /// estarlo: un gestor de ventanas puede liberar la captura del
+    /// cursor por eventos de foco (alt-tab, cambio de espacio de
+    /// trabajo) sin que el estado interno de `raylib-rs` se entere
+    /// por sí solo. Esto es una comprobación barata (un booleano) en
+    /// el caso común, no una llamada a `disable_cursor` repetida sin
+    /// necesidad cada cuadro.
+    ///
+    /// Tarea 38.C.1: un experimento posterior a la auditoría de T38.C
+    /// reemplazó temporalmente esta ruta por recentrado manual
+    /// (`hide_cursor`/`set_mouse_position` cada cuadro), sospechando
+    /// que `disable_cursor` no activaba de forma fiable el modo
+    /// relativo de la plataforma. La prueba manual del usuario
+    /// confirmó que la causa raíz real era ajena al juego: la función
+    /// "Desactivar mientras se escribe" de libinput/GNOME en el
+    /// sistema del usuario, no esta ruta de entrada. Por eso esta
+    /// función vuelve a `disable_cursor`/`enable_cursor`.
+    fn sync_cursor_capture(&self, window: &mut RaylibHandle, previous_state: GameState) {
+        let entered_playing = self.state == GameState::Playing && previous_state != self.state;
+
+        let left_playing = self.state != GameState::Playing && previous_state == GameState::Playing;
+
+        if entered_playing {
+            window.disable_cursor();
+        } else if left_playing {
+            window.enable_cursor();
+        } else if self.state == GameState::Playing && !window.is_cursor_hidden() {
+            window.disable_cursor();
         }
     }
 
@@ -725,14 +773,13 @@ pub fn run() {
     window.set_target_fps(TARGET_FPS);
 
     /*
-     * Captura y oculta el cursor para el control de cámara por
-     * mouse. Se captura una única vez antes del bucle de juego,
-     * independientemente del estado inicial (`Welcome`): la pantalla
-     * de Bienvenida se activa solo por teclado (ENTER/SPACE), por lo
-     * que no necesita el cursor visible, y esto preserva el
-     * comportamiento de cámara exacto que `Playing` ya tenía.
+     * El cursor NO se captura aquí. Su ciclo de vida ahora sigue al
+     * `GameState` activo (`App::sync_cursor_capture`, Tarea 38.C):
+     * permanece visible/utilizable en Welcome/LevelSelect/Victory, y
+     * se captura únicamente al entrar a `Playing`, liberándose de
+     * nuevo al salir. El estado inicial es `Welcome`, así que el
+     * cursor arranca visible, como corresponde a un menú.
      */
-    window.disable_cursor();
 
     /*
      * Tarea 29 (requerido): por defecto, Raylib trata ESC como
@@ -804,7 +851,7 @@ pub fn run() {
     );
 
     while !window.window_should_close() {
-        app.update(&window);
+        app.update(&mut window);
 
         framebuffer.clear();
 
