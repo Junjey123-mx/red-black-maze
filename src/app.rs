@@ -10,7 +10,9 @@ use crate::rendering::map_2d::{
     compute_display_cell_size, render_fov_rays, render_maze, render_player,
 };
 use crate::rendering::world_3d::render_world;
-use crate::rendering::{render_hud, render_minimap, render_weapon, render_world_sprites};
+use crate::rendering::{
+    render_fps, render_hud, render_minimap, render_weapon, render_world_sprites,
+};
 use crate::ui::{LevelSelectScreen, VictoryAction, VictoryScreen, WelcomeScreen};
 use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
@@ -37,6 +39,14 @@ pub(crate) struct App<'aud> {
     level_select: LevelSelectScreen,
     victory: VictoryScreen,
     audio: AudioManager<'aud>,
+
+    /// FPS real, leído de Raylib (`RaylibHandle::get_fps`) durante
+    /// `update_playing` y solo DIBUJADO durante `render` — preserva
+    /// la separación update -> render: el renderer nunca conoce
+    /// `RaylibHandle` directamente. Raylib ya promedia esta lectura
+    /// internamente (no es un valor instantáneo de un único cuadro),
+    /// así que no se necesita suavizado adicional propio.
+    current_fps: u32,
 }
 
 impl<'aud> App<'aud> {
@@ -58,6 +68,7 @@ impl<'aud> App<'aud> {
             level_select,
             victory,
             audio,
+            current_fps: 0,
         }
     }
 
@@ -192,6 +203,14 @@ impl<'aud> App<'aud> {
     }
 
     fn update_playing(&mut self, window: &RaylibHandle) {
+        /*
+         * FPS real de Raylib, leído una vez por cuadro aquí (nunca
+         * en `render`, que no recibe `RaylibHandle`). `get_fps` ya
+         * es un promedio de Raylib sobre una ventana de cuadros
+         * recientes, no una lectura instantánea de un solo cuadro.
+         */
+        self.current_fps = window.get_fps();
+
         /*
          * Movimiento y rotación del jugador. Se observa la posición
          * antes/después para alimentar la cadencia de pasos con
@@ -613,6 +632,18 @@ impl<'aud> App<'aud> {
                 );
             }
         }
+
+        /*
+         * Contador de FPS: arriba-izquierda, dibujado al final para
+         * quedar SIEMPRE por encima del contenido de la escena
+         * (fondo/laberinto/mapa ya rellenaron el framebuffer
+         * completo más arriba). Visible en ambas vistas
+         * (World3D/Map2D) porque se dibuja fuera del `match`, sin
+         * duplicar la llamada en cada rama. No sustituye ni se
+         * solapa con el HUD (abajo-izquierda) ni el minimapa
+         * (arriba-derecha, solo en World3D).
+         */
+        render_fps(framebuffer, self.current_fps);
     }
 }
 

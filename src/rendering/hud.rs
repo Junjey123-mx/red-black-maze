@@ -33,6 +33,16 @@ const AMMO_MIN_DIGITS: usize = 2;
 /// (sin relleno forzado: un solo dígito es válido).
 const HEALTH_MIN_DIGITS: usize = 1;
 
+/// Cantidad mínima de dígitos con los que se representa el contador
+/// de FPS (sin relleno forzado: valores de un dígito son válidos).
+const FPS_MIN_DIGITS: usize = 1;
+
+/// Margen entre el borde del framebuffer y el contador de FPS,
+/// anclado arriba-izquierda (deliberadamente distinto del HUD de
+/// vida/munición, anclado abajo-izquierda: no se solapan).
+const FPS_LEFT_MARGIN: i32 = 8;
+const FPS_TOP_MARGIN: i32 = 8;
+
 const HUD_RED: Color = Color::new(205, 30, 42, 255);
 const HUD_IVORY: Color = Color::new(214, 208, 196, 255);
 
@@ -222,6 +232,29 @@ pub(crate) fn render_hud(framebuffer: &mut Framebuffer, health: i32, ammo: u32) 
         &ammo_digits,
         ammo_digits_x,
         origin_y,
+        HUD_IVORY,
+    );
+}
+
+/// Dibuja el contador de FPS en tiempo real, anclado arriba-
+/// izquierda sobre la vista activa (World3D o Map2D).
+///
+/// Reutiliza la MISMA fuente bitmap de dígitos que `render_hud`
+/// (`digits_of`/`draw_digits`/`DIGIT_FONT`): no existe un segundo
+/// renderer de texto para esto. Recibe `fps` ya leído por el
+/// llamador (`App::update`, vía `RaylibHandle::get_fps`); este
+/// módulo no conoce `RaylibHandle` y no decide CÓMO se midió el
+/// valor, solo lo dibuja. No asigna ningún `String`/`format!`: los
+/// dígitos se descomponen numéricamente y se dibujan directamente
+/// como píxeles, igual que `render_hud`.
+pub(crate) fn render_fps(framebuffer: &mut Framebuffer, fps: u32) {
+    let digits = digits_of(fps as i64, FPS_MIN_DIGITS);
+
+    draw_digits(
+        framebuffer,
+        &digits,
+        FPS_LEFT_MARGIN,
+        FPS_TOP_MARGIN,
         HUD_IVORY,
     );
 }
