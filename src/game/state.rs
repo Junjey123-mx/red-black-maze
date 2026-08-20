@@ -5,6 +5,12 @@ pub enum GameState {
     LevelSelect,
     Playing,
     Victory,
+
+    /// Tarea 42: la MISMA sesión de `Playing` congelada exactamente
+    /// donde estaba — nunca destruye/recarga `GameSession`. Solo se
+    /// alcanza desde `Playing` (tecla ESC) y solo regresa a
+    /// `Playing` (ESC/CONTINUE) o a `Welcome` (EXIT TO MENU).
+    Paused,
 }
 
 impl GameState {
@@ -58,5 +64,6 @@ mod tests {
             GameState::Victory.after_goal_check(true),
             GameState::Victory
         );
+        assert_eq!(GameState::Paused.after_goal_check(true), GameState::Paused);
     }
 }

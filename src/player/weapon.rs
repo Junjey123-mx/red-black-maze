@@ -388,6 +388,42 @@ mod tests {
     }
 
     #[test]
+    fn skipping_update_calls_freezes_reload_exactly_like_a_pause_menu_would() {
+        // Tarea 42: `App::update_paused` congela TODA la simulación
+        // jugable simplemente NO llamando a `GameSession::update_weapon`
+        // (que delega en `Weapon::update`) mientras `GameState::Paused`
+        // está activo — ningún mecanismo de pausa por-subsistema. Esta
+        // prueba demuestra esa garantía directamente sobre `Weapon`,
+        // sin necesitar `App`/`RaylibHandle`: 10 "segundos reales" en
+        // los que `update` simplemente no se invoca (el equivalente
+        // exacto de estar en pausa) no hacen avanzar el temporizador
+        // de recarga ni un solo milisegundo.
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        weapon.update(0.30);
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        // "10 segundos reales pasan" mientras está en pausa: en la
+        // arquitectura real esto significa que `update_playing` (y
+        // por lo tanto `update_weapon`) sencillamente no se llama
+        // durante esos cuadros — representado aquí por la AUSENCIA
+        // de cualquier llamada a `weapon.update(...)`, no por
+        // llamarlo con un `delta_time` de 10.0.
+
+        // Al reanudar, deben faltar aproximadamente 0.8 - 0.30 = 0.50 s.
+        weapon.update(0.49);
+        assert_eq!(weapon.state(), WeaponState::Reload);
+
+        weapon.update(0.02);
+        assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
     fn partial_reload_calculation_four_to_six() {
         let mut weapon = Weapon::new();
 

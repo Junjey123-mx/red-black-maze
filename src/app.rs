@@ -13,7 +13,9 @@ use crate::rendering::world_3d::render_world;
 use crate::rendering::{
     render_fps, render_hud, render_minimap, render_weapon, render_world_sprites,
 };
-use crate::ui::{LevelSelectScreen, VictoryAction, VictoryScreen, WelcomeScreen};
+use crate::ui::{
+    LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction, VictoryScreen, WelcomeScreen,
+};
 use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
 
@@ -38,6 +40,7 @@ pub(crate) struct App<'aud> {
     welcome: WelcomeScreen,
     level_select: LevelSelectScreen,
     victory: VictoryScreen,
+    pause: PauseScreen,
     audio: AudioManager<'aud>,
 
     /// FPS real, leído de Raylib (`RaylibHandle::get_fps`) durante
@@ -67,6 +70,7 @@ impl<'aud> App<'aud> {
             welcome,
             level_select,
             victory,
+            pause: PauseScreen::new(),
             audio,
             current_fps: 0,
         }
@@ -93,6 +97,8 @@ impl<'aud> App<'aud> {
             GameState::Playing => self.update_playing(window),
 
             GameState::Victory => self.update_victory(window),
+
+            GameState::Paused => self.update_paused(window),
         }
 
         self.sync_cursor_capture(window, previous_state);
@@ -128,6 +134,20 @@ impl<'aud> App<'aud> {
     /// "Desactivar mientras se escribe" de libinput/GNOME en el
     /// sistema del usuario, no esta ruta de entrada. Por eso esta
     /// función vuelve a `disable_cursor`/`enable_cursor`.
+    ///
+    /// Tarea 42: `GameState::Paused` reutiliza esta MISMA lógica sin
+    /// ningún caso especial nuevo. `Paused != Playing`, así que
+    /// `Playing -> Paused` ya cae en `left_playing` (libera el
+    /// cursor) y `Paused -> Playing` ya cae en `entered_playing`
+    /// (recaptura), incluyendo el recentrado interno que
+    /// `disable_cursor` ya hace antes de bloquear el cursor — el
+    /// mismo mecanismo que evita el salto de cámara al reanudar
+    /// desde cualquier otro estado, sin un segundo sistema de
+    /// captura. `Paused -> Welcome` (EXIT TO MENU) no activa ninguna
+    /// rama (ni `entered_playing` ni `left_playing`, porque
+    /// `previous_state` ya era `Paused`, no `Playing`), así que el
+    /// cursor simplemente permanece liberado — correcto, porque ya
+    /// se liberó en la transición `Playing -> Paused` anterior.
     fn sync_cursor_capture(&self, window: &mut RaylibHandle, previous_state: GameState) {
         let entered_playing = self.state == GameState::Playing && previous_state != self.state;
 
@@ -258,6 +278,31 @@ impl<'aud> App<'aud> {
          * recientes, no una lectura instantánea de un solo cuadro.
          */
         self.current_fps = window.get_fps();
+
+        /*
+         * Tarea 42: ESC pausa la partida. Comprobado ANTES de
+         * cualquier otra lectura de entrada/actualización jugable de
+         * este cuadro (mismo patrón que el ESC de
+         * `update_level_select`) — un ESC este cuadro no debe además
+         * mover al jugador, disparar, ni avanzar ningún timer. La
+         * sesión (`self.session`) no se toca en absoluto: `Paused`
+         * es la MISMA partida, solo con un `GameState` distinto y
+         * `update_playing` dejando de invocarse mientras dure. Como
+         * NINGÚN temporizador jugable (arma/recarga/entidades/
+         * antorcha/pasos) usa reloj absoluto — todos avanzan
+         * exclusivamente vía el `delta_time` que este mismo método
+         * les entrega cuadro a cuadro — simplemente no llamar a este
+         * método mientras `Paused` esté activo congela TODA la
+         * simulación jugable sin necesitar un mecanismo de pausa por
+         * subsistema.
+         */
+        if window.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            self.state = GameState::Paused;
+
+            self.pause.on_enter();
+
+            return;
+        }
 
         /*
          * Movimiento y rotación del jugador. Se observa la posición
@@ -482,6 +527,67 @@ impl<'aud> App<'aud> {
         }
     }
 
+    /// Procesa el menú de pausa: ESC reanuda incondicionalmente
+    /// (sin importar qué opción esté resaltada); arriba/abajo (flecha
+    /// o W/S, misma convención que Selección de Nivel/Victoria)
+    /// mueve la selección entre `CONTINUE`/`EXIT TO MENU`; ENTER
+    /// ejecuta la opción resaltada.
+    ///
+    /// NO llama a `update_playing` ni a ningún método de
+    /// `GameSession`/`Weapon`/`Entity`: `self.session` permanece
+    /// exactamente como estaba en el cuadro en que se pausó. Tampoco
+    /// avanza `self.audio.update_footsteps` (solo se llama dentro de
+    /// `update_playing`), por lo que ningún paso nuevo puede sonar
+    /// mientras la pausa está activa.
+    fn update_paused(&mut self, window: &RaylibHandle) {
+        if window.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            self.state = GameState::Playing;
+
+            return;
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            let selection_before = self.pause.selected_item();
+
+            self.pause.select_previous();
+
+            if self.pause.selected_item() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
+        {
+            let selection_before = self.pause.selected_item();
+
+            self.pause.select_next();
+
+            if self.pause.selected_item() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            self.audio.play_sound(SoundEffect::MenuSelect);
+
+            match self.pause.selected_item() {
+                PauseMenuItem::Continue => self.state = GameState::Playing,
+
+                /*
+                 * `self.session` NO se destruye ni se reinicia aquí:
+                 * exactamente el mismo lifecycle que `MainMenu` desde
+                 * Victoria (`perform_victory_action`), que tampoco
+                 * toca la sesión — simplemente dejar de estar en
+                 * `Playing`/`Paused` es suficiente para que
+                 * `update`/`render` dejen de tocarla, y la próxima
+                 * partida (`start_selected_level`/`next`/`restart`)
+                 * la reemplaza atómicamente de todas formas.
+                 */
+                PauseMenuItem::ExitToMenu => self.state = GameState::Welcome,
+            }
+        }
+    }
+
     /// Avanza únicamente la presentación de Victoria (su propio
     /// Juego de la Vida de fondo, independiente de las otras
     /// pantallas) y procesa navegación/activación por teclado.
@@ -592,6 +698,19 @@ impl<'aud> App<'aud> {
             GameState::Victory => self
                 .victory
                 .render(framebuffer, self.level_manager.has_next()),
+
+            /*
+             * Tarea 42: el mundo congelado se dibuja EXACTAMENTE
+             * igual que en `Playing` (misma `render_playing`, sin
+             * duplicar ningún renderer) — la sesión no cambió, así
+             * que su render tampoco debe hacerlo — y el overlay de
+             * pausa se dibuja ENCIMA, en una segunda pasada.
+             */
+            GameState::Paused => {
+                self.render_playing(framebuffer);
+
+                self.pause.render(framebuffer);
+            }
         }
     }
 
