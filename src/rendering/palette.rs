@@ -122,14 +122,13 @@ const LEGACY_ACCENT_TABLE: [(Color, AccentTier); 11] = [
 
 /// Resuelve el `ThemePalette` de acento para `theme`.
 ///
-/// Tarea 40: `BlackClub` diverge por primera vez de la familia roja
-/// heredada, hacia negro + naranja neón. `CrimsonEntrance` y
-/// `HouseOfCards` (todavía pendiente de Tarea 41) permanecen en el
-/// brazo legacy compartido, con los mismos valores que TODOS los
-/// consumidores usaban de forma incondicional antes de Tarea 39.
+/// Tarea 40 hizo que `BlackClub` divergiera hacia negro + naranja
+/// neón. Tarea 41 hace que `HouseOfCards` divergiera hacia negro +
+/// violeta. `CrimsonEntrance` es ahora el ÚNICO tema que permanece en
+/// la familia roja heredada original.
 pub(crate) fn palette_for_theme(theme: LevelTheme) -> ThemePalette {
     match theme {
-        LevelTheme::CrimsonEntrance | LevelTheme::HouseOfCards => ThemePalette {
+        LevelTheme::CrimsonEntrance => ThemePalette {
             accent_vertical: Color::new(0, 25, 30, 255),
             accent_horizontal: Color::new(0, 18, 24, 255),
             accent_corner: Color::new(0, 12, 18, 255),
@@ -179,6 +178,36 @@ pub(crate) fn palette_for_theme(theme: LevelTheme) -> ThemePalette {
 
             minimap_border_accent: Color::new(0xA5, 0x36, 0x00, 255),
             minimap_wall_accent: Color::new(0xE9, 0x4F, 0x00, 255),
+        },
+
+        /*
+         * Tarea 41: identidad negro + violeta. Mismo patrón que
+         * Tarea 40 — `accent_bright/medium/dark` son EXACTAMENTE los
+         * de referencia del Plan Maestro (`#C13CFF`/`#8A2BE2`/
+         * `#52106A`); el resto de roles derivan su matiz (G, B) de
+         * esos tres tonos. A diferencia del naranja (azul ≈ 0), el
+         * violeta tiene el azul como canal más alto — el respaldo de
+         * pared sigue escalando dinámicamente solo el canal ROJO por
+         * distancia (mismo `wall_color`, sin cambios), así que el
+         * matiz fijo (G, B) de cada tono es lo único que puede
+         * codificar "violeta" aquí; el resultado se lee claramente
+         * como violeta/magenta oscuro en cualquier distancia, sin
+         * requerir tocar el algoritmo de sombreado.
+         */
+        LevelTheme::HouseOfCards => ThemePalette {
+            accent_vertical: Color::new(0, 60, 255, 255),
+            accent_horizontal: Color::new(0, 43, 226, 255),
+            accent_corner: Color::new(0, 16, 106, 255),
+            accent_alt: Color::new(0, 50, 235, 255),
+
+            accent_bright: Color::new(0xC1, 0x3C, 0xFF, 255),
+            accent_medium: Color::new(0x8A, 0x2B, 0xE2, 255),
+            accent_dark: Color::new(0x52, 0x10, 0x6A, 255),
+
+            hud_accent: Color::new(0xC1, 0x3C, 0xFF, 255),
+
+            minimap_border_accent: Color::new(0x52, 0x10, 0x6A, 255),
+            minimap_wall_accent: Color::new(0x8A, 0x2B, 0xE2, 255),
         },
     }
 }
@@ -246,27 +275,76 @@ mod tests {
     }
 
     #[test]
-    fn crimson_and_house_still_preserve_the_exact_legacy_red_after_task_40() {
-        // Tarea 40 solo debe hacer que `BlackClub` diverja; Crimson
-        // Entrance y House of Cards (todavía pendiente de Tarea 41)
-        // deben seguir resolviendo EXACTAMENTE los mismos valores
-        // heredados que antes.
-        for theme in [LevelTheme::CrimsonEntrance, LevelTheme::HouseOfCards] {
-            let palette = palette_for_theme(theme);
+    fn crimson_still_preserves_the_exact_legacy_red_after_task_41() {
+        // Tarea 41 solo debe hacer que `HouseOfCards` diverja: Crimson
+        // Entrance es ahora el ÚNICO tema que debe seguir resolviendo
+        // EXACTAMENTE los mismos valores heredados originales.
+        let palette = palette_for_theme(LevelTheme::CrimsonEntrance);
 
-            assert_eq!(palette.accent_vertical, Color::new(0, 25, 30, 255));
-            assert_eq!(palette.accent_horizontal, Color::new(0, 18, 24, 255));
-            assert_eq!(palette.accent_corner, Color::new(0, 12, 18, 255));
-            assert_eq!(palette.accent_alt, Color::new(0, 20, 25, 255));
+        assert_eq!(palette.accent_vertical, Color::new(0, 25, 30, 255));
+        assert_eq!(palette.accent_horizontal, Color::new(0, 18, 24, 255));
+        assert_eq!(palette.accent_corner, Color::new(0, 12, 18, 255));
+        assert_eq!(palette.accent_alt, Color::new(0, 20, 25, 255));
 
-            assert_eq!(palette.accent_bright, Color::new(210, 31, 43, 255));
-            assert_eq!(palette.accent_medium, Color::new(122, 16, 24, 255));
-            assert_eq!(palette.accent_dark, Color::new(74, 11, 16, 255));
+        assert_eq!(palette.accent_bright, Color::new(210, 31, 43, 255));
+        assert_eq!(palette.accent_medium, Color::new(122, 16, 24, 255));
+        assert_eq!(palette.accent_dark, Color::new(74, 11, 16, 255));
 
-            assert_eq!(palette.hud_accent, Color::new(205, 30, 42, 255));
+        assert_eq!(palette.hud_accent, Color::new(205, 30, 42, 255));
 
-            assert_eq!(palette.minimap_border_accent, Color::new(120, 18, 24, 255));
-            assert_eq!(palette.minimap_wall_accent, Color::new(150, 24, 32, 255));
+        assert_eq!(palette.minimap_border_accent, Color::new(120, 18, 24, 255));
+        assert_eq!(palette.minimap_wall_accent, Color::new(150, 24, 32, 255));
+    }
+
+    #[test]
+    fn black_club_still_preserves_the_exact_orange_palette_after_task_41() {
+        // Tarea 41 no debe romper Tarea 40.
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(palette.accent_bright, Color::new(0xFF, 0x7A, 0x00, 255));
+        assert_eq!(palette.accent_medium, Color::new(0xE9, 0x4F, 0x00, 255));
+        assert_eq!(palette.accent_dark, Color::new(0xA5, 0x36, 0x00, 255));
+    }
+
+    #[test]
+    fn house_of_cards_uses_the_violet_reference_palette() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_eq!(palette.accent_bright, Color::new(0xC1, 0x3C, 0xFF, 255));
+        assert_eq!(palette.accent_medium, Color::new(0x8A, 0x2B, 0xE2, 255));
+        assert_eq!(palette.accent_dark, Color::new(0x52, 0x10, 0x6A, 255));
+    }
+
+    #[test]
+    fn house_of_cards_no_longer_uses_any_red_accent_value() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_ne!(palette.accent_bright, Color::new(210, 31, 43, 255));
+        assert_ne!(palette.accent_medium, Color::new(122, 16, 24, 255));
+        assert_ne!(palette.accent_dark, Color::new(74, 11, 16, 255));
+        assert_ne!(palette.hud_accent, Color::new(205, 30, 42, 255));
+        assert_ne!(palette.minimap_border_accent, Color::new(120, 18, 24, 255));
+        assert_ne!(palette.minimap_wall_accent, Color::new(150, 24, 32, 255));
+    }
+
+    #[test]
+    fn house_of_cards_hud_and_minimap_accents_belong_to_the_violet_family() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        // "Violeta" en este proyecto significa: azul (B) claramente
+        // dominante, rojo (R) intermedio, verde (G) el más bajo de
+        // los tres — exactamente la relación de
+        // C13CFF/8A2BE2/52106A. Probar esta relación (no solo la
+        // igualdad con una constante) confirma que HUD/minimapa
+        // realmente HEREDAN la familia violeta.
+        for color in [
+            palette.hud_accent,
+            palette.minimap_border_accent,
+            palette.minimap_wall_accent,
+        ] {
+            assert!(color.b > color.r, "el azul debe dominar sobre el rojo");
+            assert!(color.r > color.g, "el rojo debe superar al verde");
+            assert!(color.g > 0, "el verde debe ser distinto de cero");
         }
     }
 
@@ -437,6 +515,39 @@ mod tests {
     #[test]
     fn black_club_remap_still_preserves_black_ivory_and_alpha() {
         let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        let black = Color::new(5, 5, 5, 255);
+        let ivory = Color::new(214, 208, 196, 255);
+        let transparent = Color::new(0, 0, 0, 0);
+
+        assert_eq!(remap_accent_pixel(black, &palette), black);
+        assert_eq!(remap_accent_pixel(ivory, &palette), ivory);
+        assert_eq!(remap_accent_pixel(transparent, &palette).a, 0);
+    }
+
+    #[test]
+    fn house_of_cards_remaps_legacy_accent_tones_to_the_exact_reference_violet() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(210, 31, 43, 255), &palette),
+            Color::new(0xC1, 0x3C, 0xFF, 255)
+        );
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(122, 16, 24, 255), &palette),
+            Color::new(0x8A, 0x2B, 0xE2, 255)
+        );
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(74, 11, 16, 255), &palette),
+            Color::new(0x52, 0x10, 0x6A, 255)
+        );
+    }
+
+    #[test]
+    fn house_of_cards_remap_still_preserves_black_ivory_and_alpha() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
         let black = Color::new(5, 5, 5, 255);
         let ivory = Color::new(214, 208, 196, 255);

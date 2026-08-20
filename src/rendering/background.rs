@@ -78,19 +78,22 @@ fn palette_for_theme(theme: LevelTheme) -> BackgroundPalette {
             floor_pattern: FloorPattern::Bands,
         },
 
-        // Negro absoluto -> rojo vino profundo (parada intermedia)
-        // -> rojo sangre prominente en el horizonte: la progresión
-        // final de intensidad del Plan Maestro para Tarea 35. El
-        // suelo usa el mosaico geométrico ornamental (único tema que
-        // lo hace), reflejando que House of Cards es visualmente más
-        // rico que Crimson Entrance/Black Club.
+        // Tarea 41: casi negro -> violeta muy oscuro (parada
+        // intermedia) -> violeta prominente en el horizonte — los
+        // tres valores de referencia exactos del Plan Maestro
+        // (`#050305`/`#260832`/`#52106A`, este último igual a
+        // `accent_dark` de `ThemePalette`). El mosaico geométrico
+        // ornamental (único tema que lo usa, sin cambios de patrón/
+        // densidad/geometría) sigue reflejando que House of Cards es
+        // visualmente más rico que Crimson Entrance/Black Club; solo
+        // su familia cromática cambia a negro-violeta.
         LevelTheme::HouseOfCards => BackgroundPalette {
-            ceiling_top: Color::new(0x00, 0x00, 0x00, 255),
-            ceiling_mid: Some(Color::new(0x30, 0x05, 0x08, 255)),
-            ceiling_horizon: Color::new(0x6B, 0x0D, 0x14, 255),
-            floor_near: Color::new(0x22, 0x22, 0x22, 255),
-            floor_far: Color::new(0x14, 0x14, 0x14, 255),
-            floor_accent: Color::new(0x4C, 0x0B, 0x10, 255),
+            ceiling_top: Color::new(0x05, 0x03, 0x05, 255),
+            ceiling_mid: Some(Color::new(0x26, 0x08, 0x32, 255)),
+            ceiling_horizon: Color::new(0x52, 0x10, 0x6A, 255),
+            floor_near: Color::new(0x24, 0x1C, 0x28, 255),
+            floor_far: Color::new(0x14, 0x10, 0x16, 255),
+            floor_accent: Color::new(0x52, 0x10, 0x6A, 255),
             floor_pattern: FloorPattern::GeometricMosaic,
         },
     }
@@ -299,18 +302,18 @@ mod tests {
     fn house_of_cards_ceiling_matches_the_exact_planned_three_stop_gradient() {
         let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
-        assert_eq!(palette.ceiling_top, Color::new(0x00, 0x00, 0x00, 255));
-        assert_eq!(palette.ceiling_mid, Some(Color::new(0x30, 0x05, 0x08, 255)));
-        assert_eq!(palette.ceiling_horizon, Color::new(0x6B, 0x0D, 0x14, 255));
+        assert_eq!(palette.ceiling_top, Color::new(0x05, 0x03, 0x05, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x26, 0x08, 0x32, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x52, 0x10, 0x6A, 255));
     }
 
     #[test]
     fn house_of_cards_floor_palette_matches_the_plan_maestro_family() {
         let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
-        assert_eq!(palette.floor_near, Color::new(0x22, 0x22, 0x22, 255));
-        assert_eq!(palette.floor_far, Color::new(0x14, 0x14, 0x14, 255));
-        assert_eq!(palette.floor_accent, Color::new(0x4C, 0x0B, 0x10, 255));
+        assert_eq!(palette.floor_near, Color::new(0x24, 0x1C, 0x28, 255));
+        assert_eq!(palette.floor_far, Color::new(0x14, 0x10, 0x16, 255));
+        assert_eq!(palette.floor_accent, Color::new(0x52, 0x10, 0x6A, 255));
     }
 
     #[test]
@@ -318,6 +321,38 @@ mod tests {
         let palette = palette_for_theme(LevelTheme::HouseOfCards);
 
         assert_eq!(palette.floor_pattern, FloorPattern::GeometricMosaic);
+    }
+
+    #[test]
+    fn house_of_cards_background_no_longer_uses_any_red_value() {
+        let palette = palette_for_theme(LevelTheme::HouseOfCards);
+
+        assert_ne!(palette.ceiling_horizon, Color::new(0x6B, 0x0D, 0x14, 255));
+        assert_ne!(palette.floor_accent, Color::new(0x4C, 0x0B, 0x10, 255));
+
+        // "Violeta": azul dominante sobre rojo, rojo por encima de
+        // verde — la misma relación que la familia de acento de
+        // `ThemePalette` para House of Cards.
+        assert!(palette.ceiling_horizon.b > palette.ceiling_horizon.r);
+        assert!(palette.ceiling_horizon.r > palette.ceiling_horizon.g);
+        assert!(palette.floor_accent.b > palette.floor_accent.r);
+        assert!(palette.floor_accent.r > palette.floor_accent.g);
+    }
+
+    #[test]
+    fn house_of_cards_ceiling_stays_mostly_dark_before_the_horizon() {
+        // Igual que Black Club: el techo NO debe volverse violeta
+        // plano y brillante. A un cuarto del camino hacia la parada
+        // intermedia, el color debe seguir siendo abrumadoramente
+        // oscuro.
+        let top = Color::new(0x05, 0x03, 0x05, 255);
+        let mid = Color::new(0x26, 0x08, 0x32, 255);
+
+        let quarter = lerp_color(top, mid, 0.25);
+
+        assert!(quarter.r < 20);
+        assert!(quarter.g < 10);
+        assert!(quarter.b < 25);
     }
 
     #[test]

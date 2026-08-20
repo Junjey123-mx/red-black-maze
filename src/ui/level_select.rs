@@ -1,8 +1,9 @@
 use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
+use crate::rendering::palette_for_theme;
 use crate::ui::{GameOfLife, GameOfLifeRenderConfig};
-use crate::world::LevelManager;
+use crate::world::{LevelManager, LevelTheme};
 
 /// Tamaño, en píxeles de framebuffer, de cada celda del Juego de la
 /// Vida de fondo. Deliberadamente ajeno a `BLOCK_SIZE`/`Level`: es
@@ -26,7 +27,6 @@ const GAME_OF_LIFE_COLOR: Color = Color::new(100, 14, 20, 255);
 const TITLE_COLOR: Color = Color::new(224, 218, 205, 255);
 
 const SELECTED_PANEL_COLOR: Color = Color::new(40, 10, 14, 255);
-const SELECTED_BORDER_COLOR: Color = Color::new(210, 40, 50, 255);
 const SELECTED_TEXT_COLOR: Color = Color::new(235, 230, 215, 255);
 
 const UNSELECTED_PANEL_COLOR: Color = Color::new(14, 12, 14, 255);
@@ -457,9 +457,27 @@ impl LevelSelectScreen {
             let selected = index == self.selected_index;
 
             let (panel_color, border_color, text_color) = if selected {
+                /*
+                 * Tarea 41: el borde de la fila SELECCIONADA toma el
+                 * acento del `LevelTheme` de esa fila (rojo/naranja/
+                 * violeta), leído de la MISMA `ThemePalette` que ya
+                 * usan los renderers de gameplay — nunca un literal
+                 * de color duplicado aquí. Panel/texto de la fila
+                 * seleccionada permanecen neutros/sin cambio: el
+                 * requisito es un acento discreto, no un rediseño.
+                 * Un índice sin tema conocido (nunca debería ocurrir,
+                 * `level_count` ya acota `index`) degrada de forma
+                 * segura al rojo heredado en vez de entrar en pánico.
+                 */
+                let theme = level_manager
+                    .level_theme(index)
+                    .unwrap_or(LevelTheme::CrimsonEntrance);
+
+                let palette = palette_for_theme(theme);
+
                 (
                     SELECTED_PANEL_COLOR,
-                    SELECTED_BORDER_COLOR,
+                    palette.accent_bright,
                     SELECTED_TEXT_COLOR,
                 )
             } else {

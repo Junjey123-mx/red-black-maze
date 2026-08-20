@@ -99,6 +99,19 @@ impl LevelManager {
         self.levels.get(index).map(|info| info.name)
     }
 
+    /// Identidad temática (`LevelTheme`) del nivel en `index`, o
+    /// `None` si el índice está fuera de rango.
+    ///
+    /// Tarea 41: acceso mínimo de solo lectura para que la UI
+    /// (Selección de Nivel) pueda resolver el acento cromático de
+    /// CADA fila del catálogo — no solo del nivel actualmente
+    /// cargado (`current`) — sin exponer `LevelInfo`/rutas de
+    /// archivo. Sigue el mismo patrón que `level_name`: no entra en
+    /// pánico ante un índice inválido.
+    pub(crate) fn level_theme(&self, index: usize) -> Option<LevelTheme> {
+        self.levels.get(index).map(|info| info.theme)
+    }
+
     /// Carga explícitamente el nivel indicado por índice.
     ///
     /// `current` solo se actualiza después de una carga exitosa.
@@ -219,6 +232,23 @@ mod tests {
         assert_eq!(manager.levels[0].theme, LevelTheme::CrimsonEntrance);
         assert_eq!(manager.levels[1].theme, LevelTheme::BlackClub);
         assert_eq!(manager.levels[2].theme, LevelTheme::HouseOfCards);
+    }
+
+    #[test]
+    fn level_theme_returns_the_expected_theme_for_each_catalog_index() {
+        let manager = LevelManager::new();
+
+        assert_eq!(manager.level_theme(0), Some(LevelTheme::CrimsonEntrance));
+        assert_eq!(manager.level_theme(1), Some(LevelTheme::BlackClub));
+        assert_eq!(manager.level_theme(2), Some(LevelTheme::HouseOfCards));
+    }
+
+    #[test]
+    fn level_theme_out_of_range_is_none() {
+        let manager = LevelManager::new();
+
+        assert_eq!(manager.level_theme(3), None);
+        assert_eq!(manager.level_theme(usize::MAX), None);
     }
 
     #[test]

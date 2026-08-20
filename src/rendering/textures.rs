@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn crimson_and_house_variants_still_match_the_base_pixel_for_pixel_after_task_40() {
+    fn crimson_variant_still_matches_the_base_pixel_for_pixel_after_task_41() {
         let mut manager = TextureManager::new();
 
         manager
@@ -602,26 +602,24 @@ mod tests {
 
         let base = manager.get("wall-club").expect("base debe existir");
 
-        // Tarea 40 solo hizo divergir a Black Club: Crimson Entrance
-        // y House of Cards (todavía pendiente de Tarea 41) deben
-        // seguir generando una variante IDÉNTICA píxel a píxel al
-        // asset base — ninguna regresión visual para ellos.
-        for theme in [LevelTheme::CrimsonEntrance, LevelTheme::HouseOfCards] {
-            let variant = manager
-                .themed_wall_texture('|', theme)
-                .unwrap_or_else(|| panic!("la variante {theme:?} debe existir"));
+        // Tarea 41 solo hizo divergir a House of Cards: Crimson
+        // Entrance es ahora el ÚNICO tema que debe seguir generando
+        // una variante IDÉNTICA píxel a píxel al asset base —
+        // ninguna regresión visual para él.
+        let variant = manager
+            .themed_wall_texture('|', LevelTheme::CrimsonEntrance)
+            .expect("la variante Crimson Entrance debe existir");
 
-            assert_eq!(base.width(), variant.width());
-            assert_eq!(base.height(), variant.height());
+        assert_eq!(base.width(), variant.width());
+        assert_eq!(base.height(), variant.height());
 
-            for y in 0..base.height() {
-                for x in 0..base.width() {
-                    assert_eq!(
-                        base.pixel_at(x, y),
-                        variant.pixel_at(x, y),
-                        "diverge en ({x}, {y}) para el tema {theme:?}"
-                    );
-                }
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                assert_eq!(
+                    base.pixel_at(x, y),
+                    variant.pixel_at(x, y),
+                    "diverge en ({x}, {y})"
+                );
             }
         }
     }
@@ -697,6 +695,115 @@ mod tests {
             checked_a_canonical_red_pixel,
             "club.png debe contener el rojo canónico auditado en Tarea 39.B"
         );
+    }
+
+    #[test]
+    fn house_of_cards_wall_variant_differs_from_the_legacy_red_base() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_wall_textures()
+            .expect("las texturas de pared del proyecto deben cargar");
+
+        let base = manager.get("wall-club").expect("base debe existir");
+
+        let variant = manager
+            .themed_wall_texture('|', LevelTheme::HouseOfCards)
+            .expect("la variante House of Cards debe existir");
+
+        let mut saw_a_different_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) != variant.pixel_at(x, y) {
+                    saw_a_different_pixel = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_a_different_pixel,
+            "la variante House of Cards debe diferir del rojo heredado en al menos un píxel"
+        );
+    }
+
+    #[test]
+    fn house_of_cards_wall_variant_maps_the_canonical_red_to_the_exact_reference_violet() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_wall_textures()
+            .expect("las texturas de pared del proyecto deben cargar");
+
+        let base = manager.get("wall-club").expect("base debe existir");
+
+        let variant = manager
+            .themed_wall_texture('|', LevelTheme::HouseOfCards)
+            .expect("la variante House of Cards debe existir");
+
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xC1, 0x3C, 0xFF, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(
+            checked_a_canonical_red_pixel,
+            "club.png debe contener el rojo canónico auditado en Tarea 39.B"
+        );
+    }
+
+    #[test]
+    fn all_three_theme_variants_of_the_same_asset_coexist_without_collision() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_wall_textures()
+            .expect("las texturas de pared del proyecto deben cargar");
+
+        let base = manager.get("wall-club").expect("base debe existir");
+
+        // Localizamos un píxel real de club.png que sea el rojo
+        // canónico brillante auditado en Tarea 39.B, y leemos ESA
+        // MISMA coordenada bajo las tres variantes cacheadas: cada
+        // tema debe devolver su propio color de acento (rojo/
+        // naranja/violeta), sin que uno sobrescriba al otro en el
+        // `HashMap` compartido por una colisión de clave.
+        let accent_coordinate = (0..base.height())
+            .flat_map(|y| (0..base.width()).map(move |x| (x, y)))
+            .find(|&(x, y)| base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)))
+            .expect("club.png debe contener el rojo canónico auditado en Tarea 39.B");
+
+        let (x, y) = accent_coordinate;
+
+        let crimson = manager
+            .themed_wall_texture('|', LevelTheme::CrimsonEntrance)
+            .and_then(|texture| texture.pixel_at(x, y));
+
+        let black_club = manager
+            .themed_wall_texture('|', LevelTheme::BlackClub)
+            .and_then(|texture| texture.pixel_at(x, y));
+
+        let house = manager
+            .themed_wall_texture('|', LevelTheme::HouseOfCards)
+            .and_then(|texture| texture.pixel_at(x, y));
+
+        assert_eq!(crimson, Some(Color::new(210, 31, 43, 255)));
+        assert_eq!(black_club, Some(Color::new(0xFF, 0x7A, 0x00, 255)));
+        assert_eq!(house, Some(Color::new(0xC1, 0x3C, 0xFF, 255)));
+
+        assert_ne!(crimson, black_club);
+        assert_ne!(crimson, house);
+        assert_ne!(black_club, house);
     }
 
     #[test]
