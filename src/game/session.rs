@@ -2,7 +2,8 @@ use raylib::prelude::Vector2;
 
 use crate::player::{Player, Weapon, WeaponState};
 use crate::world::{
-    DistanceField, Entity, EntityDamageOutcome, EntityState, EntityStateTransition, Level,
+    AmmoPickup, DistanceField, Entity, EntityDamageOutcome, EntityState, EntityStateTransition,
+    Level,
 };
 
 /// Modos de visualización disponibles.
@@ -16,6 +17,19 @@ pub(crate) enum ViewMode {
 /// impacta. Con `DEALER_MAX_HEALTH = 100` (definido en
 /// `world::entity`), un Dealer muere tras exactamente dos golpes.
 const DEALER_DAMAGE_PER_HIT: i32 = 50;
+
+/// Munición de reserva que otorga cada `AmmoPickup` recogido
+/// (Tarea 44). Nunca se aplica directamente al cargador — siempre
+/// vía `Weapon::add_reserve_ammo`, que ya respeta el tope.
+const AMMO_PICKUP_AMOUNT: u32 = 6;
+
+/// Radio de recolección de un `AmmoPickup`, en píxeles de mundo.
+///
+/// ~40% del ancho de una celda (`BLOCK_SIZE = 48` en el proyecto:
+/// `0.4 * 48 = 19.2`), deliberadamente pequeño para que el jugador
+/// no pueda recoger munición a través de una pared ni desde un
+/// pasillo paralelo.
+const AMMO_PICKUP_RADIUS: f32 = 19.2;
 
 /// Duración aproximada de cada cuadro de la animación de antorcha.
 const TORCH_FRAME_DURATION: f32 = 0.1;
@@ -73,6 +87,7 @@ pub(crate) struct GameSession {
     torch_animation: TorchAnimationState,
     weapon: Weapon,
     entities: Vec<Entity>,
+    ammo_pickups: Vec<AmmoPickup>,
 }
 
 impl GameSession {
@@ -80,14 +95,24 @@ impl GameSession {
     /// ya construidos.
     ///
     /// Inicia mostrando el mapa 2D, con la animación de antorcha en
-    /// su cuadro inicial, y crea exactamente un Dealer por cada
-    /// marcador `e` que el nivel haya descubierto, centrado en su
-    /// celda de aparición.
+    /// su cuadro inicial, crea exactamente un Dealer por cada
+    /// marcador `e` que el nivel haya descubierto (centrado en su
+    /// celda de aparición), y (Tarea 44) exactamente un
+    /// `AmmoPickup` ACTIVO por cada marcador `a` — el arma siempre
+    /// arranca con su munición inicial de siempre
+    /// (`Weapon::new`); T44 no introduce persistencia de munición
+    /// entre sesiones.
     pub(crate) fn new(level: Level, player: Player, block_size: usize) -> Self {
         let entities = level
             .enemy_spawns()
             .iter()
             .map(|&(row, column)| Entity::dealer_at_cell(row, column, block_size))
+            .collect();
+
+        let ammo_pickups = level
+            .ammo_spawns()
+            .iter()
+            .map(|&(row, column)| AmmoPickup::at_cell(row, column, block_size))
             .collect();
 
         Self {
@@ -97,6 +122,7 @@ impl GameSession {
             torch_animation: TorchAnimationState::new(),
             weapon: Weapon::new(),
             entities,
+            ammo_pickups,
         }
     }
 
@@ -177,6 +203,47 @@ impl GameSession {
             Some(entity) => entity.apply_damage(DEALER_DAMAGE_PER_HIT),
 
             None => EntityDamageOutcome::None,
+        }
+    }
+
+    /// Pickups de munición de la sesión actual (activos Y ya
+    /// recogidos): rendering decide por sí mismo, vía
+    /// `AmmoPickup::is_active`, cuáles dibujar.
+    pub(crate) fn ammo_pickups(&self) -> &[AmmoPickup] {
+        &self.ammo_pickups
+    }
+
+    /// Recoge cualquier `AmmoPickup` activo dentro de
+    /// `AMMO_PICKUP_RADIUS` de la posición actual del jugador.
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
+    /// (`App::update_playing`) — nunca desde rendering, HUD, ni el
+    /// parser — para que `App::update_paused` (Tarea 42), que
+    /// simplemente no invoca `update_playing`, congele la
+    /// recolección automáticamente sin necesitar ningún caso
+    /// especial nuevo.
+    ///
+    /// Un pickup se consume (`AmmoPickup::deactivate`) únicamente si
+    /// `Weapon::add_reserve_ammo` reporta que realmente añadió al
+    /// menos una bala; con la reserva ya en el tope, el pickup
+    /// permanece disponible para no desperdiciarlo. El cargador
+    /// nunca se toca aquí — solo `Weapon::add_reserve_ammo`, la
+    /// única autoridad sobre la reserva.
+    pub(crate) fn collect_nearby_ammo_pickups(&mut self) {
+        let player_position = self.player.pos;
+
+        for pickup in &mut self.ammo_pickups {
+            if !pickup.is_active() {
+                continue;
+            }
+
+            if !ammo_pickup_in_range(player_position, pickup.position(), AMMO_PICKUP_RADIUS) {
+                continue;
+            }
+
+            if self.weapon.add_reserve_ammo(AMMO_PICKUP_AMOUNT) > 0 {
+                pickup.deactivate();
+            }
         }
     }
 
@@ -303,6 +370,25 @@ fn cell_center(row: usize, column: usize, block_size: usize) -> Vector2 {
     )
 }
 
+/// Comprueba si `pickup_position` está a `radius` píxeles de mundo o
+/// menos de `player_position` (distancia 2D en el plano del mapa; la
+/// altura del billboard sobre el suelo no participa en la
+/// colección).
+///
+/// Función pura, extraída de `collect_nearby_ammo_pickups` para
+/// poder probar directamente el radio sin construir una
+/// `GameSession`/`Level` completa. Compara distancia AL CUADRADO
+/// (`dx² + dy² <= radius²`) para evitar `sqrt`, tal como sugiere la
+/// tarea — la claridad de la fórmula pesa más que la
+/// microoptimización, pero evitar la raíz cuadrada es gratis aquí.
+fn ammo_pickup_in_range(player_position: Vector2, pickup_position: Vector2, radius: f32) -> bool {
+    let dx = player_position.x - pickup_position.x;
+
+    let dy = player_position.y - pickup_position.y;
+
+    dx * dx + dy * dy <= radius * radius
+}
+
 /// Comprueba si el punto de mundo `(player_x, player_y)` cae dentro
 /// de la celda de meta `(goal_row, goal_column)`, usando el mismo
 /// convenio fila/columna que el resto del proyecto
@@ -409,6 +495,172 @@ mod tests {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
         GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    /// Sesión de prueba con un único pickup de munición en (fila 1,
+    /// columna 3), a la derecha del spawn del jugador (fila 1,
+    /// columna 1).
+    fn new_test_session_with_one_ammo_spawn() -> GameSession {
+        let map = "\
+#######
+#p a g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    /// Sesión de prueba con tres pickups de munición, todos
+    /// alcanzables desde el spawn del jugador: suficientes para
+    /// llevar la reserva inicial (18) exactamente al tope (30) con
+    /// los dos primeros y dejar un tercero activo para probar que
+    /// una reserva ya llena NO consume el pickup.
+    fn new_test_session_with_three_ammo_spawns() -> GameSession {
+        let map = "\
+###########
+#p a a a g#
+###########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    // --- Tarea 44: pickups de munición. ---
+
+    #[test]
+    fn collecting_within_radius_consumes_the_pickup_and_increases_reserve() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        assert_eq!(session.weapon_reserve_ammo(), 18);
+        assert!(session.ammo_pickups()[0].is_active());
+
+        // (fila 1, columna 3) -> centro de celda en x=168, y=72.
+        session.player.pos = Vector2::new(168.0, 72.0);
+
+        session.collect_nearby_ammo_pickups();
+
+        assert_eq!(session.weapon_reserve_ammo(), 24);
+        assert!(!session.ammo_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn collecting_outside_radius_leaves_the_pickup_and_reserve_unchanged() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        // El spawn del jugador (fila 1, columna 1) está a 2 celdas
+        // (96 px) del pickup — muy por fuera de `AMMO_PICKUP_RADIUS`
+        // (~19.2 px).
+        session.collect_nearby_ammo_pickups();
+
+        assert_eq!(session.weapon_reserve_ammo(), 18);
+        assert!(session.ammo_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn full_reserve_retains_the_pickup_instead_of_consuming_it() {
+        let mut session = new_test_session_with_three_ammo_spawns();
+
+        // (fila 1, columna 3): x=168, y=72. 18 + 6 = 24.
+        session.player.pos = Vector2::new(168.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+        assert_eq!(session.weapon_reserve_ammo(), 24);
+        assert!(!session.ammo_pickups()[0].is_active());
+
+        // (fila 1, columna 5): x=264, y=72. 24 + 6 = 30 (tope).
+        session.player.pos = Vector2::new(264.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+        assert_eq!(session.weapon_reserve_ammo(), 30);
+        assert!(!session.ammo_pickups()[1].is_active());
+
+        // (fila 1, columna 7): x=360, y=72. Reserva YA en el tope:
+        // `add_reserve_ammo` no puede añadir nada, así que este
+        // tercer pickup, todavía ACTIVO, debe permanecer disponible
+        // en vez de desperdiciarse.
+        session.player.pos = Vector2::new(360.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+
+        assert_eq!(session.weapon_reserve_ammo(), 30);
+        assert!(session.ammo_pickups()[2].is_active());
+    }
+
+    #[test]
+    fn collection_never_refills_the_magazine() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        assert!(session.try_fire_weapon());
+        let magazine_before = session.weapon_ammo();
+        assert_eq!(magazine_before, 5);
+
+        session.player.pos = Vector2::new(168.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+
+        assert_eq!(session.weapon_ammo(), magazine_before);
+        assert_eq!(session.weapon_reserve_ammo(), 24);
+    }
+
+    #[test]
+    fn ammo_pickup_in_range_matches_the_radius_boundary() {
+        let player = Vector2::new(0.0, 0.0);
+
+        assert!(ammo_pickup_in_range(
+            player,
+            Vector2::new(AMMO_PICKUP_RADIUS, 0.0),
+            AMMO_PICKUP_RADIUS
+        ));
+
+        assert!(!ammo_pickup_in_range(
+            player,
+            Vector2::new(AMMO_PICKUP_RADIUS + 0.5, 0.0),
+            AMMO_PICKUP_RADIUS
+        ));
+    }
+
+    #[test]
+    fn new_session_from_the_same_level_restores_all_pickups() {
+        let map = "\
+#######
+#p a g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut first_session = GameSession::new(level, player, BLOCK_SIZE);
+
+        first_session.player.pos = Vector2::new(168.0, 72.0);
+        first_session.collect_nearby_ammo_pickups();
+
+        assert!(!first_session.ammo_pickups()[0].is_active());
+
+        // Reconstruir una sesión NUEVA desde el mismo `Level`
+        // (recargado desde disco, igual que `App::start_selected_level`/
+        // `replace_session_with_level` hacen en la arquitectura real)
+        // debe restaurar el pickup a su estado activo original —
+        // `Level` nunca se modifica permanentemente al recogerlo.
+        let level_again = Level::load(file.path_str()).expect("el nivel debe recargar");
+
+        let player_again = Player::from_level(&level_again, BLOCK_SIZE);
+
+        let second_session = GameSession::new(level_again, player_again, BLOCK_SIZE);
+
+        assert!(second_session.ammo_pickups()[0].is_active());
+        assert_eq!(second_session.weapon_reserve_ammo(), 18);
     }
 
     // --- Tarea 43: propagación de la aceptación de recarga hasta el

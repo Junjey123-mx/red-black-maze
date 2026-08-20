@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{Entity, Level, LevelTheme};
+use crate::world::{AmmoPickup, Entity, Level, LevelTheme};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -216,6 +216,14 @@ struct BillboardItem<'a> {
     world_size: f32,
 }
 
+/// Tamaño de mundo del billboard del pickup de munición (Tarea 44),
+/// deliberadamente menor que `block_size` (el tamaño que usan meta/
+/// antorcha/Dealer): el pickup debe leerse claramente como más
+/// pequeño que The Dealer y el portal, sin necesitar una textura de
+/// mayor resolución ni un mecanismo de escalado nuevo — el mismo
+/// billboard existente ya acepta cualquier `world_size`.
+const AMMO_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.5;
+
 /// Dibuja todos los sprites billboard de la escena actual (meta y
 /// antorchas), ordenados de más lejano a más cercano y ocluidos
 /// contra `wall_depth_buffer` de este mismo cuadro.
@@ -236,6 +244,7 @@ pub(crate) fn render_world_sprites(
     block_size: usize,
     torch_frame_index: usize,
     entities: &[Entity],
+    ammo_pickups: &[AmmoPickup],
     wall_depth_buffer: &[f32],
     theme: LevelTheme,
 ) {
@@ -277,6 +286,28 @@ pub(crate) fn render_world_sprites(
                 world_position: entity.position(),
                 texture,
                 world_size: block_size as f32,
+            });
+        }
+    }
+
+    /*
+     * Tarea 44: solo los pickups ACTIVOS (todavía no recogidos en
+     * esta sesión) entran al pipeline de dibujo — `GameSession` es
+     * quien decide cuándo desactivar uno (`collect_nearby_ammo_pickups`,
+     * llamado desde el update jugable, nunca desde aquí). Reutiliza
+     * el MISMO pipeline de proyección/orden/oclusión que meta/
+     * antorcha/Dealer; la única diferencia es un `world_size` menor.
+     */
+    if let Some(texture) = textures.themed_ammo_pickup_texture(theme) {
+        for pickup in ammo_pickups {
+            if !pickup.is_active() {
+                continue;
+            }
+
+            items.push(BillboardItem {
+                world_position: pickup.position(),
+                texture,
+                world_size: block_size as f32 * AMMO_PICKUP_WORLD_SIZE_FACTOR,
             });
         }
     }

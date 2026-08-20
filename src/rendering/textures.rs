@@ -154,6 +154,15 @@ const WALL_TEXTURES: [(char, &str, &str); 4] = [
 const GOAL_TEXTURE_KEY: &str = "sprite-goal";
 const GOAL_TEXTURE_PATH: &str = "assets/textures/sprites/goal.png";
 
+/// Clave y ruta congeladas de la textura del pickup de munición
+/// (Tarea 44). Único asset base, igual que el resto de sprites
+/// temáticos: NO existen `ammo_pickup_red.png`/`_orange.png`/
+/// `_violet.png` — las tres variantes se generan a partir de este
+/// único PNG mediante el mismo pipeline (`generate_themed_variants`)
+/// que ya usan paredes/arma/Dealer/antorchas/meta.
+const AMMO_PICKUP_TEXTURE_KEY: &str = "sprite-ammo-pickup";
+const AMMO_PICKUP_TEXTURE_PATH: &str = "assets/textures/sprites/ammo_pickup.png";
+
 /// Catálogo centralizado y congelado de los cuatro cuadros de
 /// animación de la antorcha, en orden de reproducción.
 ///
@@ -342,6 +351,24 @@ impl TextureManager {
     /// si está disponible.
     pub(crate) fn themed_goal_texture(&self, theme: LevelTheme) -> Option<&TextureAsset> {
         self.get(&Self::themed_key(GOAL_TEXTURE_KEY, theme))
+    }
+
+    /// Carga, una única vez, la textura del pickup de munición
+    /// (Tarea 44), junto con sus tres variantes temáticas.
+    ///
+    /// Reutiliza la API genérica `load` existente.
+    pub(crate) fn load_ammo_pickup_texture(&mut self) -> Result<(), TextureError> {
+        self.load(AMMO_PICKUP_TEXTURE_KEY, AMMO_PICKUP_TEXTURE_PATH)?;
+
+        self.generate_themed_variants(AMMO_PICKUP_TEXTURE_KEY);
+
+        Ok(())
+    }
+
+    /// Variante temática ya cargada del pickup de munición para
+    /// `theme`, si está disponible.
+    pub(crate) fn themed_ammo_pickup_texture(&self, theme: LevelTheme) -> Option<&TextureAsset> {
+        self.get(&Self::themed_key(AMMO_PICKUP_TEXTURE_KEY, theme))
     }
 
     /// Carga, una única vez, los cuatro cuadros de animación de la
@@ -833,5 +860,161 @@ mod tests {
         // sobra (fondo del sprite); si esto fallara silenciosamente
         // por un asset distinto, la prueba lo haría evidente.
         assert!(saw_a_transparent_pixel);
+    }
+
+    // --- Tarea 44: pickup de munición. ---
+
+    #[test]
+    fn loading_ammo_pickup_texture_generates_a_lookup_hit_for_every_theme() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_ammo_pickup_texture()
+            .expect("la textura del pickup de munición del proyecto debe cargar");
+
+        for theme in TextureManager::THEMES {
+            assert!(
+                manager.themed_ammo_pickup_texture(theme).is_some(),
+                "falta la variante temática {theme:?} del pickup de munición"
+            );
+        }
+    }
+
+    #[test]
+    fn ammo_pickup_variant_maps_the_canonical_red_to_the_exact_reference_orange() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_ammo_pickup_texture()
+            .expect("la textura del pickup de munición del proyecto debe cargar");
+
+        let base = manager
+            .get(AMMO_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
+
+        let variant = manager
+            .themed_ammo_pickup_texture(LevelTheme::BlackClub)
+            .expect("la variante Black Club debe existir");
+
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xFF, 0x7A, 0x00, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(
+            checked_a_canonical_red_pixel,
+            "ammo_pickup.png debe usar el rojo canónico bright de LEGACY_ACCENT_TABLE"
+        );
+    }
+
+    #[test]
+    fn ammo_pickup_variant_maps_the_canonical_red_to_the_exact_reference_violet() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_ammo_pickup_texture()
+            .expect("la textura del pickup de munición del proyecto debe cargar");
+
+        let base = manager
+            .get(AMMO_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
+
+        let variant = manager
+            .themed_ammo_pickup_texture(LevelTheme::HouseOfCards)
+            .expect("la variante House of Cards debe existir");
+
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xC1, 0x3C, 0xFF, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(checked_a_canonical_red_pixel);
+    }
+
+    #[test]
+    fn ammo_pickup_crimson_variant_matches_the_base_pixel_for_pixel() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_ammo_pickup_texture()
+            .expect("la textura del pickup de munición del proyecto debe cargar");
+
+        let base = manager
+            .get(AMMO_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
+
+        let variant = manager
+            .themed_ammo_pickup_texture(LevelTheme::CrimsonEntrance)
+            .expect("la variante Crimson Entrance debe existir");
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                assert_eq!(base.pixel_at(x, y), variant.pixel_at(x, y));
+            }
+        }
+    }
+
+    #[test]
+    fn ammo_pickup_ivory_highlight_and_transparency_are_preserved_across_themes() {
+        let base_image = Image::load_image(AMMO_PICKUP_TEXTURE_PATH)
+            .expect("el asset del pickup de munición del proyecto debe cargar");
+
+        let mut saw_ivory = false;
+
+        let mut saw_transparent = false;
+
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            let palette = palette_for_theme(theme);
+
+            let remapped = remap_image_accent(&base_image, &palette);
+
+            for y in 0..base_image.height() {
+                for x in 0..base_image.width() {
+                    let original = base_image.get_color(x, y);
+
+                    if original == Color::new(214, 208, 196, 255) {
+                        saw_ivory = true;
+
+                        assert_eq!(remapped.get_color(x, y), original);
+                    }
+
+                    if original.a == 0 {
+                        saw_transparent = true;
+
+                        assert_eq!(remapped.get_color(x, y).a, 0);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_ivory,
+            "ammo_pickup.png debe contener el marfil neutro del proyecto"
+        );
+        assert!(saw_transparent);
     }
 }

@@ -25,6 +25,10 @@ const MAGAZINE_CAPACITY: u32 = 6;
 /// Munición de reserva inicial (fuera del cargador).
 const INITIAL_RESERVE_AMMO: u32 = 18;
 
+/// Tope máximo de munición de reserva (Tarea 44): ningún pickup ni
+/// otra fuente puede hacer que `reserve` supere este valor.
+const MAX_RESERVE_AMMO: u32 = 30;
+
 /// Duración de la recarga, en segundos.
 const RELOAD_DURATION: f32 = 0.8;
 
@@ -79,6 +83,30 @@ impl Weapon {
     /// Munición restante en la reserva (fuera del cargador).
     pub(crate) fn reserve_ammo(&self) -> u32 {
         self.reserve
+    }
+
+    /// Añade `amount` a la reserva, sin superar `MAX_RESERVE_AMMO`
+    /// (Tarea 44), y retorna la cantidad REALMENTE añadida.
+    ///
+    /// Único punto de escritura de `reserve` fuera de
+    /// `complete_reload`; `GameSession` (o cualquier otro llamador,
+    /// por ejemplo la recolección de `AmmoPickup`) nunca escribe el
+    /// campo directamente. El cargador (`magazine`) NUNCA se toca
+    /// aquí — un pickup recogido nunca rellena el arma directamente,
+    /// el jugador sigue necesitando `R`.
+    ///
+    /// El valor de retorno es lo que permite a quien llama (la
+    /// colección de pickups) decidir si el pickup debe consumirse:
+    /// `0` significa que la reserva ya estaba en el tope y nada se
+    /// añadió.
+    pub(crate) fn add_reserve_ammo(&mut self, amount: u32) -> u32 {
+        let new_reserve = self.reserve.saturating_add(amount).min(MAX_RESERVE_AMMO);
+
+        let added = new_reserve - self.reserve;
+
+        self.reserve = new_reserve;
+
+        added
     }
 
     /// Progreso normalizado de la recarga en curso, o `None` si el
@@ -339,6 +367,75 @@ mod tests {
 
         assert_eq!(weapon.ammo(), 6);
         assert_eq!(weapon.reserve_ammo(), 18);
+    }
+
+    // --- Tarea 44: `add_reserve_ammo`. ---
+
+    #[test]
+    fn add_reserve_ammo_below_the_cap_adds_the_full_amount() {
+        let mut weapon = Weapon::new();
+
+        assert_eq!(weapon.reserve_ammo(), 18);
+
+        let added = weapon.add_reserve_ammo(6);
+
+        assert_eq!(added, 6);
+        assert_eq!(weapon.reserve_ammo(), 24);
+    }
+
+    #[test]
+    fn add_reserve_ammo_clamps_partially_near_the_cap() {
+        let mut weapon = Weapon::new();
+
+        // 18 + 6 = 24, luego otra vez para llegar a 28.
+        weapon.add_reserve_ammo(6);
+        weapon.add_reserve_ammo(4);
+        assert_eq!(weapon.reserve_ammo(), 28);
+
+        let added = weapon.add_reserve_ammo(6);
+
+        assert_eq!(added, 2);
+        assert_eq!(weapon.reserve_ammo(), 30);
+    }
+
+    #[test]
+    fn add_reserve_ammo_at_the_cap_adds_nothing() {
+        let mut weapon = Weapon::new();
+
+        weapon.add_reserve_ammo(30);
+        assert_eq!(weapon.reserve_ammo(), 30);
+
+        let added = weapon.add_reserve_ammo(6);
+
+        assert_eq!(added, 0);
+        assert_eq!(weapon.reserve_ammo(), 30);
+    }
+
+    #[test]
+    fn reserve_never_exceeds_the_maximum_across_many_additions() {
+        let mut weapon = Weapon::new();
+
+        for _ in 0..20 {
+            weapon.add_reserve_ammo(6);
+
+            assert!(weapon.reserve_ammo() <= 30);
+        }
+
+        assert_eq!(weapon.reserve_ammo(), 30);
+    }
+
+    #[test]
+    fn add_reserve_ammo_never_changes_the_magazine() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        assert_eq!(weapon.ammo(), 5);
+
+        weapon.add_reserve_ammo(6);
+
+        // Solo la reserva cambió; el cargador sigue en 5 — un pickup
+        // nunca rellena el arma directamente.
+        assert_eq!(weapon.ammo(), 5);
     }
 
     #[test]

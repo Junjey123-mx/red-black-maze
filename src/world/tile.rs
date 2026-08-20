@@ -10,6 +10,7 @@ pub(crate) enum Tile {
     SpadeWall,
     EnemySpawn,
     Torch,
+    AmmoSpawn,
 }
 
 impl Tile {
@@ -27,6 +28,7 @@ impl Tile {
             '#' => Some(Tile::SpadeWall),
             'e' => Some(Tile::EnemySpawn),
             't' => Some(Tile::Torch),
+            'a' => Some(Tile::AmmoSpawn),
             _ => None,
         }
     }
@@ -40,11 +42,18 @@ impl Tile {
     /// de un `Entity` real, no una pared. Si permaneciera bloqueado,
     /// un rayo terminaría exactamente sobre la posición del Dealer
     /// y su propio billboard quedaría auto-ocluido detrás de esa
-    /// "pared".
+    /// "pared". `AmmoSpawn` (Tarea 44) sigue exactamente el mismo
+    /// principio: es solo un marcador de aparición de un
+    /// `AmmoPickup` runtime, nunca una pared.
     pub(crate) fn is_walkable(self) -> bool {
         matches!(
             self,
-            Tile::Empty | Tile::PlayerSpawn | Tile::Goal | Tile::Torch | Tile::EnemySpawn
+            Tile::Empty
+                | Tile::PlayerSpawn
+                | Tile::Goal
+                | Tile::Torch
+                | Tile::EnemySpawn
+                | Tile::AmmoSpawn
         )
     }
 }

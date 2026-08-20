@@ -373,6 +373,18 @@ impl<'aud> App<'aud> {
         self.session.update_torch_animation(window.get_frame_time());
 
         /*
+         * Tarea 44: recolección de munición cercana. Vive aquí,
+         * dentro de `update_playing` (el ÚNICO llamador), para que
+         * `App::update_paused` (Tarea 42) — que simplemente no
+         * invoca este método mientras `GameState::Paused` esté
+         * activo — congele la recolección automáticamente, sin
+         * ningún caso especial nuevo. `collect_nearby_ammo_pickups`
+         * es la única autoridad sobre qué pickup se consume y cuánta
+         * reserva se añade; `App` no repite esa lógica.
+         */
+        self.session.collect_nearby_ammo_pickups();
+
+        /*
          * Avanza la máquina de estados visual del arma ANTES de
          * procesar el clic de este cuadro, de modo que un disparo
          * aceptado ahora comience en `Fire` con tiempo cero y se
@@ -796,6 +808,7 @@ impl<'aud> App<'aud> {
                     BLOCK_SIZE,
                     self.session.torch_frame_index(),
                     self.session.entities(),
+                    self.session.ammo_pickups(),
                     &wall_depth_buffer,
                     theme,
                 );
@@ -899,6 +912,11 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_goal_texture() {
         eprintln!("Error al cargar la textura de la meta: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_ammo_pickup_texture() {
+        eprintln!("Error al cargar la textura del pickup de munición: {error}");
         return;
     }
 

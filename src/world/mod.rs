@@ -1,3 +1,4 @@
+mod ammo_pickup;
 mod collision;
 mod entity;
 mod level;
@@ -13,6 +14,7 @@ mod tile;
 /// restart/next del catálogo sin abrir una ventana de Raylib. El
 /// resto del módulo (`Entity`, `LevelTheme`, `Tile`, ...) permanece
 /// `pub(crate)`: ninguna prueba de integración los requiere.
+pub(crate) use ammo_pickup::AmmoPickup;
 pub use collision::can_occupy;
 pub(crate) use entity::{
     Entity, EntityDamageOutcome, EntitySprite, EntityState, EntityStateTransition,
