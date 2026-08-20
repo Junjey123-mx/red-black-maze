@@ -1,6 +1,8 @@
 use raylib::prelude::Color;
 
 use super::framebuffer::Framebuffer;
+use super::palette::palette_for_theme;
+use crate::world::LevelTheme;
 
 /// Margen izquierdo entre el borde del framebuffer y el HUD.
 const LEFT_MARGIN: i32 = 16;
@@ -43,7 +45,10 @@ const FPS_MIN_DIGITS: usize = 1;
 const FPS_LEFT_MARGIN: i32 = 8;
 const FPS_TOP_MARGIN: i32 = 8;
 
-const HUD_RED: Color = Color::new(205, 30, 42, 255);
+/// Marfil/crema neutro, independiente del `LevelTheme` activo (no
+/// forma parte de la familia de acento): los dígitos de vida/
+/// munición/FPS siguen siendo marfil sin importar si el nivel es
+/// rojo/naranja/violeta.
 const HUD_IVORY: Color = Color::new(214, 208, 196, 255);
 
 /// Fuente bitmap 3x5 (ancho x alto) para los dígitos `0`-`9`.
@@ -190,6 +195,7 @@ pub(crate) fn render_hud(
     health: i32,
     magazine_ammo: u32,
     reserve_ammo: u32,
+    theme: LevelTheme,
 ) {
     let framebuffer_width = framebuffer.width();
 
@@ -198,6 +204,15 @@ pub(crate) fn render_hud(
     if framebuffer_width <= 0 || framebuffer_height <= 0 {
         return;
     }
+
+    /*
+     * Resuelto una única vez por cuadro (no por glifo): el `match`
+     * de `palette_for_theme` es una construcción de struct en pila,
+     * sin asignación ni E/S, por lo que no hay costo real en
+     * resolverlo aquí en vez de recibir un `&ThemePalette` ya
+     * calculado por el llamador.
+     */
+    let palette = palette_for_theme(theme);
 
     let row_height = GLYPH_HEIGHT * GLYPH_SCALE;
 
@@ -211,7 +226,7 @@ pub(crate) fn render_hud(
         GLYPH_WIDTH,
         origin_x,
         origin_y,
-        HUD_RED,
+        palette.hud_accent,
     );
 
     let health_digits_x = origin_x + (GLYPH_WIDTH + GLYPH_GAP) * GLYPH_SCALE;
@@ -234,7 +249,7 @@ pub(crate) fn render_hud(
         GLYPH_WIDTH,
         diamond_x,
         origin_y,
-        HUD_RED,
+        palette.hud_accent,
     );
 
     let magazine_digits_x = diamond_x + (GLYPH_WIDTH + GLYPH_GAP) * GLYPH_SCALE;

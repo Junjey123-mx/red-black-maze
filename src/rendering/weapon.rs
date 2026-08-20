@@ -1,6 +1,7 @@
 use super::framebuffer::Framebuffer;
 use super::textures::TextureManager;
 use crate::player::WeaponState;
+use crate::world::LevelTheme;
 
 /// Escala entera de dibujo del arma en primera persona, con
 /// muestreo nearest-neighbor (sin antialiasing).
@@ -18,8 +19,9 @@ pub(crate) fn render_weapon(
     framebuffer: &mut Framebuffer,
     textures: &TextureManager,
     state: WeaponState,
+    theme: LevelTheme,
 ) {
-    let Some(texture) = textures.weapon_texture(state) else {
+    let Some(texture) = textures.themed_weapon_texture(state, theme) else {
         return;
     };
 

@@ -1,6 +1,7 @@
 mod background;
 mod hud;
 mod minimap;
+mod palette;
 mod sprites;
 mod textures;
 mod weapon;

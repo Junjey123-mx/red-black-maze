@@ -1,8 +1,9 @@
 use raylib::prelude::Color;
 
 use super::framebuffer::Framebuffer;
+use super::palette::palette_for_theme;
 use crate::player::Player;
-use crate::world::{Level, Tile};
+use crate::world::{Level, LevelTheme, Tile};
 
 /// Margen exterior entre el borde del framebuffer y la caja del
 /// minimapa.
@@ -25,9 +26,12 @@ const DIRECTION_LINE_LENGTH: f32 = 12.0;
 /// Radio del marcador del jugador, en píxeles de minimapa.
 const PLAYER_MARKER_RADIUS: i32 = 3;
 
+/// Neutro, independiente del `LevelTheme` activo.
 const BACKGROUND_COLOR: Color = Color::new(10, 10, 14, 255);
-const BORDER_COLOR: Color = Color::new(120, 18, 24, 255);
-const WALL_COLOR: Color = Color::new(150, 24, 32, 255);
+
+/// Neutro (marfil), independiente del `LevelTheme` activo: el
+/// marcador del jugador no forma parte de la identidad de acento del
+/// nivel.
 const PLAYER_COLOR: Color = Color::new(235, 228, 210, 255);
 
 /// Disposición geométrica ya resuelta del minimapa para un
@@ -224,6 +228,7 @@ pub(crate) fn render_minimap(
     level: &Level,
     player: &Player,
     block_size: usize,
+    theme: LevelTheme,
 ) {
     let Some(layout) = compute_layout(
         framebuffer.width(),
@@ -234,13 +239,15 @@ pub(crate) fn render_minimap(
         return;
     };
 
+    let palette = palette_for_theme(theme);
+
     fill_rect(
         framebuffer,
         layout.box_left,
         layout.box_top,
         layout.box_right,
         layout.box_bottom,
-        BORDER_COLOR,
+        palette.minimap_border_accent,
     );
 
     let border = BORDER_THICKNESS.round() as i32;
@@ -278,7 +285,7 @@ pub(crate) fn render_minimap(
                 y0.round() as i32,
                 x1.round() as i32,
                 y1.round() as i32,
-                WALL_COLOR,
+                palette.minimap_wall_accent,
             );
         }
     }

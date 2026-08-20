@@ -639,17 +639,24 @@ impl<'aud> App<'aud> {
             ViewMode::World3D => {
                 /*
                  * Vista en primera persona. El tema visual (cielo/
-                 * suelo) proviene del catálogo de `LevelManager`,
-                 * único dueño de qué `LevelTheme` corresponde al
-                 * nivel activo; no se duplica en `GameSession`.
+                 * suelo, paredes con textura, arma, Dealer,
+                 * antorchas, meta, HUD, minimapa — Tarea 39.B)
+                 * proviene del catálogo de `LevelManager`, único
+                 * dueño de qué `LevelTheme` corresponde al nivel
+                 * activo; no se duplica en `GameSession`. Resuelto
+                 * UNA VEZ por cuadro aquí y propagado a cada
+                 * renderer, en vez de que cada uno vuelva a leer
+                 * `self.level_manager.current().theme` por su cuenta.
                  */
+                let theme = self.level_manager.current().theme;
+
                 let wall_depth_buffer = render_world(
                     framebuffer,
                     &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
                     &self.textures,
-                    self.level_manager.current().theme,
+                    theme,
                 );
 
                 render_world_sprites(
@@ -661,6 +668,7 @@ impl<'aud> App<'aud> {
                     self.session.torch_frame_index(),
                     self.session.entities(),
                     &wall_depth_buffer,
+                    theme,
                 );
 
                 /*
@@ -669,7 +677,12 @@ impl<'aud> App<'aud> {
                  * nunca quede oculta por paredes ni sprites de
                  * mundo.
                  */
-                render_weapon(framebuffer, &self.textures, self.session.weapon_state());
+                render_weapon(
+                    framebuffer,
+                    &self.textures,
+                    self.session.weapon_state(),
+                    theme,
+                );
 
                 /*
                  * El minimapa se dibuja al final como superposición
@@ -682,6 +695,7 @@ impl<'aud> App<'aud> {
                     &self.session.level,
                     &self.session.player,
                     BLOCK_SIZE,
+                    theme,
                 );
 
                 /*
@@ -695,6 +709,7 @@ impl<'aud> App<'aud> {
                     self.session.player_health(),
                     self.session.weapon_ammo(),
                     self.session.weapon_reserve_ammo(),
+                    theme,
                 );
             }
         }

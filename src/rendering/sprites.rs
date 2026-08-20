@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{Entity, Level};
+use crate::world::{Entity, Level, LevelTheme};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -237,10 +237,11 @@ pub(crate) fn render_world_sprites(
     torch_frame_index: usize,
     entities: &[Entity],
     wall_depth_buffer: &[f32],
+    theme: LevelTheme,
 ) {
     let mut items: Vec<BillboardItem> = Vec::new();
 
-    if let Some(texture) = textures.goal_texture() {
+    if let Some(texture) = textures.themed_goal_texture(theme) {
         let (row, column) = level.goal();
 
         items.push(BillboardItem {
@@ -250,7 +251,7 @@ pub(crate) fn render_world_sprites(
         });
     }
 
-    if let Some(texture) = textures.torch_texture(torch_frame_index) {
+    if let Some(texture) = textures.themed_torch_texture(torch_frame_index, theme) {
         for &(row, column) in level.torch_spawns() {
             items.push(BillboardItem {
                 world_position: cell_center(row, column, block_size),
@@ -269,7 +270,9 @@ pub(crate) fn render_world_sprites(
      * sprite.
      */
     for entity in entities {
-        if let Some(texture) = textures.entity_texture(entity.sprite(), entity.state()) {
+        if let Some(texture) =
+            textures.themed_entity_texture(entity.sprite(), entity.state(), theme)
+        {
             items.push(BillboardItem {
                 world_position: entity.position(),
                 texture,

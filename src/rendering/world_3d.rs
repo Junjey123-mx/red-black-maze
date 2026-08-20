@@ -1,16 +1,21 @@
 use super::background::draw_background;
 use super::framebuffer::Framebuffer;
+use super::palette::{ThemePalette, palette_for_theme};
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
 use crate::raycasting::{cast_ray, ray_angle_for_column};
 use crate::world::{Level, LevelTheme};
 use raylib::prelude::Color;
 
-/// Obtiene el color de una pared según el carácter
-/// golpeado y la distancia.
+/// Obtiene el color de una pared según el carácter golpeado, la
+/// distancia y el matiz de acento resuelto para el nivel actual
+/// (`ThemePalette`, Tarea 39).
 ///
-/// Las paredes más lejanas se muestran más oscuras.
-fn wall_color(impact: char, distance: f32) -> Color {
+/// Las paredes más lejanas se muestran más oscuras: el canal rojo se
+/// escala dinámicamente según la distancia exactamente como antes de
+/// Tarea 39; solo el matiz verde/azul, antes hardcodeado sin importar
+/// el `LevelTheme` activo, ahora viene de `palette`.
+fn wall_color(impact: char, distance: f32, palette: &ThemePalette) -> Color {
     let brightness = (255.0 / (1.0 + distance * 0.009)).clamp(45.0, 255.0);
 
     let bright = brightness as u8;
@@ -21,18 +26,30 @@ fn wall_color(impact: char, distance: f32) -> Color {
 
     match impact {
         // Pared vertical.
-        '|' => Color::new(bright, 25, 30, 255),
+        '|' => Color::new(
+            bright,
+            palette.accent_vertical.g,
+            palette.accent_vertical.b,
+            255,
+        ),
 
         // Pared horizontal.
-        '-' => Color::new(medium, 18, 24, 255),
+        '-' => Color::new(
+            medium,
+            palette.accent_horizontal.g,
+            palette.accent_horizontal.b,
+            255,
+        ),
 
         // Esquina.
-        '+' => Color::new(dark, 12, 18, 255),
+        '+' => Color::new(dark, palette.accent_corner.g, palette.accent_corner.b, 255),
 
         // Carácter alternativo de pared.
-        '#' => Color::new(medium, 20, 25, 255),
+        '#' => Color::new(medium, palette.accent_alt.g, palette.accent_alt.b, 255),
 
-        // Carácter desconocido.
+        // Carácter desconocido: magenta de depuración, deliberadamente
+        // ajeno a cualquier `ThemePalette` (nunca debería aparecer en
+        // un mapa válido).
         _ => Color::new(bright, 0, bright, 255),
     }
 }
@@ -141,6 +158,14 @@ pub(crate) fn render_world(
 
     draw_background(framebuffer, theme);
 
+    /*
+     * Resuelto UNA VEZ por cuadro (no por columna/rayo): el respaldo
+     * de pared sin textura reutiliza el mismo `ThemePalette` para
+     * las 624 columnas, sin recalcular la traducción `LevelTheme ->
+     * Color` en el bucle de abajo.
+     */
+    let accent_palette = palette_for_theme(theme);
+
     let half_width = screen_width as f32 / 2.0;
 
     let half_height = screen_height as f32 / 2.0;
@@ -216,21 +241,23 @@ pub(crate) fn render_world(
          * registrada, dibujar la columna muestreándola; de lo
          * contrario, usar el color plano existente.
          */
-        let textured = textures.wall_texture(ray_hit.tile).is_some_and(|texture| {
-            draw_textured_column(
-                framebuffer,
-                screen_x,
-                stake_top,
-                stake_bottom,
-                projected_top,
-                stake_height,
-                texture,
-                ray_hit.texture_offset,
-            )
-        });
+        let textured = textures
+            .themed_wall_texture(ray_hit.tile, theme)
+            .is_some_and(|texture| {
+                draw_textured_column(
+                    framebuffer,
+                    screen_x,
+                    stake_top,
+                    stake_bottom,
+                    projected_top,
+                    stake_height,
+                    texture,
+                    ray_hit.texture_offset,
+                )
+            });
 
         if !textured {
-            let color = wall_color(ray_hit.tile, corrected_distance);
+            let color = wall_color(ray_hit.tile, corrected_distance, &accent_palette);
 
             framebuffer.set_current_color(color);
 
