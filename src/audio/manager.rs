@@ -21,12 +21,19 @@ pub(crate) enum SoundEffect {
     MenuMove,
     MenuSelect,
     Victory,
+
+    /// Tarea 43: recarga de arma ACEPTADA (`Weapon::try_start_reload`
+    /// -> `true`). Nunca se dispara por una solicitud rechazada
+    /// (cargador lleno, reserva agotada, ya recargando) ni por
+    /// mantener `WeaponState::Reload` en cuadros posteriores — ver
+    /// `App::update_playing`, el único llamador.
+    Reload,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 10] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 11] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -37,6 +44,7 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 10] = [
     SoundEffect::MenuMove,
     SoundEffect::MenuSelect,
     SoundEffect::Victory,
+    SoundEffect::Reload,
 ];
 
 /// Única ubicación del catálogo ruta<->efecto. Ningún otro módulo
@@ -53,6 +61,7 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::MenuMove => "assets/audio/sfx/menu_move.wav",
         SoundEffect::MenuSelect => "assets/audio/sfx/menu_select.wav",
         SoundEffect::Victory => "assets/audio/sfx/victory.wav",
+        SoundEffect::Reload => "assets/audio/sfx/reload.wav",
     }
 }
 
@@ -281,9 +290,9 @@ impl<'aud> AudioManager<'aud> {
 
     /// Solicita la reproducción de un efecto discreto
     /// (`Shoot`/`WallHit`/`EnemyHit`/`EnemyDeath`/`MenuMove`/
-    /// `MenuSelect`/`Victory`/`Footstep`). No-op seguro si ese
-    /// efecto no cargó. `EnemyIdle`/`EnemyAlert` aplican además su
-    /// propio cooldown anti-spam antes de sonar.
+    /// `MenuSelect`/`Victory`/`Footstep`/`Reload`). No-op seguro si
+    /// ese efecto no cargó. `EnemyIdle`/`EnemyAlert` aplican además
+    /// su propio cooldown anti-spam antes de sonar.
     pub(crate) fn play_sound(&mut self, effect: SoundEffect) {
         match effect {
             SoundEffect::EnemyIdle => {
@@ -340,8 +349,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_ten_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 10);
+    fn catalog_contains_exactly_eleven_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 11);
     }
 
     #[test]
@@ -383,6 +392,7 @@ mod tests {
             sfx_path(SoundEffect::Victory),
             "assets/audio/sfx/victory.wav"
         );
+        assert_eq!(sfx_path(SoundEffect::Reload), "assets/audio/sfx/reload.wav");
     }
 
     #[test]

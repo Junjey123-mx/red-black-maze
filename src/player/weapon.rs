@@ -81,6 +81,32 @@ impl Weapon {
         self.reserve
     }
 
+    /// Progreso normalizado de la recarga en curso, o `None` si el
+    /// arma no está en `WeaponState::Reload`.
+    ///
+    /// `Some(0.0)` justo al aceptarse la recarga (`state_elapsed ==
+    /// 0.0`), acercándose a `Some(1.0)` justo antes de completarse.
+    /// Deriva directamente de `state_elapsed`/`RELOAD_DURATION` — el
+    /// MISMO temporizador que decide cuándo termina la recarga real
+    /// (`update`); no existe un segundo timer visual independiente
+    /// que pueda desincronizarse. `state_elapsed` nunca es negativo
+    /// (solo se incrementa desde `0.0` dentro de `update`) y
+    /// `RELOAD_DURATION` es una constante positiva, así que el
+    /// resultado siempre cae en `[0.0, 1.0]` sin necesitar recortar
+    /// activamente — el `clamp` se conserva de todas formas como
+    /// garantía defensiva ante cualquier cambio futuro de esa
+    /// invariante.
+    ///
+    /// Rendering LEE este valor; nunca escribe el estado interno del
+    /// arma a través de él.
+    pub(crate) fn reload_progress(&self) -> Option<f32> {
+        if self.state != WeaponState::Reload {
+            return None;
+        }
+
+        Some((self.state_elapsed / RELOAD_DURATION).clamp(0.0, 1.0))
+    }
+
     /// Intenta iniciar un ciclo de disparo visual.
     ///
     /// Solo se acepta si el arma está en `Idle` (por lo tanto NUNCA
@@ -421,6 +447,76 @@ mod tests {
 
         weapon.update(0.02);
         assert_eq!(weapon.state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn reload_progress_is_none_while_not_reloading() {
+        let weapon = Weapon::new();
+
+        assert_eq!(weapon.reload_progress(), None);
+    }
+
+    #[test]
+    fn reload_progress_is_approximately_zero_just_after_acceptance() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        let progress = weapon.reload_progress().expect("debe estar recargando");
+
+        assert!((progress - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reload_progress_is_approximately_half_at_the_midpoint() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        weapon.update(RELOAD_DURATION / 2.0);
+
+        let progress = weapon.reload_progress().expect("debe estar recargando");
+
+        assert!((progress - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn reload_progress_is_none_again_once_completed() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        weapon.update(RELOAD_DURATION + 0.01);
+
+        assert_eq!(weapon.state(), WeaponState::Idle);
+        assert_eq!(weapon.reload_progress(), None);
+    }
+
+    #[test]
+    fn reload_progress_never_exceeds_the_normalized_range() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        advance_until_ready(&mut weapon);
+
+        assert!(weapon.try_start_reload());
+
+        for _ in 0..50 {
+            weapon.update(0.01);
+
+            if let Some(progress) = weapon.reload_progress() {
+                assert!((0.0..=1.0).contains(&progress));
+            }
+        }
     }
 
     #[test]

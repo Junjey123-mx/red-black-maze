@@ -202,6 +202,13 @@ impl GameSession {
         self.weapon.state()
     }
 
+    /// Progreso normalizado de la recarga en curso, o `None` si el
+    /// arma no está recargando. Ver `Weapon::reload_progress`; solo
+    /// reenvía la lectura, no posee ningún temporizador propio.
+    pub(crate) fn weapon_reload_progress(&self) -> Option<f32> {
+        self.weapon.reload_progress()
+    }
+
     /// Intenta aceptar un evento de disparo, iniciando el ciclo
     /// visual del arma.
     ///
@@ -338,8 +345,125 @@ fn point_reaches_goal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const BLOCK_SIZE: usize = 48;
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Guardia RAII mínima para un archivo de nivel temporal, mismo
+    /// patrón std-only ya establecido en `world::pathfinding`/las
+    /// pruebas de integración: nombre único vía PID + contador,
+    /// limpieza automática al salir de alcance.
+    struct TempLevelFile {
+        path: PathBuf,
+    }
+
+    impl TempLevelFile {
+        fn write(contents: &str) -> Self {
+            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+            let file_name = format!(
+                "red_black_maze_session_test_{}_{counter}.txt",
+                std::process::id()
+            );
+
+            let path = std::env::temp_dir().join(file_name);
+
+            let mut file =
+                fs::File::create(&path).expect("no se pudo crear el archivo temporal de nivel");
+
+            file.write_all(contents.as_bytes())
+                .expect("no se pudo escribir el archivo temporal de nivel");
+
+            Self { path }
+        }
+
+        fn path_str(&self) -> &str {
+            self.path
+                .to_str()
+                .expect("la ruta temporal debe ser UTF-8 válida")
+        }
+    }
+
+    impl Drop for TempLevelFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn new_test_session() -> GameSession {
+        let map = "\
+#######
+#p   g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    // --- Tarea 43: propagación de la aceptación de recarga hasta el
+    // punto donde `App` decide si reproducir `SoundEffect::Reload`. ---
+
+    #[test]
+    fn try_start_weapon_reload_forwards_a_valid_acceptance() {
+        let mut session = new_test_session();
+
+        assert!(session.try_fire_weapon());
+
+        // Vuelve a `Idle` (Fire -> Recoil -> Idle) antes de intentar
+        // recargar: `try_start_reload` solo se acepta desde `Idle`.
+        session.update_weapon(1.0);
+
+        assert!(session.try_start_weapon_reload());
+        assert_eq!(session.weapon_state(), WeaponState::Reload);
+    }
+
+    #[test]
+    fn try_start_weapon_reload_forwards_rejection_on_full_magazine() {
+        let mut session = new_test_session();
+
+        assert!(!session.try_start_weapon_reload());
+        assert_eq!(session.weapon_state(), WeaponState::Idle);
+    }
+
+    #[test]
+    fn try_start_weapon_reload_forwards_rejection_while_already_reloading() {
+        let mut session = new_test_session();
+
+        assert!(session.try_fire_weapon());
+        session.update_weapon(1.0);
+
+        assert!(session.try_start_weapon_reload());
+
+        // Segunda solicitud en el mismo cuadro de recarga: debe
+        // rechazarse, exactamente el evento que NO debe producir un
+        // segundo `SoundEffect::Reload`.
+        assert!(!session.try_start_weapon_reload());
+    }
+
+    #[test]
+    fn weapon_reload_progress_forwards_none_and_some_correctly() {
+        let mut session = new_test_session();
+
+        assert_eq!(session.weapon_reload_progress(), None);
+
+        assert!(session.try_fire_weapon());
+        session.update_weapon(1.0);
+
+        assert!(session.try_start_weapon_reload());
+
+        assert!(session.weapon_reload_progress().is_some());
+    }
 
     #[test]
     fn player_center_inside_goal_cell_is_true() {

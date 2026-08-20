@@ -393,9 +393,19 @@ impl<'aud> App<'aud> {
          * es la única autoridad sobre si la recarga se acepta
          * (`Idle`, cargador no lleno, reserva > 0); un intento
          * rechazado no altera ningún estado.
+         *
+         * Tarea 43: `SoundEffect::Reload` suena EXACTAMENTE cuando
+         * `try_start_weapon_reload` retorna `true` — el mismo booleano
+         * que ya decidía la mecánica, sin una segunda comprobación
+         * manual de `magazine < capacity && reserve > 0` aquí. Un
+         * `R` rechazado (cargador lleno, reserva agotada, o ya
+         * recargando) no produce sonido; mantener `WeaponState::Reload`
+         * en cuadros posteriores tampoco, porque este bloque solo se
+         * evalúa en el cuadro exacto de la pulsación (`is_key_pressed`,
+         * no un chequeo continuo del estado).
          */
-        if window.is_key_pressed(KeyboardKey::KEY_R) {
-            self.session.try_start_weapon_reload();
+        if window.is_key_pressed(KeyboardKey::KEY_R) && self.session.try_start_weapon_reload() {
+            self.audio.play_sound(SoundEffect::Reload);
         }
 
         /*
@@ -794,13 +804,16 @@ impl<'aud> App<'aud> {
                  * El arma se dibuja SIEMPRE al final, como
                  * superposición en espacio de pantalla, para que
                  * nunca quede oculta por paredes ni sprites de
-                 * mundo.
+                 * mundo. `weapon_reload_progress` (Tarea 43) es
+                 * `None` fuera de `WeaponState::Reload`, dejando el
+                 * arma en su posición base sin desplazamiento.
                  */
                 render_weapon(
                     framebuffer,
                     &self.textures,
                     self.session.weapon_state(),
                     theme,
+                    self.session.weapon_reload_progress(),
                 );
 
                 /*
