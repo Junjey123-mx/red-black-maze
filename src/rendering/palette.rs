@@ -122,33 +122,64 @@ const LEGACY_ACCENT_TABLE: [(Color, AccentTier); 11] = [
 
 /// Resuelve el `ThemePalette` de acento para `theme`.
 ///
-/// Tarea 39/39.B (infraestructura): las tres identidades resuelven
-/// TODAVÍA a la misma familia roja heredada — los mismos valores que
-/// los consumidores ya usaban de forma incondicional (sin importar
-/// `theme`) antes de estas tareas — preservando exactamente el
-/// aspecto actual de los tres niveles. Tarea 40 hará que `BlackClub`
-/// diverja a naranja; Tarea 41 hará que `HouseOfCards` diverja a
-/// violeta, añadiendo sus propios brazos a este `match` — sin tocar
-/// ningún consumidor.
+/// Tarea 40: `BlackClub` diverge por primera vez de la familia roja
+/// heredada, hacia negro + naranja neón. `CrimsonEntrance` y
+/// `HouseOfCards` (todavía pendiente de Tarea 41) permanecen en el
+/// brazo legacy compartido, con los mismos valores que TODOS los
+/// consumidores usaban de forma incondicional antes de Tarea 39.
 pub(crate) fn palette_for_theme(theme: LevelTheme) -> ThemePalette {
     match theme {
-        LevelTheme::CrimsonEntrance | LevelTheme::BlackClub | LevelTheme::HouseOfCards => {
-            ThemePalette {
-                accent_vertical: Color::new(0, 25, 30, 255),
-                accent_horizontal: Color::new(0, 18, 24, 255),
-                accent_corner: Color::new(0, 12, 18, 255),
-                accent_alt: Color::new(0, 20, 25, 255),
+        LevelTheme::CrimsonEntrance | LevelTheme::HouseOfCards => ThemePalette {
+            accent_vertical: Color::new(0, 25, 30, 255),
+            accent_horizontal: Color::new(0, 18, 24, 255),
+            accent_corner: Color::new(0, 12, 18, 255),
+            accent_alt: Color::new(0, 20, 25, 255),
 
-                accent_bright: Color::new(210, 31, 43, 255),
-                accent_medium: Color::new(122, 16, 24, 255),
-                accent_dark: Color::new(74, 11, 16, 255),
+            accent_bright: Color::new(210, 31, 43, 255),
+            accent_medium: Color::new(122, 16, 24, 255),
+            accent_dark: Color::new(74, 11, 16, 255),
 
-                hud_accent: Color::new(205, 30, 42, 255),
+            hud_accent: Color::new(205, 30, 42, 255),
 
-                minimap_border_accent: Color::new(120, 18, 24, 255),
-                minimap_wall_accent: Color::new(150, 24, 32, 255),
-            }
-        }
+            minimap_border_accent: Color::new(120, 18, 24, 255),
+            minimap_wall_accent: Color::new(150, 24, 32, 255),
+        },
+
+        /*
+         * Tarea 40: identidad negro + naranja neón. Los tres tonos
+         * canónicos (`accent_bright/medium/dark`) son EXACTAMENTE
+         * los de referencia del Plan Maestro (`#FF7A00`/`#E94F00`/
+         * `#A53600`); el resto de roles (respaldo de pared, HUD,
+         * minimapa) derivan su matiz (G, B) de esos mismos tres
+         * tonos, siguiendo el mismo patrón que ya usaba la familia
+         * roja heredada (sus propios G/B eran, a su vez, una
+         * aproximación de `accent_bright/medium/dark`) — ninguna
+         * familia cromática nueva, ninguna heurística.
+         */
+        LevelTheme::BlackClub => ThemePalette {
+            // (bright, medium, corner/dark, alt) — mismo patrón que
+            // el brazo legacy: G/B tomados de accent_bright/medium/
+            // dark respectivamente, con `accent_alt` ligeramente
+            // distinto de `accent_horizontal` (igual que la familia
+            // roja distinguía spade de diamond).
+            accent_vertical: Color::new(0, 122, 0, 255),
+            accent_horizontal: Color::new(0, 79, 0, 255),
+            accent_corner: Color::new(0, 54, 0, 255),
+            accent_alt: Color::new(0, 90, 0, 255),
+
+            accent_bright: Color::new(0xFF, 0x7A, 0x00, 255),
+            accent_medium: Color::new(0xE9, 0x4F, 0x00, 255),
+            accent_dark: Color::new(0xA5, 0x36, 0x00, 255),
+
+            // Igual que `accent_bright`: no hay razón para separar
+            // el acento del HUD del canónico en una paleta nueva (a
+            // diferencia del rojo legacy, donde el valor histórico
+            // ya divergía y había que preservarlo).
+            hud_accent: Color::new(0xFF, 0x7A, 0x00, 255),
+
+            minimap_border_accent: Color::new(0xA5, 0x36, 0x00, 255),
+            minimap_wall_accent: Color::new(0xE9, 0x4F, 0x00, 255),
+        },
     }
 }
 
@@ -215,15 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn all_three_themes_preserve_the_exact_legacy_wall_tint_in_task_39() {
-        // Tarea 39/39.B son infraestructura únicamente: ningún tema
-        // debe divergir todavía de los valores que los consumidores
-        // ya usaban de forma incondicional antes de estas tareas.
-        for theme in [
-            LevelTheme::CrimsonEntrance,
-            LevelTheme::BlackClub,
-            LevelTheme::HouseOfCards,
-        ] {
+    fn crimson_and_house_still_preserve_the_exact_legacy_red_after_task_40() {
+        // Tarea 40 solo debe hacer que `BlackClub` diverja; Crimson
+        // Entrance y House of Cards (todavía pendiente de Tarea 41)
+        // deben seguir resolviendo EXACTAMENTE los mismos valores
+        // heredados que antes.
+        for theme in [LevelTheme::CrimsonEntrance, LevelTheme::HouseOfCards] {
             let palette = palette_for_theme(theme);
 
             assert_eq!(palette.accent_vertical, Color::new(0, 25, 30, 255));
@@ -239,6 +267,51 @@ mod tests {
 
             assert_eq!(palette.minimap_border_accent, Color::new(120, 18, 24, 255));
             assert_eq!(palette.minimap_wall_accent, Color::new(150, 24, 32, 255));
+        }
+    }
+
+    #[test]
+    fn black_club_uses_the_neon_orange_reference_palette() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(palette.accent_bright, Color::new(0xFF, 0x7A, 0x00, 255));
+        assert_eq!(palette.accent_medium, Color::new(0xE9, 0x4F, 0x00, 255));
+        assert_eq!(palette.accent_dark, Color::new(0xA5, 0x36, 0x00, 255));
+    }
+
+    #[test]
+    fn black_club_no_longer_uses_any_red_accent_value() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_ne!(palette.accent_bright, Color::new(210, 31, 43, 255));
+        assert_ne!(palette.accent_medium, Color::new(122, 16, 24, 255));
+        assert_ne!(palette.accent_dark, Color::new(74, 11, 16, 255));
+        assert_ne!(palette.hud_accent, Color::new(205, 30, 42, 255));
+        assert_ne!(palette.minimap_border_accent, Color::new(120, 18, 24, 255));
+        assert_ne!(palette.minimap_wall_accent, Color::new(150, 24, 32, 255));
+    }
+
+    #[test]
+    fn black_club_hud_and_minimap_accents_belong_to_the_orange_family() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        // "Naranja" en este proyecto significa: rojo (R) claramente
+        // dominante sobre azul (B ~ 0), con verde (G) intermedio —
+        // exactamente la relación de FF7A00/E94F00/A53600. Probar
+        // esta relación (no solo la igualdad con una constante)
+        // confirma que HUD/minimapa realmente HEREDAN la familia
+        // naranja, no que coincidan con un literal aislado.
+        for color in [
+            palette.hud_accent,
+            palette.minimap_border_accent,
+            palette.minimap_wall_accent,
+        ] {
+            assert_eq!(color.b, 0, "el azul debe ser cero en la familia naranja");
+            assert!(color.r > color.g, "el rojo debe dominar sobre el verde");
+            assert!(
+                color.g > 0,
+                "el verde debe ser distinto de cero (no es rojo puro)"
+            );
         }
     }
 
@@ -339,5 +412,38 @@ mod tests {
         let gray = Color::new(40, 40, 46, 255);
 
         assert_eq!(remap_accent_pixel(gray, &palette), gray);
+    }
+
+    #[test]
+    fn black_club_remaps_legacy_accent_tones_to_the_exact_reference_orange() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(210, 31, 43, 255), &palette),
+            Color::new(0xFF, 0x7A, 0x00, 255)
+        );
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(122, 16, 24, 255), &palette),
+            Color::new(0xE9, 0x4F, 0x00, 255)
+        );
+
+        assert_eq!(
+            remap_accent_pixel(Color::new(74, 11, 16, 255), &palette),
+            Color::new(0xA5, 0x36, 0x00, 255)
+        );
+    }
+
+    #[test]
+    fn black_club_remap_still_preserves_black_ivory_and_alpha() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        let black = Color::new(5, 5, 5, 255);
+        let ivory = Color::new(214, 208, 196, 255);
+        let transparent = Color::new(0, 0, 0, 0);
+
+        assert_eq!(remap_accent_pixel(black, &palette), black);
+        assert_eq!(remap_accent_pixel(ivory, &palette), ivory);
+        assert_eq!(remap_accent_pixel(transparent, &palette).a, 0);
     }
 }

@@ -593,7 +593,41 @@ mod tests {
     }
 
     #[test]
-    fn task_39_b_remains_visually_neutral_the_variant_matches_the_base_pixel_for_pixel() {
+    fn crimson_and_house_variants_still_match_the_base_pixel_for_pixel_after_task_40() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_wall_textures()
+            .expect("las texturas de pared del proyecto deben cargar");
+
+        let base = manager.get("wall-club").expect("base debe existir");
+
+        // Tarea 40 solo hizo divergir a Black Club: Crimson Entrance
+        // y House of Cards (todavía pendiente de Tarea 41) deben
+        // seguir generando una variante IDÉNTICA píxel a píxel al
+        // asset base — ninguna regresión visual para ellos.
+        for theme in [LevelTheme::CrimsonEntrance, LevelTheme::HouseOfCards] {
+            let variant = manager
+                .themed_wall_texture('|', theme)
+                .unwrap_or_else(|| panic!("la variante {theme:?} debe existir"));
+
+            assert_eq!(base.width(), variant.width());
+            assert_eq!(base.height(), variant.height());
+
+            for y in 0..base.height() {
+                for x in 0..base.width() {
+                    assert_eq!(
+                        base.pixel_at(x, y),
+                        variant.pixel_at(x, y),
+                        "diverge en ({x}, {y}) para el tema {theme:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn black_club_wall_variant_differs_from_the_legacy_red_base() {
         let mut manager = TextureManager::new();
 
         manager
@@ -606,18 +640,63 @@ mod tests {
             .themed_wall_texture('|', LevelTheme::BlackClub)
             .expect("la variante Black Club debe existir");
 
-        // Tarea 39.B: las tres identidades siguen resolviendo a la
-        // paleta heredada, así que la variante generada debe ser
-        // IDÉNTICA píxel a píxel al asset base — ninguna
-        // transformación visible todavía.
         assert_eq!(base.width(), variant.width());
         assert_eq!(base.height(), variant.height());
 
+        let mut saw_a_different_pixel = false;
+
         for y in 0..base.height() {
             for x in 0..base.width() {
-                assert_eq!(base.pixel_at(x, y), variant.pixel_at(x, y));
+                if base.pixel_at(x, y) != variant.pixel_at(x, y) {
+                    saw_a_different_pixel = true;
+                }
             }
         }
+
+        assert!(
+            saw_a_different_pixel,
+            "la variante Black Club debe diferir del rojo heredado en al menos un píxel"
+        );
+    }
+
+    #[test]
+    fn black_club_wall_variant_maps_the_canonical_red_to_the_exact_reference_orange() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_wall_textures()
+            .expect("las texturas de pared del proyecto deben cargar");
+
+        // club.png contiene el rojo canónico brillante (210, 31, 43)
+        // — auditado en Tarea 39.B — en varios píxeles conocidos de
+        // su arte. Confirmamos que la variante Black Club lo
+        // convierte EXACTAMENTE en el naranja de referencia del Plan
+        // Maestro, no en una aproximación.
+        let base = manager.get("wall-club").expect("base debe existir");
+
+        let variant = manager
+            .themed_wall_texture('|', LevelTheme::BlackClub)
+            .expect("la variante Black Club debe existir");
+
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xFF, 0x7A, 0x00, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(
+            checked_a_canonical_red_pixel,
+            "club.png debe contener el rojo canónico auditado en Tarea 39.B"
+        );
     }
 
     #[test]

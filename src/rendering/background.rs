@@ -55,19 +55,26 @@ fn palette_for_theme(theme: LevelTheme) -> BackgroundPalette {
             floor_pattern: FloorPattern::Bands,
         },
 
-        // Negro casi puro -> gris humo (parada intermedia) -> rojo
-        // vino casi negro, tal como especifica el Plan Maestro de
-        // Tarea 34. El suelo reutiliza EXACTAMENTE el mismo mecanismo
-        // de tres colores (near/far/accent) que ya introdujo Tarea
-        // 33 para el suelo de Crimson: ningún código de dibujo nuevo
-        // fue necesario para el suelo.
+        // Tarea 40: negro casi absoluto -> naranja quemado muy
+        // oscuro (parada intermedia) -> naranja quemado de horizonte
+        // — los tres valores de referencia exactos del Plan Maestro
+        // (`#030303`/`#241000`/`#5A2000`). El techo sigue siendo
+        // MAYORMENTE oscuro (la parada intermedia solo se alcanza a
+        // mitad de la mitad superior de pantalla, y el naranja solo
+        // domina cerca del horizonte), preservando la sensación
+        // claustrofóbica de Black Club en vez de un cielo naranja
+        // plano y brillante. El suelo permanece oscuro/carbón con un
+        // matiz cálido sutil; el acento disperso de bandas usa el
+        // mismo naranja oscuro `accent_dark` de `ThemePalette`
+        // (`#A53600`), como las "líneas naranja" que pide la tarea,
+        // en vez de un suelo naranja brillante uniforme.
         LevelTheme::BlackClub => BackgroundPalette {
             ceiling_top: Color::new(0x03, 0x03, 0x03, 255),
-            ceiling_mid: Some(Color::new(0x1A, 0x1A, 0x1A, 255)),
-            ceiling_horizon: Color::new(0x22, 0x04, 0x06, 255),
-            floor_near: Color::new(0x20, 0x20, 0x20, 255),
-            floor_far: Color::new(0x2B, 0x2B, 0x2B, 255),
-            floor_accent: Color::new(0x3E, 0x0A, 0x0F, 255),
+            ceiling_mid: Some(Color::new(0x24, 0x10, 0x00, 255)),
+            ceiling_horizon: Color::new(0x5A, 0x20, 0x00, 255),
+            floor_near: Color::new(0x28, 0x22, 0x1C, 255),
+            floor_far: Color::new(0x16, 0x12, 0x0E, 255),
+            floor_accent: Color::new(0xA5, 0x36, 0x00, 255),
             floor_pattern: FloorPattern::Bands,
         },
 
@@ -349,15 +356,31 @@ mod tests {
     }
 
     #[test]
-    fn black_club_palette_remains_exact_after_house_of_cards_changes() {
+    fn black_club_uses_the_neon_orange_background_after_task_40() {
         let palette = palette_for_theme(LevelTheme::BlackClub);
 
         assert_eq!(palette.ceiling_top, Color::new(0x03, 0x03, 0x03, 255));
-        assert_eq!(palette.ceiling_mid, Some(Color::new(0x1A, 0x1A, 0x1A, 255)));
-        assert_eq!(palette.ceiling_horizon, Color::new(0x22, 0x04, 0x06, 255));
-        assert_eq!(palette.floor_near, Color::new(0x20, 0x20, 0x20, 255));
-        assert_eq!(palette.floor_far, Color::new(0x2B, 0x2B, 0x2B, 255));
-        assert_eq!(palette.floor_accent, Color::new(0x3E, 0x0A, 0x0F, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x24, 0x10, 0x00, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x5A, 0x20, 0x00, 255));
+        assert_eq!(palette.floor_near, Color::new(0x28, 0x22, 0x1C, 255));
+        assert_eq!(palette.floor_far, Color::new(0x16, 0x12, 0x0E, 255));
+        assert_eq!(palette.floor_accent, Color::new(0xA5, 0x36, 0x00, 255));
+    }
+
+    #[test]
+    fn black_club_background_no_longer_uses_any_red_value() {
+        let palette = palette_for_theme(LevelTheme::BlackClub);
+
+        assert_ne!(palette.ceiling_horizon, Color::new(0x22, 0x04, 0x06, 255));
+        assert_ne!(palette.floor_accent, Color::new(0x3E, 0x0A, 0x0F, 255));
+
+        // "Naranja quemado": rojo dominante, azul en cero, verde
+        // intermedio — la misma relación que la familia de acento de
+        // `ThemePalette` para Black Club.
+        assert_eq!(palette.ceiling_horizon.b, 0);
+        assert!(palette.ceiling_horizon.r > palette.ceiling_horizon.g);
+        assert_eq!(palette.floor_accent.b, 0);
+        assert!(palette.floor_accent.r > palette.floor_accent.g);
     }
 
     #[test]
@@ -384,16 +407,35 @@ mod tests {
         let palette = palette_for_theme(LevelTheme::BlackClub);
 
         assert_eq!(palette.ceiling_top, Color::new(0x03, 0x03, 0x03, 255));
-        assert_eq!(palette.ceiling_mid, Some(Color::new(0x1A, 0x1A, 0x1A, 255)));
-        assert_eq!(palette.ceiling_horizon, Color::new(0x22, 0x04, 0x06, 255));
+        assert_eq!(palette.ceiling_mid, Some(Color::new(0x24, 0x10, 0x00, 255)));
+        assert_eq!(palette.ceiling_horizon, Color::new(0x5A, 0x20, 0x00, 255));
     }
 
     #[test]
     fn black_club_floor_palette_matches_the_plan_maestro_family() {
         let palette = palette_for_theme(LevelTheme::BlackClub);
 
-        assert_eq!(palette.floor_near, Color::new(0x20, 0x20, 0x20, 255));
-        assert_eq!(palette.floor_far, Color::new(0x2B, 0x2B, 0x2B, 255));
-        assert_eq!(palette.floor_accent, Color::new(0x3E, 0x0A, 0x0F, 255));
+        assert_eq!(palette.floor_near, Color::new(0x28, 0x22, 0x1C, 255));
+        assert_eq!(palette.floor_far, Color::new(0x16, 0x12, 0x0E, 255));
+        assert_eq!(palette.floor_accent, Color::new(0xA5, 0x36, 0x00, 255));
+    }
+
+    #[test]
+    fn black_club_ceiling_stays_mostly_dark_before_the_horizon() {
+        // La tarea exige que el cielo NO se convierta en naranja
+        // plano y brillante: la mayor parte de la mitad superior de
+        // pantalla debe seguir siendo oscura, con el naranja
+        // apareciendo progresivamente solo cerca del horizonte.
+        let top = Color::new(0x03, 0x03, 0x03, 255);
+        let mid = Color::new(0x24, 0x10, 0x00, 255);
+
+        // A un cuarto del camino hacia la parada intermedia (t=0.125
+        // sobre el primer tramo del degradado de tres paradas), el
+        // color debe seguir siendo abrumadoramente oscuro: el canal
+        // rojo, el más alto de los tres, no debe superar una
+        // fracción pequeña de 255.
+        let quarter = lerp_color(top, mid, 0.25);
+
+        assert!(quarter.r < 20);
     }
 }
