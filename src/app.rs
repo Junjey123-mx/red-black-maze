@@ -452,6 +452,24 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Tarea 45: ataques de Dealer. El temporizador del flash se
+         * avanza PRIMERO (con el tiempo real de este cuadro, antes
+         * de que un golpe de este MISMO cuadro pueda reiniciarlo),
+         * y luego se resuelven los ataques de TODOS los Dealers.
+         * `process_dealer_attacks` es la única autoridad sobre
+         * cuánta vida se resta y sobre cuándo reinicia el flash
+         * (`GameSession::hit_flash`); esta capa solo garantiza que
+         * ambas llamadas ocurran EXCLUSIVAMENTE dentro del update
+         * jugable (nunca en `update_paused`), para que la pausa
+         * (Tarea 42) las congele automáticamente sin ningún caso
+         * especial nuevo.
+         */
+        self.session.update_hit_flash(window.get_frame_time());
+
+        self.session
+            .process_dealer_attacks(window.get_frame_time(), BLOCK_SIZE);
+
+        /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
          * un solo clic físico dispare como máximo un intento de
          * disparo. `try_fire_weapon` es la única autoridad sobre si
