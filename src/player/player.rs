@@ -71,6 +71,30 @@ impl Player {
     pub(crate) fn health(&self) -> i32 {
         self.health
     }
+
+    /// Aplica daño real al jugador (Tarea 45) y retorna la cantidad
+    /// REALMENTE aplicada (nunca más de lo que quedaba de vida).
+    ///
+    /// La vida se recorta con un piso de `0` — nunca queda
+    /// negativa/underflow. Un `amount` no positivo no aplica ningún
+    /// daño y retorna `0`. Esta es la ÚNICA función que escribe
+    /// `self.health`; `GameSession`/`App` nunca mutan el campo
+    /// directamente.
+    ///
+    /// Ejemplos: `100 - 10 -> 90` (retorna `10`); `5 - 10 -> 0`
+    /// (retorna `5`, el daño real absorbido); `0 - 10 -> 0` (retorna
+    /// `0`: no hay más vida que quitar).
+    pub(crate) fn apply_damage(&mut self, amount: i32) -> i32 {
+        if amount <= 0 {
+            return 0;
+        }
+
+        let health_before = self.health;
+
+        self.health = (self.health - amount).max(0);
+
+        health_before - self.health
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +120,52 @@ mod tests {
 
         assert_eq!(player.health(), PLAYER_MAX_HEALTH);
         assert_eq!(player.health(), 100);
+    }
+
+    // --- Tarea 45: Player::apply_damage. ---
+
+    #[test]
+    fn ordinary_damage_reduces_health_and_returns_the_amount_applied() {
+        let mut player = new_test_player();
+
+        let applied = player.apply_damage(10);
+
+        assert_eq!(player.health(), 90);
+        assert_eq!(applied, 10);
+    }
+
+    #[test]
+    fn damage_exceeding_remaining_health_clamps_to_zero() {
+        let mut player = new_test_player();
+
+        player.apply_damage(95);
+        assert_eq!(player.health(), 5);
+
+        let applied = player.apply_damage(10);
+
+        assert_eq!(player.health(), 0);
+        assert_eq!(applied, 5);
+    }
+
+    #[test]
+    fn damage_at_zero_health_applies_nothing_and_never_underflows() {
+        let mut player = new_test_player();
+
+        player.apply_damage(1000);
+        assert_eq!(player.health(), 0);
+
+        let applied = player.apply_damage(10);
+
+        assert_eq!(player.health(), 0);
+        assert_eq!(applied, 0);
+    }
+
+    #[test]
+    fn non_positive_damage_is_a_no_op() {
+        let mut player = new_test_player();
+
+        assert_eq!(player.apply_damage(0), 0);
+        assert_eq!(player.apply_damage(-10), 0);
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
     }
 }
