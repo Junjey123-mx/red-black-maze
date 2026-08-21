@@ -31,6 +31,12 @@ const AMMO_PICKUP_AMOUNT: u32 = 6;
 /// pasillo paralelo.
 const AMMO_PICKUP_RADIUS: f32 = 19.2;
 
+/// Daño que un ataque de Dealer ACEPTADO inflige al jugador
+/// (Tarea 45). Las condiciones de aceptación (estado `Alert`,
+/// rango, cooldown) viven en `world::Entity::attempt_attack`; esta
+/// capa solo decide CUÁNTO daño corresponde a un ataque aceptado.
+const DEALER_ATTACK_DAMAGE: i32 = 10;
+
 /// Duración aproximada de cada cuadro de la animación de antorcha.
 const TORCH_FRAME_DURATION: f32 = 0.1;
 
@@ -204,6 +210,39 @@ impl GameSession {
 
             None => EntityDamageOutcome::None,
         }
+    }
+
+    /// Resuelve los ataques de TODOS los Dealers para este cuadro
+    /// (Tarea 45) y retorna el daño TOTAL realmente aplicado al
+    /// jugador (`0` si ninguno atacó, o si el jugador ya estaba en
+    /// `0` de vida).
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
+    /// (`App::update_playing`) — nunca desde rendering, HUD, ni
+    /// `update_paused` — para que la pausa (Tarea 42) congele
+    /// automáticamente cooldowns/daño/flash sin ningún caso especial
+    /// nuevo, exactamente como ya ocurre con la recolección de
+    /// munición (Tarea 44).
+    ///
+    /// Cada Dealer decide POR SU CUENTA si su ataque se acepta
+    /// (`Entity::attempt_attack`: estado, rango, cooldown
+    /// individual); esta capa solo coordina MÚLTIPLES Dealers y
+    /// aplica el daño correspondiente vía `Player::apply_damage`
+    /// (la única autoridad sobre `health`). Dos Dealers listos en el
+    /// mismo cuadro SÍ pueden sumar su daño (nunca se limita
+    /// artificialmente a un único atacante por cuadro).
+    pub(crate) fn process_dealer_attacks(&mut self, delta_time: f32, block_size: usize) -> i32 {
+        let player_position = self.player.pos;
+
+        let mut total_damage = 0;
+
+        for entity in &mut self.entities {
+            if entity.attempt_attack(player_position, delta_time, block_size) {
+                total_damage += self.player.apply_damage(DEALER_ATTACK_DAMAGE);
+            }
+        }
+
+        total_damage
     }
 
     /// Pickups de munición de la sesión actual (activos Y ya
@@ -495,6 +534,203 @@ mod tests {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
         GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    /// Sesión de prueba con un único Dealer en (fila 2, columna 3).
+    /// `Entity::dealer_at_cell` los aparece SIEMPRE a 48px o más de
+    /// distancia entre celdas de mapa (el centro de una celda nunca
+    /// queda a menos de 48px del centro de otra), así que para
+    /// probar ataques (rango 36px) los tests colocan manualmente
+    /// `session.player.pos` cerca del Dealer, tal como ya hacen los
+    /// tests de pickups de munición con `session.player.pos`.
+    fn new_test_session_with_one_dealer() -> GameSession {
+        let map = "\
+#######
+#p    #
+#  e  #
+#    g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    /// Sesión de prueba con dos Dealers, en (fila 2, columna 3) y
+    /// (fila 2, columna 5).
+    /// Dos Dealers en celdas ADYACENTES (fila 2, columnas 3 y 4;
+    /// 48px de centro a centro), deliberadamente cerca entre sí para
+    /// que una única posición de jugador (el punto medio) quepa
+    /// dentro del rango de ataque (36px) de AMBOS a la vez —
+    /// geométricamente imposible si estuvieran a 96px o más.
+    fn new_test_session_with_two_dealers() -> GameSession {
+        let map = "\
+#########
+#p      #
+#  ee   #
+#      g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    /// Coloca al jugador a `offset` píxeles del Dealer en
+    /// `entity_index` (mismo eje X) y hace que ese Dealer entre en
+    /// `Alert` llamando a `update_entities` una vez.
+    fn move_player_near_dealer_and_alert(
+        session: &mut GameSession,
+        entity_index: usize,
+        offset: f32,
+    ) {
+        let dealer_position = session.entities()[entity_index].position();
+
+        session.player.pos = Vector2::new(dealer_position.x + offset, dealer_position.y);
+
+        session.update_entities(0.016, BLOCK_SIZE);
+
+        assert_eq!(session.entities()[entity_index].state(), EntityState::Alert);
+    }
+
+    // --- Tarea 45: ataques de Dealer / daño al jugador. ---
+
+    #[test]
+    fn single_ready_dealer_in_range_deals_damage() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        assert_eq!(session.player_health(), 100);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 10);
+        assert_eq!(session.player_health(), 90);
+    }
+
+    #[test]
+    fn out_of_range_dealer_deals_no_damage() {
+        let mut session = new_test_session_with_one_dealer();
+
+        // Fuera del rango de ataque (36px) pero dentro de la
+        // distancia de alerta (192px), para que el Dealer entre en
+        // Alert sin poder golpear.
+        move_player_near_dealer_and_alert(&mut session, 0, 100.0);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 0);
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn cooldown_prevents_damage_every_frame() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 10);
+        assert_eq!(session.player_health(), 90);
+
+        // Cuadros inmediatamente siguientes: sin daño adicional
+        // mientras el cooldown (0.9s) siga activo.
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+        assert_eq!(session.process_dealer_attacks(0.1, BLOCK_SIZE), 0);
+        assert_eq!(session.player_health(), 90);
+    }
+
+    #[test]
+    fn two_ready_dealers_deal_independent_damage_in_the_same_frame() {
+        let mut session = new_test_session_with_two_dealers();
+
+        // Punto medio entre ambos Dealers (48px de centro a centro):
+        // 24px de cada uno, dentro del rango de ataque (36px) de
+        // los DOS simultáneamente.
+        let dealer0 = session.entities()[0].position();
+        let dealer1 = session.entities()[1].position();
+
+        let midpoint = Vector2::new((dealer0.x + dealer1.x) / 2.0, dealer0.y);
+
+        session.player.pos = midpoint;
+
+        session.update_entities(0.016, BLOCK_SIZE);
+
+        assert_eq!(session.entities()[0].state(), EntityState::Alert);
+        assert_eq!(session.entities()[1].state(), EntityState::Alert);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 20);
+        assert_eq!(session.player_health(), 80);
+    }
+
+    #[test]
+    fn hit_dealer_cannot_damage_the_player() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        session.damage_entity(0);
+        assert_eq!(session.entities()[0].state(), EntityState::Hit);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 0);
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn dead_dealer_never_damages_the_player_again() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        // Vida real del Dealer (100) requiere dos golpes de 50 para
+        // morir (`DEALER_DAMAGE_PER_HIT`).
+        session.damage_entity(0);
+        session.damage_entity(0);
+        assert_eq!(session.entities()[0].state(), EntityState::Dead);
+
+        for _ in 0..20 {
+            assert_eq!(session.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
+        }
+
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn no_attack_this_frame_produces_no_damage() {
+        let mut session = new_test_session();
+
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+    }
+
+    #[test]
+    fn health_already_zero_produces_no_further_damage() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        // Agota la vida del jugador a 0 con daño directo (evita
+        // depender del timing de cooldown para llegar a 0 rápido en
+        // el test).
+        session.player.apply_damage(1000);
+        assert_eq!(session.player_health(), 0);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 0);
     }
 
     /// Sesión de prueba con un único pickup de munición en (fila 1,
