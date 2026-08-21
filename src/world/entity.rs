@@ -95,6 +95,25 @@ const DEALER_PURSUIT_SPEED: f32 = 75.0;
 /// intermedio.
 const DEALER_PURSUIT_STOP_DISTANCE_CELLS: f32 = 0.05;
 
+/// Rango de ataque cuerpo a cuerpo del Dealer, expresado en celdas
+/// de mapa (Tarea 45), igual que `DEALER_ALERT_DISTANCE_CELLS`: se
+/// multiplica por `block_size` en el momento de comprobar el rango,
+/// nunca se fija en píxeles absolutos aquí.
+///
+/// Con `BLOCK_SIZE = 48` (valor real del proyecto) esto es
+/// `0.75 * 48 = 36.0` píxeles — deliberadamente MENOR que una celda
+/// completa: la geometría normal del laberinto (las paredes ocupan
+/// la celda completa, y el jugador/Dealer permanecen dentro de la
+/// unión de celdas transitables 4-conectadas por la persecución
+/// existente) ya impide que un Dealer golpee a través de una pared
+/// completa, sin necesitar ningún chequeo de línea de visión nuevo:
+/// un rango de 36px no alcanza a cruzar una celda de 48px de pared
+/// en ninguna configuración recta.
+const DEALER_ATTACK_RANGE_CELLS: f32 = 0.75;
+
+/// Cooldown entre ataques aceptados de un mismo Dealer, en segundos.
+const DEALER_ATTACK_COOLDOWN: f32 = 0.9;
+
 /// Entidad de dominio del mundo/juego: posición, vida, estado de
 /// comportamiento, identidad visual y radio de impacto.
 ///
@@ -108,6 +127,11 @@ pub(crate) struct Entity {
     sprite: EntitySprite,
     hit_radius: f32,
     hit_time_remaining: f32,
+
+    /// Tiempo restante (segundos) antes de que este Dealer, EN
+    /// PARTICULAR, pueda volver a atacar. Cooldown por-entidad — no
+    /// existe ningún timer global compartido entre Dealers.
+    attack_cooldown_remaining: f32,
 }
 
 impl Entity {
@@ -128,6 +152,7 @@ impl Entity {
             sprite: EntitySprite::Dealer,
             hit_radius: DEALER_HIT_RADIUS,
             hit_time_remaining: 0.0,
+            attack_cooldown_remaining: 0.0,
         }
     }
 
@@ -317,6 +342,59 @@ impl Entity {
 
             self.position.y += dy / distance * step;
         }
+    }
+
+    /// Intenta un ataque cuerpo a cuerpo contra el jugador este
+    /// cuadro (Tarea 45): decrementa SIEMPRE el cooldown ofensivo
+    /// según `delta_time` (independiente del framerate, igual que
+    /// el resto de temporizadores de la entidad — nunca reloj
+    /// absoluto), y retorna `true` únicamente si el ataque fue
+    /// ACEPTADO este cuadro.
+    ///
+    /// Un ataque se acepta solo si se cumplen las TRES condiciones a
+    /// la vez: `state == Alert` (nunca `Idle`/`Hit`/`Dead`),
+    /// distancia horizontal al jugador `<= DEALER_ATTACK_RANGE`, y
+    /// el cooldown ya llegó a `0.0`. Al aceptarse, el cooldown se
+    /// recarga al completo (`DEALER_ATTACK_COOLDOWN`) — nunca se
+    /// acepta un segundo ataque del mismo Dealer en el mismo cuadro
+    /// ni en cuadros inmediatamente siguientes.
+    ///
+    /// Esta función NO conoce `Weapon`/`AudioManager`/cuánto daño
+    /// causa un ataque: solo reporta SI ocurrió. `GameSession` (la
+    /// única capa con acceso simultáneo a `Player` y a todos los
+    /// Dealers) decide cuánta vida restar y cómo agregar el
+    /// feedback de varios Dealers en el mismo cuadro.
+    pub(crate) fn attempt_attack(
+        &mut self,
+        player_position: Vector2,
+        delta_time: f32,
+        block_size: usize,
+    ) -> bool {
+        if delta_time.is_finite() && delta_time > 0.0 {
+            self.attack_cooldown_remaining = (self.attack_cooldown_remaining - delta_time).max(0.0);
+        }
+
+        if self.state != EntityState::Alert {
+            return false;
+        }
+
+        if self.attack_cooldown_remaining > 0.0 {
+            return false;
+        }
+
+        let attack_range = block_size as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+        let dx = self.position.x - player_position.x;
+
+        let dy = self.position.y - player_position.y;
+
+        if dx * dx + dy * dy > attack_range * attack_range {
+            return false;
+        }
+
+        self.attack_cooldown_remaining = DEALER_ATTACK_COOLDOWN;
+
+        true
     }
 }
 
@@ -822,5 +900,138 @@ mod tests {
 
         assert_eq!(entity.position().x, start.x);
         assert_eq!(entity.position().y, start.y);
+    }
+
+    // --- Tarea 45: ataques de Dealer ---
+
+    const BLOCK_SIZE: usize = 48;
+
+    /// Pone un Dealer nuevo en `Alert`, dentro de rango de ataque,
+    /// listo para atacar de inmediato (cooldown en `0.0`).
+    fn alert_dealer_in_range() -> (Entity, Vector2) {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        let player_position = Vector2::new(entity.position().x + 10.0, entity.position().y);
+
+        entity.update(player_position, 0.016, BLOCK_SIZE, None);
+
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        (entity, player_position)
+    }
+
+    #[test]
+    fn ready_alert_dealer_in_range_attacks_immediately() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn distance_exactly_at_the_range_boundary_is_eligible() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        let attack_range = BLOCK_SIZE as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+        // Justo dentro de la distancia de alerta (4 celdas) para
+        // entrar en Alert, pero a EXACTAMENTE `attack_range` para
+        // probar el límite inclusive.
+        let player_position = Vector2::new(entity.position().x + attack_range, entity.position().y);
+
+        entity.update(player_position, 0.016, BLOCK_SIZE, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn distance_just_beyond_the_range_is_not_eligible() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        let attack_range = BLOCK_SIZE as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+        let player_position = Vector2::new(
+            entity.position().x + attack_range + 1.0,
+            entity.position().y,
+        );
+
+        entity.update(player_position, 0.016, BLOCK_SIZE, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        assert!(!entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn out_of_range_dealer_cannot_attack() {
+        let (mut entity, _) = alert_dealer_in_range();
+
+        let far_player = Vector2::new(entity.position().x + 10_000.0, entity.position().y);
+
+        // Todavía "Alert" en cuanto a `attempt_attack` (que no
+        // recalcula estado por sí mismo), pero fuera de rango.
+        assert!(!entity.attempt_attack(far_player, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn attack_enters_cooldown_and_blocks_the_immediate_next_frame() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+
+        assert!(!entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn attack_is_blocked_before_the_cooldown_duration_elapses() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+
+        // 0.89s acumulados: todavía por debajo de 0.9s.
+        assert!(!entity.attempt_attack(player_position, 0.89 - 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn attack_is_available_again_at_or_after_the_cooldown_duration() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+
+        assert!(!entity.attempt_attack(player_position, 0.9 - 0.016, BLOCK_SIZE));
+
+        // El resto exacto para completar 0.9s.
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn cooldown_does_not_cause_damage_every_frame() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        let mut accepted_count = 0;
+
+        // 60 cuadros a ~0.016s (~0.96s de tiempo simulado): con un
+        // cooldown de 0.9s, como mucho puede aceptarse 2 veces
+        // (t=0 y t~=0.9s), nunca 60.
+        for _ in 0..60 {
+            if entity.attempt_attack(player_position, 0.016, BLOCK_SIZE) {
+                accepted_count += 1;
+            }
+        }
+
+        assert!(accepted_count <= 2);
+        assert!(accepted_count >= 1);
+    }
+
+    #[test]
+    fn attempt_attack_ignores_non_finite_or_non_positive_delta_time_for_cooldown_ticking() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        assert!(entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+
+        // Cooldown activo; deltas inválidos no deben decrementarlo
+        // ni permitir un ataque prematuro.
+        assert!(!entity.attempt_attack(player_position, 0.0, BLOCK_SIZE));
+        assert!(!entity.attempt_attack(player_position, -1.0, BLOCK_SIZE));
+        assert!(!entity.attempt_attack(player_position, f32::NAN, BLOCK_SIZE));
     }
 }
