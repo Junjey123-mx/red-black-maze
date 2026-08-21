@@ -1,4 +1,5 @@
 mod background;
+mod hit_flash;
 mod hud;
 mod minimap;
 mod palette;
@@ -10,6 +11,7 @@ pub mod framebuffer;
 pub mod map_2d;
 pub mod world_3d;
 
+pub(crate) use hit_flash::render_hit_flash_overlay;
 pub(crate) use hud::{render_fps, render_hud};
 pub(crate) use minimap::render_minimap;
 /// Tarea 41: expuesto fuera de `rendering` para que
