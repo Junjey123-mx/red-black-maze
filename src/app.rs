@@ -15,8 +15,8 @@ use crate::rendering::{
     render_world_sprites,
 };
 use crate::ui::{
-    DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction, VictoryScreen,
-    WelcomeScreen,
+    DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
+    VictoryScreen, WelcomeScreen,
 };
 use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
@@ -785,6 +785,44 @@ impl<'aud> App<'aud> {
 
             if self.defeat.selected_item() != selection_before {
                 self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+            let action = self.defeat.selected_item();
+
+            self.audio.play_sound(SoundEffect::MenuSelect);
+
+            self.perform_defeat_action(action);
+        }
+    }
+
+    /// Ejecuta la acción de Derrota ya resuelta por
+    /// `DefeatScreen::selected_item`.
+    ///
+    /// `Retry` reutiliza EXACTAMENTE el mismo lifecycle que
+    /// `VictoryAction::Retry`: `LevelManager::restart` ya resuelve
+    /// "el mismo nivel donde ocurrió la derrota" (fuente de verdad
+    /// única — nunca la fila actualmente resaltada en Level Select,
+    /// que podría haber divergido), y `replace_session_with_level`
+    /// construye una `GameSession` enteramente NUEVA (vida/arma/
+    /// Dealers/pickups/antorcha/hit-flash — ver
+    /// `GameSession::new` — todos reinician limpios sin que esta
+    /// función repare ningún campo manualmente). `MainMenu` deja la
+    /// sesión muerta intacta en memoria sin actualizarla, igual que
+    /// `VictoryAction::MainMenu`.
+    fn perform_defeat_action(&mut self, action: DefeatMenuItem) {
+        match action {
+            DefeatMenuItem::Retry => match self.level_manager.restart() {
+                Ok(level) => self.replace_session_with_level(level),
+
+                Err(error) => {
+                    eprintln!("Error al reiniciar el nivel: {error}");
+                }
+            },
+
+            DefeatMenuItem::MainMenu => {
+                self.state = GameState::Welcome;
             }
         }
     }
