@@ -15,7 +15,8 @@ use crate::rendering::{
     render_world_sprites,
 };
 use crate::ui::{
-    LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction, VictoryScreen, WelcomeScreen,
+    DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction, VictoryScreen,
+    WelcomeScreen,
 };
 use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
@@ -42,6 +43,7 @@ pub(crate) struct App<'aud> {
     level_select: LevelSelectScreen,
     victory: VictoryScreen,
     pause: PauseScreen,
+    defeat: DefeatScreen,
     audio: AudioManager<'aud>,
 
     /// FPS real, leído de Raylib (`RaylibHandle::get_fps`) durante
@@ -72,6 +74,7 @@ impl<'aud> App<'aud> {
             level_select,
             victory,
             pause: PauseScreen::new(),
+            defeat: DefeatScreen::new(),
             audio,
             current_fps: 0,
         }
@@ -100,6 +103,8 @@ impl<'aud> App<'aud> {
             GameState::Victory => self.update_victory(window),
 
             GameState::Paused => self.update_paused(window),
+
+            GameState::Defeat => self.update_defeat(window),
         }
 
         self.sync_cursor_capture(window, previous_state);
@@ -477,6 +482,39 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Tarea 46: derrota. La comprobación de la meta (arriba) YA
+         * retornó este cuadro si `has_reached_goal` era verdadero —
+         * usando la posición del jugador de ANTES de que el combate
+         * de este cuadro se resolviera, ya que ningún paso entre
+         * ambos bloques mueve al jugador. Por lo tanto, si llegamos
+         * hasta aquí, la meta NO se alcanzó este cuadro, y
+         * comprobar salud ahora — DESPUÉS de aplicar el daño de
+         * Tarea 45 — no puede competir con una Victoria legítima:
+         * `GameState::after_health_check` es la ÚNICA regla de
+         * decisión de la transición Playing -> Defeat, exactamente
+         * como `after_goal_check` lo es para Victoria. El `return`
+         * detiene aquí cualquier acción jugable adicional de este
+         * cuadro (disparo, reload, alternar vista) sin necesidad de
+         * banderas de estado nuevas.
+         */
+        let previous_state = self.state;
+
+        self.state = previous_state.after_health_check(self.session.player_health());
+
+        if self.state != previous_state {
+            /*
+             * Tarea 46, sección 22: sin música/SFX nuevos para
+             * derrota. El `player_hit.wav` de Tarea 45 ya sonó
+             * (arriba) si el golpe que causó la muerte era daño
+             * real; esta transición en sí NO reproduce nada
+             * adicional.
+             */
+            self.defeat.on_enter();
+
+            return;
+        }
+
+        /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
          * un solo clic físico dispare como máximo un intento de
          * disparo. `try_fire_weapon` es la única autoridad sobre si
@@ -718,6 +756,39 @@ impl<'aud> App<'aud> {
         }
     }
 
+    /// Procesa navegación/activación por teclado de la pantalla de
+    /// Derrota (Tarea 46).
+    ///
+    /// Mismo orden determinista que `update_victory`: navegación
+    /// primero, luego ENTER; como máximo una acción se ejecuta por
+    /// llamada. NO ejecuta ninguna actualización de gameplay
+    /// mientras esta pantalla está activa (nunca llama
+    /// `update_playing`): la sesión muerta permanece congelada/oculta
+    /// detrás de ella, exactamente como la partida completada detrás
+    /// de Victoria.
+    fn update_defeat(&mut self, window: &RaylibHandle) {
+        if window.is_key_pressed(KeyboardKey::KEY_UP) || window.is_key_pressed(KeyboardKey::KEY_W) {
+            let selection_before = self.defeat.selected_item();
+
+            self.defeat.select_previous();
+
+            if self.defeat.selected_item() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_DOWN) || window.is_key_pressed(KeyboardKey::KEY_S)
+        {
+            let selection_before = self.defeat.selected_item();
+
+            self.defeat.select_next();
+
+            if self.defeat.selected_item() != selection_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+    }
+
     /// Construye un `Player`/`GameSession` completamente nuevos a
     /// partir de `level` ya cargado con éxito, reemplaza
     /// `self.session` de forma atómica, y entra a `Playing`.
@@ -758,6 +829,22 @@ impl<'aud> App<'aud> {
 
                 self.pause.render(framebuffer);
             }
+
+            /*
+             * Tarea 46: a diferencia de `Paused`, Derrota es una
+             * pantalla COMPLETA — no dibuja el mundo congelado
+             * detrás. `level_manager.current().theme` sigue siendo,
+             * en este punto, el nivel donde el jugador murió (Retry/
+             * Main Menu son las ÚNICAS acciones que pueden cambiarlo,
+             * y ninguna se ejecuta todavía mientras se está
+             * renderizando este cuadro), así que el acento cromático
+             * discreto de la pantalla siempre corresponde al nivel
+             * correcto, nunca a una selección obsoleta de Level
+             * Select.
+             */
+            GameState::Defeat => self
+                .defeat
+                .render(framebuffer, self.level_manager.current().theme),
         }
     }
 
