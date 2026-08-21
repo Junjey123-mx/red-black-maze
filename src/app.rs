@@ -11,7 +11,8 @@ use crate::rendering::map_2d::{
 };
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
-    render_fps, render_hud, render_minimap, render_weapon, render_world_sprites,
+    render_fps, render_hit_flash_overlay, render_hud, render_minimap, render_weapon,
+    render_world_sprites,
 };
 use crate::ui::{
     LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction, VictoryScreen, WelcomeScreen,
@@ -458,16 +459,22 @@ impl<'aud> App<'aud> {
          * y luego se resuelven los ataques de TODOS los Dealers.
          * `process_dealer_attacks` es la única autoridad sobre
          * cuánta vida se resta y sobre cuándo reinicia el flash
-         * (`GameSession::hit_flash`); esta capa solo garantiza que
-         * ambas llamadas ocurran EXCLUSIVAMENTE dentro del update
-         * jugable (nunca en `update_paused`), para que la pausa
-         * (Tarea 42) las congele automáticamente sin ningún caso
-         * especial nuevo.
+         * (`GameSession::hit_flash`); `App` solo decide, a partir
+         * del daño TOTAL agregado que retorna, si reproducir
+         * `SoundEffect::PlayerHit` — como mucho una vez por cuadro,
+         * sin importar cuántos Dealers golpearon. Un total de `0`
+         * (ningún Dealer atacó, o la vida ya estaba en `0`) no
+         * reproduce nada.
          */
         self.session.update_hit_flash(window.get_frame_time());
 
-        self.session
+        let player_damage_this_frame = self
+            .session
             .process_dealer_attacks(window.get_frame_time(), BLOCK_SIZE);
+
+        if player_damage_this_frame > 0 {
+            self.audio.play_sound(SoundEffect::PlayerHit);
+        }
 
         /*
          * Clic izquierdo: evento PRESSED (no mantenido), para que
@@ -888,6 +895,18 @@ impl<'aud> App<'aud> {
          * (arriba-derecha, solo en World3D).
          */
         render_fps(framebuffer, self.current_fps);
+
+        /*
+         * Tarea 45: flash de daño al jugador, dibujado AL FINAL de
+         * todo lo demás (mundo/arma/HUD/minimapa/FPS) para quedar
+         * siempre por encima, igual que el contador de FPS. Se
+         * dibuja en las DOS vistas (World3D/Map2D) porque también
+         * está fuera del `match` de arriba. Puramente de lectura:
+         * `is_hit_flash_active` no muta ningún estado de sesión.
+         */
+        if self.session.is_hit_flash_active() {
+            render_hit_flash_overlay(framebuffer);
+        }
     }
 }
 
