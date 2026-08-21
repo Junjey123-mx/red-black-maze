@@ -37,6 +37,51 @@ const AMMO_PICKUP_RADIUS: f32 = 19.2;
 /// capa solo decide CUÁNTO daño corresponde a un ataque aceptado.
 const DEALER_ATTACK_DAMAGE: i32 = 10;
 
+/// Duración del flash visual de daño al jugador (Tarea 45), en
+/// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
+/// avanza mientras `update_hit_flash` se llame, que a su vez solo
+/// ocurre dentro de `update_playing` — congelado automáticamente
+/// durante `GameState::Paused`, igual que el resto de temporizadores
+/// de la sesión.
+const PLAYER_HIT_FLASH_DURATION: f32 = 0.12;
+
+/// Temporizador puro del flash visual de daño: tiempo restante hasta
+/// que deje de mostrarse. No conoce `Framebuffer`/color/dibujo — eso
+/// vive en la capa de rendering, que solo LEE `is_active()`.
+struct HitFlashState {
+    remaining: f32,
+}
+
+impl HitFlashState {
+    fn new() -> Self {
+        Self { remaining: 0.0 }
+    }
+
+    /// Reinicia el flash a su duración completa. Llamarlo mientras
+    /// ya está activo REINICIA la duración (no la extiende ni la
+    /// acumula) — un segundo golpe durante el flash simplemente lo
+    /// mantiene visible por otros `PLAYER_HIT_FLASH_DURATION`
+    /// segundos completos desde ese instante.
+    fn trigger(&mut self) {
+        self.remaining = PLAYER_HIT_FLASH_DURATION;
+    }
+
+    /// Avanza el temporizador según el tiempo de PARTIDA transcurrido.
+    /// Un `delta_time` no finito o no positivo se ignora sin alterar
+    /// el estado.
+    fn update(&mut self, delta_time: f32) {
+        if !delta_time.is_finite() || delta_time <= 0.0 {
+            return;
+        }
+
+        self.remaining = (self.remaining - delta_time).max(0.0);
+    }
+
+    fn is_active(&self) -> bool {
+        self.remaining > 0.0
+    }
+}
+
 /// Duración aproximada de cada cuadro de la animación de antorcha.
 const TORCH_FRAME_DURATION: f32 = 0.1;
 
@@ -94,6 +139,7 @@ pub(crate) struct GameSession {
     weapon: Weapon,
     entities: Vec<Entity>,
     ammo_pickups: Vec<AmmoPickup>,
+    hit_flash: HitFlashState,
 }
 
 impl GameSession {
@@ -129,6 +175,7 @@ impl GameSession {
             weapon: Weapon::new(),
             entities,
             ammo_pickups,
+            hit_flash: HitFlashState::new(),
         }
     }
 
@@ -230,7 +277,12 @@ impl GameSession {
     /// aplica el daño correspondiente vía `Player::apply_damage`
     /// (la única autoridad sobre `health`). Dos Dealers listos en el
     /// mismo cuadro SÍ pueden sumar su daño (nunca se limita
-    /// artificialmente a un único atacante por cuadro).
+    /// artificialmente a un único atacante por cuadro), pero el
+    /// flash visual se dispara COMO MUCHO una vez por esta llamada
+    /// (`HitFlashState::trigger` simplemente reinicia su duración,
+    /// sin acumular), y `App` decide reproducir `SoundEffect::PlayerHit`
+    /// como mucho una vez leyendo el total > 0 retornado, no una vez
+    /// por Dealer.
     pub(crate) fn process_dealer_attacks(&mut self, delta_time: f32, block_size: usize) -> i32 {
         let player_position = self.player.pos;
 
@@ -242,7 +294,22 @@ impl GameSession {
             }
         }
 
+        if total_damage > 0 {
+            self.hit_flash.trigger();
+        }
+
         total_damage
+    }
+
+    /// Avanza el temporizador del flash visual de daño según el
+    /// tiempo de PARTIDA transcurrido. Ver `HitFlashState::update`.
+    pub(crate) fn update_hit_flash(&mut self, delta_time: f32) {
+        self.hit_flash.update(delta_time);
+    }
+
+    /// `true` mientras el flash visual de daño debe mostrarse.
+    pub(crate) fn is_hit_flash_active(&self) -> bool {
+        self.hit_flash.is_active()
     }
 
     /// Pickups de munición de la sesión actual (activos Y ya
@@ -606,17 +673,19 @@ mod tests {
     // --- Tarea 45: ataques de Dealer / daño al jugador. ---
 
     #[test]
-    fn single_ready_dealer_in_range_deals_damage() {
+    fn single_ready_dealer_in_range_deals_damage_and_triggers_flash() {
         let mut session = new_test_session_with_one_dealer();
 
         move_player_near_dealer_and_alert(&mut session, 0, 20.0);
 
         assert_eq!(session.player_health(), 100);
+        assert!(!session.is_hit_flash_active());
 
         let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
 
         assert_eq!(damage, 10);
         assert_eq!(session.player_health(), 90);
+        assert!(session.is_hit_flash_active());
     }
 
     #[test]
@@ -632,6 +701,7 @@ mod tests {
 
         assert_eq!(damage, 0);
         assert_eq!(session.player_health(), 100);
+        assert!(!session.is_hit_flash_active());
     }
 
     #[test]
@@ -710,14 +780,15 @@ mod tests {
     }
 
     #[test]
-    fn no_attack_this_frame_produces_no_damage() {
+    fn no_attack_this_frame_produces_no_feedback() {
         let mut session = new_test_session();
 
         assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+        assert!(!session.is_hit_flash_active());
     }
 
     #[test]
-    fn health_already_zero_produces_no_further_damage() {
+    fn health_already_zero_produces_no_further_feedback() {
         let mut session = new_test_session_with_one_dealer();
 
         move_player_near_dealer_and_alert(&mut session, 0, 20.0);
@@ -731,6 +802,74 @@ mod tests {
         let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
 
         assert_eq!(damage, 0);
+        assert!(!session.is_hit_flash_active());
+    }
+
+    #[test]
+    fn hit_flash_timer_progresses_and_expires() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        session.process_dealer_attacks(0.016, BLOCK_SIZE);
+        assert!(session.is_hit_flash_active());
+
+        session.update_hit_flash(0.10);
+        assert!(session.is_hit_flash_active());
+
+        session.update_hit_flash(0.03);
+        assert!(!session.is_hit_flash_active());
+    }
+
+    #[test]
+    fn new_damage_while_flash_active_restarts_its_duration() {
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        session.update_hit_flash(0.10);
+        assert!(session.is_hit_flash_active());
+
+        // Deja pasar el cooldown completo (0.9s) para que el mismo
+        // Dealer pueda volver a golpear y reiniciar el flash.
+        session.process_dealer_attacks(0.9, BLOCK_SIZE);
+        assert!(session.is_hit_flash_active());
+
+        // Si el flash simplemente se hubiera dejado decaer sin
+        // reiniciarse, ya habría expirado (0.10 + un paso pequeño >
+        // 0.12); en cambio, tras el reinicio debe sobrevivir un
+        // avance adicional de 0.10s.
+        session.update_hit_flash(0.10);
+        assert!(session.is_hit_flash_active());
+    }
+
+    #[test]
+    fn skipping_update_calls_freezes_cooldown_and_flash_exactly_like_a_pause_menu_would() {
+        // Tarea 45 + Tarea 42: `App::update_paused` congela el
+        // combate simplemente NO llamando a
+        // `process_dealer_attacks`/`update_hit_flash` mientras
+        // `GameState::Paused` está activo — la ausencia de esas
+        // llamadas (nunca un `delta_time` grande) es la garantía de
+        // congelación, igual que ya se probó para el reload en
+        // Tarea 42.
+        let mut session = new_test_session_with_one_dealer();
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        let health_during_pause = session.player_health();
+
+        let flash_active_during_pause = session.is_hit_flash_active();
+
+        // "10 segundos reales" en los que NINGÚN método de combate
+        // se invoca (equivalente exacto de estar en pausa): ni la
+        // vida ni el flash cambian.
+
+        assert_eq!(session.player_health(), health_during_pause);
+        assert_eq!(session.is_hit_flash_active(), flash_active_during_pause);
     }
 
     /// Sesión de prueba con un único pickup de munición en (fila 1,
