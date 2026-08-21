@@ -218,6 +218,19 @@ impl Entity {
             self.state = EntityState::Hit;
             self.hit_time_remaining = DEALER_HIT_DURATION_SECONDS;
 
+            /*
+             * Tarea 45: cualquier ataque ofensivo pendiente/listo se
+             * interrumpe reiniciando el cooldown al COMPLETO al
+             * entrar en `Hit`, en vez de dejarlo como estaba. Sin
+             * esto, un Dealer golpeado justo cuando su cooldown ya
+             * había expirado podría recuperarse de `Hit` y atacar
+             * de inmediato en el mismo instante; con el reinicio,
+             * el jugador gana un respiro real de
+             * `DEALER_ATTACK_COOLDOWN` completo tras cada golpe
+             * aceptado contra ese Dealer.
+             */
+            self.attack_cooldown_remaining = DEALER_ATTACK_COOLDOWN;
+
             EntityDamageOutcome::Hit
         }
     }
@@ -1020,6 +1033,60 @@ mod tests {
 
         assert!(accepted_count <= 2);
         assert!(accepted_count >= 1);
+    }
+
+    #[test]
+    fn idle_dealer_cannot_attack_even_in_range_and_ready() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        assert_eq!(entity.state(), EntityState::Idle);
+
+        let close_player = Vector2::new(entity.position().x + 5.0, entity.position().y);
+
+        assert!(!entity.attempt_attack(close_player, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn hit_dealer_cannot_attack() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        entity.apply_damage(10);
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        assert!(!entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn entering_hit_resets_the_attack_cooldown_to_full() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        // Cooldown ya listo (recién construido). Un golpe no letal
+        // debe recargarlo al completo en vez de dejarlo en 0.0.
+        entity.apply_damage(10);
+        assert_eq!(entity.state(), EntityState::Hit);
+
+        // Deja expirar el temporizador de Hit (0.15s) para volver a
+        // Alert, y confirma que el Dealer NO puede golpear de
+        // inmediato al recuperarse. `Entity::update` nunca decrementa
+        // `attack_cooldown_remaining` (solo `attempt_attack` lo
+        // hace), así que el cooldown sigue en el valor COMPLETO
+        // (0.9s) recargado al entrar en `Hit`.
+        entity.update(player_position, 0.20, BLOCK_SIZE, None);
+        assert_eq!(entity.state(), EntityState::Alert);
+
+        assert!(!entity.attempt_attack(player_position, 0.016, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn dead_dealer_never_attacks_across_many_updates() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        entity.apply_damage(1000);
+        assert!(entity.is_dead());
+
+        for _ in 0..100 {
+            assert!(!entity.attempt_attack(player_position, 0.5, BLOCK_SIZE));
+        }
     }
 
     #[test]
