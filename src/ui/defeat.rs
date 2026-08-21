@@ -519,4 +519,12 @@ mod tests {
         assert_ne!(crimson, house);
         assert_ne!(black_club, house);
     }
+
+    #[test]
+    fn tiny_framebuffer_layout_does_not_panic() {
+        let layout = compute_layout(1, 1);
+
+        let _ = layout.title_x;
+        let _ = layout.row_x;
+    }
 }

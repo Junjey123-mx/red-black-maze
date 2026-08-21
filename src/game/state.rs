@@ -136,6 +136,18 @@ mod tests {
     }
 
     #[test]
+    fn low_but_positive_health_never_transitions() {
+        // Solo `health == 0` produce Defeat; nunca un umbral de
+        // "Critical" por vida baja (10, 20, ...).
+        for health in [1, 2, 10, 20, 50] {
+            assert_eq!(
+                GameState::Playing.after_health_check(health),
+                GameState::Playing
+            );
+        }
+    }
+
+    #[test]
     fn non_playing_states_never_transition_from_the_health_condition_alone() {
         assert_eq!(GameState::Welcome.after_health_check(0), GameState::Welcome);
         assert_eq!(
@@ -145,6 +157,31 @@ mod tests {
         assert_eq!(GameState::Victory.after_health_check(0), GameState::Victory);
         assert_eq!(GameState::Paused.after_health_check(0), GameState::Paused);
         assert_eq!(GameState::Defeat.after_health_check(0), GameState::Defeat);
+    }
+
+    #[test]
+    fn dead_and_goal_reached_in_the_same_update_prioritizes_defeat() {
+        // Componer `after_health_check` seguido de `after_goal_check`
+        // (el MISMO orden que `after_goal_check` internamente usa, y
+        // el que `App::update_playing` realmente ejecuta desde Tarea
+        // 46.B) demuestra la prioridad: una vez que `Defeat` ya fue
+        // decidido, `after_goal_check` — que solo transiciona desde
+        // `Playing` — es un no-op garantizado, nunca una
+        // sobreescritura hacia `Victory`.
+        let after_health = GameState::Playing.after_health_check(0);
+
+        assert_eq!(after_health, GameState::Defeat);
+        assert_eq!(after_health.after_goal_check(true), GameState::Defeat);
+    }
+
+    #[test]
+    fn alive_with_goal_reached_still_transitions_to_victory() {
+        // Regresión de prioridad complementaria: la vida > 0 nunca
+        // bloquea una victoria legítima.
+        let after_health = GameState::Playing.after_health_check(100);
+
+        assert_eq!(after_health, GameState::Playing);
+        assert_eq!(after_health.after_goal_check(true), GameState::Victory);
     }
 
     // --- Tarea 46.B: GameState::resolve_playing_terminal_state ---
@@ -201,5 +238,24 @@ mod tests {
             assert_eq!(state.resolve_playing_terminal_state(0, true), state);
             assert_eq!(state.resolve_playing_terminal_state(100, false), state);
         }
+    }
+
+    #[test]
+    fn health_already_zero_at_frame_start_resolves_to_defeat_regardless_of_goal() {
+        // Tarea 46.B, sección 7: robustez defensiva. Si por
+        // cualquier razón `Playing` se evaluara con vida ya en `0`
+        // (el flujo normal de T45/T46.B ya lo hace imposible — ver
+        // el guardia al inicio de `App::update_playing` — pero esta
+        // función pura debe seguir siendo correcta por sí misma sin
+        // depender de esa garantía externa), el resultado es
+        // `Defeat` sin importar `reached_goal`.
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(0, false),
+            GameState::Defeat
+        );
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(0, true),
+            GameState::Defeat
+        );
     }
 }

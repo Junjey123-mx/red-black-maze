@@ -994,6 +994,55 @@ mod tests {
         assert!(!clean_session.is_hit_flash_active());
     }
 
+    #[test]
+    fn a_freshly_constructed_session_dirtied_across_every_subsystem_still_resets_cleanly() {
+        // El test más completo de esta sección (Tarea 46, §48):
+        // ensucia health, arma, Dealer y pickup A LA VEZ en la misma
+        // sesión, y confirma que una sesión NUEVA para el mismo nivel
+        // reinicia los cinco aspectos simultáneamente, sin llevar
+        // ningún resto de estado de la sesión muerta.
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+
+            session.player.pos = Vector2::new(168.0, 72.0);
+
+            session.collect_nearby_ammo_pickups();
+
+            session.try_fire_weapon();
+
+            session.update_weapon(0.2);
+
+            session.try_start_weapon_reload();
+
+            move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+            session.damage_entity(0);
+
+            session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+            session.player.apply_damage(1000);
+
+            session
+        };
+
+        assert_eq!(dirty_session.player_health(), 0);
+        assert!(!dirty_session.ammo_pickups()[0].is_active());
+        assert_ne!(dirty_session.weapon_ammo(), 6);
+        assert_eq!(dirty_session.entities()[0].state(), EntityState::Hit);
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+
+        assert_eq!(clean_session.player_health(), 100);
+        assert_eq!(clean_session.weapon_ammo(), 6);
+        assert_eq!(clean_session.weapon_reserve_ammo(), 18);
+        assert_eq!(clean_session.weapon_state(), WeaponState::Idle);
+        assert_eq!(clean_session.weapon_reload_progress(), None);
+        assert_eq!(clean_session.entities()[0].state(), EntityState::Idle);
+        assert_eq!(clean_session.entities()[0].health(), 100);
+        assert!(clean_session.ammo_pickups()[0].is_active());
+        assert!(!clean_session.is_hit_flash_active());
+    }
+
     /// Sesión de prueba con un único pickup de munición en (fila 1,
     /// columna 3), a la derecha del spawn del jugador (fila 1,
     /// columna 1).
