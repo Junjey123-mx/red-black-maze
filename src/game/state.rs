@@ -58,6 +58,36 @@ impl GameState {
             _ => self,
         }
     }
+
+    /// Tarea 46.B: regla ÚNICA de resolución terminal de un cuadro de
+    /// `Playing`, con la precedencia real y obligatoria entre las dos
+    /// condiciones de fin de partida — `Defeat` SIEMPRE gana sobre
+    /// `Victory` cuando ambas se cumplen en el mismo cuadro:
+    ///
+    /// ```text
+    /// alive + no goal -> Playing
+    /// alive + goal    -> Victory
+    /// dead  + no goal -> Defeat
+    /// dead  + goal    -> Defeat
+    /// ```
+    ///
+    /// Implementada componiendo `after_health_check` PRIMERO y
+    /// `after_goal_check` DESPUÉS — nunca al revés — precisamente
+    /// para que una vida ya en `0` deje el estado en `Defeat` ANTES
+    /// de que `after_goal_check` pueda evaluarse; como
+    /// `after_goal_check` solo transiciona MIENTRAS el estado sigue
+    /// siendo `Playing`, una vez en `Defeat` esa segunda llamada es
+    /// un no-op garantizado, nunca una sobreescritura hacia
+    /// `Victory`. Esta es la ÚNICA función que `App::update_playing`
+    /// debe usar para decidir la resolución terminal de un cuadro —
+    /// nunca dos llamadas independientes con un `return` intermedio
+    /// entre ellas, que es precisamente el patrón que permitía a
+    /// Victory "ganarle la carrera" a un Defeat legítimo del mismo
+    /// cuadro antes de esta tarea.
+    pub fn resolve_playing_terminal_state(self, health: i32, reached_goal: bool) -> Self {
+        self.after_health_check(health)
+            .after_goal_check(reached_goal)
+    }
 }
 
 #[cfg(test)]
@@ -115,5 +145,61 @@ mod tests {
         assert_eq!(GameState::Victory.after_health_check(0), GameState::Victory);
         assert_eq!(GameState::Paused.after_health_check(0), GameState::Paused);
         assert_eq!(GameState::Defeat.after_health_check(0), GameState::Defeat);
+    }
+
+    // --- Tarea 46.B: GameState::resolve_playing_terminal_state ---
+    //
+    // Esta es la ÚNICA función que `App::update_playing` invoca para
+    // decidir la resolución terminal de un cuadro (ver
+    // `src/app.rs`); estas pruebas ejercitan exactamente esa misma
+    // API de producción, no una simulación paralela.
+
+    #[test]
+    fn alive_without_goal_remains_playing() {
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(100, false),
+            GameState::Playing
+        );
+    }
+
+    #[test]
+    fn alive_with_goal_reaches_victory() {
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(100, true),
+            GameState::Victory
+        );
+    }
+
+    #[test]
+    fn dead_without_goal_reaches_defeat() {
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(0, false),
+            GameState::Defeat
+        );
+    }
+
+    #[test]
+    fn dead_with_goal_reaches_defeat_not_victory() {
+        // El caso central de Tarea 46.B: incluso con la meta
+        // alcanzada este MISMO cuadro, una vida en `0` siempre
+        // produce `Defeat`, nunca `Victory`.
+        assert_eq!(
+            GameState::Playing.resolve_playing_terminal_state(0, true),
+            GameState::Defeat
+        );
+    }
+
+    #[test]
+    fn non_playing_states_never_transition_via_the_combined_rule() {
+        for state in [
+            GameState::Welcome,
+            GameState::LevelSelect,
+            GameState::Victory,
+            GameState::Paused,
+            GameState::Defeat,
+        ] {
+            assert_eq!(state.resolve_playing_terminal_state(0, true), state);
+            assert_eq!(state.resolve_playing_terminal_state(100, false), state);
+        }
     }
 }
