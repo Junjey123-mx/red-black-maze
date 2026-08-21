@@ -28,12 +28,22 @@ pub(crate) enum SoundEffect {
     /// mantener `WeaponState::Reload` en cuadros posteriores — ver
     /// `App::update_playing`, el único llamador.
     Reload,
+
+    /// Tarea 45: el jugador recibió daño REAL de al menos un Dealer
+    /// en este cuadro (`GameSession::process_dealer_attacks`
+    /// reportó una cantidad total > 0). Nunca se dispara si ningún
+    /// Dealer atacó, si el daño aplicado terminó siendo `0` (salud
+    /// ya en `0`), ni una segunda vez por múltiples Dealers
+    /// impactando en el mismo cuadro — `App` lo solicita como
+    /// máximo una vez por cuadro, sin importar cuántos ataques se
+    /// agregaron en el total.
+    PlayerHit,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 11] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 12] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -45,6 +55,7 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 11] = [
     SoundEffect::MenuSelect,
     SoundEffect::Victory,
     SoundEffect::Reload,
+    SoundEffect::PlayerHit,
 ];
 
 /// Única ubicación del catálogo ruta<->efecto. Ningún otro módulo
@@ -62,6 +73,7 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::MenuSelect => "assets/audio/sfx/menu_select.wav",
         SoundEffect::Victory => "assets/audio/sfx/victory.wav",
         SoundEffect::Reload => "assets/audio/sfx/reload.wav",
+        SoundEffect::PlayerHit => "assets/audio/sfx/player_hit.wav",
     }
 }
 
@@ -152,8 +164,8 @@ impl FootstepCadence {
 /// o dispositivo de audio no disponible) se representa con
 /// `music: None`; todas las operaciones son no-op seguras en ese caso.
 ///
-/// `sounds` sigue el mismo principio para los diez efectos de Tarea
-/// 32: un `SoundEffect` sin entrada en el mapa (archivo faltante o
+/// `sounds` sigue el mismo principio para los doce efectos (Tarea
+/// 32 en adelante): un `SoundEffect` sin entrada en el mapa (archivo faltante o
 /// fallo de carga) hace que `play_sound` sea no-op seguro para ese
 /// efecto en particular, sin afectar a los demás.
 pub(crate) struct AudioManager<'aud> {
@@ -166,7 +178,7 @@ pub(crate) struct AudioManager<'aud> {
 
 impl<'aud> AudioManager<'aud> {
     /// Construye el manager e intenta cargar la música de fondo y
-    /// los diez efectos de sonido, cada uno EXACTAMENTE una vez. Si
+    /// los doce efectos de sonido, cada uno EXACTAMENTE una vez. Si
     /// la música carga con éxito, la reproducción comienza de
     /// inmediato (sin requerir entrada de teclado).
     ///
@@ -217,7 +229,7 @@ impl<'aud> AudioManager<'aud> {
         }
     }
 
-    /// Intenta cargar cada uno de los diez efectos de sonido
+    /// Intenta cargar cada uno de los doce efectos de sonido
     /// EXACTAMENTE una vez. Un efecto cuyo archivo falte o cuya
     /// carga falle se reporta con una única advertencia y se omite
     /// del mapa resultante; los demás efectos cargan con normalidad.
@@ -290,7 +302,7 @@ impl<'aud> AudioManager<'aud> {
 
     /// Solicita la reproducción de un efecto discreto
     /// (`Shoot`/`WallHit`/`EnemyHit`/`EnemyDeath`/`MenuMove`/
-    /// `MenuSelect`/`Victory`/`Footstep`/`Reload`). No-op seguro si
+    /// `MenuSelect`/`Victory`/`Footstep`/`Reload`/`PlayerHit`). No-op seguro si
     /// ese efecto no cargó. `EnemyIdle`/`EnemyAlert` aplican además
     /// su propio cooldown anti-spam antes de sonar.
     pub(crate) fn play_sound(&mut self, effect: SoundEffect) {
@@ -349,8 +361,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_eleven_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 11);
+    fn catalog_contains_exactly_twelve_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 12);
     }
 
     #[test]
@@ -393,6 +405,10 @@ mod tests {
             "assets/audio/sfx/victory.wav"
         );
         assert_eq!(sfx_path(SoundEffect::Reload), "assets/audio/sfx/reload.wav");
+        assert_eq!(
+            sfx_path(SoundEffect::PlayerHit),
+            "assets/audio/sfx/player_hit.wav"
+        );
     }
 
     #[test]
