@@ -872,6 +872,128 @@ mod tests {
         assert_eq!(session.is_hit_flash_active(), flash_active_during_pause);
     }
 
+    // --- Tarea 46: Retry / reinicio limpio de sesión. ---
+    //
+    // `App::perform_defeat_action(DefeatMenuItem::Retry)` (y
+    // `VictoryAction::Retry`, que ya existía) reconstruyen la sesión
+    // exclusivamente llamando `LevelManager::restart` +
+    // `GameSession::new` — nunca reparan `health`/`weapon`/
+    // `entities`/`ammo_pickups`/`hit_flash` campo por campo desde la
+    // UI. Estas pruebas demuestran, al nivel de `GameSession` (sin
+    // necesitar abrir una ventana ni instanciar `App`), la invariante
+    // exacta de la que depende Retry: una sesión recién construida
+    // con `GameSession::new` SIEMPRE arranca limpia, sin importar
+    // cuánto se haya "ensuciado" una sesión anterior para el mismo
+    // nivel.
+
+    /// Sesión de prueba con un Dealer Y un pickup de munición, ambos
+    /// alcanzables desde el spawn del jugador: suficiente para
+    /// "ensuciar" health/Dealer/pickup/arma/hit-flash a la vez en un
+    /// único fixture.
+    fn new_test_session_with_one_dealer_and_one_pickup() -> GameSession {
+        let map = "\
+#########
+#p a    #
+#  e    #
+#      g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE)
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_always_starts_with_full_health() {
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+            session.player.apply_damage(1000);
+            session
+        };
+        assert_eq!(dirty_session.player_health(), 0);
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+        assert_eq!(clean_session.player_health(), 100);
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_always_starts_with_full_weapon_ammo_and_idle_state() {
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+
+            // Dispara un tiro (consume 1 de 6), deja que el arma
+            // recorra Fire/Recoil de vuelta a Idle, y luego deja un
+            // reload EN CURSO (nunca completado) para probar que el
+            // progreso de reload también se descarta.
+            session.try_fire_weapon();
+            session.update_weapon(0.2);
+            session.try_start_weapon_reload();
+            session.update_weapon(0.1);
+            session
+        };
+        assert_eq!(dirty_session.weapon_ammo(), 5);
+        assert!(dirty_session.weapon_reload_progress().is_some());
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+        assert_eq!(clean_session.weapon_ammo(), 6);
+        assert_eq!(clean_session.weapon_reserve_ammo(), 18);
+        assert_eq!(clean_session.weapon_state(), WeaponState::Idle);
+        assert_eq!(clean_session.weapon_reload_progress(), None);
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_always_starts_with_dealers_reset() {
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+            move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+            session.damage_entity(0);
+            session.process_dealer_attacks(0.016, BLOCK_SIZE);
+            session
+        };
+        assert_eq!(dirty_session.entities()[0].state(), EntityState::Hit);
+        assert_eq!(dirty_session.entities()[0].health(), 50);
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+        assert_eq!(clean_session.entities()[0].state(), EntityState::Idle);
+        assert_eq!(clean_session.entities()[0].health(), 100);
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_always_starts_with_all_ammo_pickups_active() {
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+            // El pickup ('a') vive en (fila 1, columna 3) ==
+            // (168.0, 72.0) a BLOCK_SIZE=48, igual convención que
+            // `new_test_session_with_one_ammo_spawn`.
+            session.player.pos = Vector2::new(168.0, 72.0);
+            session.collect_nearby_ammo_pickups();
+            session
+        };
+        assert!(!dirty_session.ammo_pickups()[0].is_active());
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+        assert!(clean_session.ammo_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_always_starts_with_an_inactive_hit_flash() {
+        let dirty_session = {
+            let mut session = new_test_session_with_one_dealer_and_one_pickup();
+            move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+            session.process_dealer_attacks(0.016, BLOCK_SIZE);
+            session
+        };
+        assert!(dirty_session.is_hit_flash_active());
+
+        let clean_session = new_test_session_with_one_dealer_and_one_pickup();
+        assert!(!clean_session.is_hit_flash_active());
+    }
+
     /// Sesión de prueba con un único pickup de munición en (fila 1,
     /// columna 3), a la derecha del spawn del jugador (fila 1,
     /// columna 1).
