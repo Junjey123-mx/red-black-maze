@@ -311,6 +311,28 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Tarea 46.B, sección 7: guardia defensiva. El flujo normal
+         * de T45/T46 ya hace estructuralmente imposible reentrar a
+         * `update_playing` con la vida ya en `0` (el cuadro exacto en
+         * que la vida llega a `0` ya transiciona a `Defeat` más abajo
+         * y retorna), pero esta comprobación mantiene la función
+         * robusta por sí misma en vez de depender silenciosamente de
+         * esa garantía externa: si de todas formas ocurriera, no se
+         * permite movimiento/pickups/disparo/reload/Victoria este
+         * cuadro, la sesión NO se toca en absoluto, y se entra a
+         * `Defeat` de inmediato.
+         */
+        self.state = self
+            .state
+            .resolve_playing_terminal_state(self.session.player_health(), false);
+
+        if self.state == GameState::Defeat {
+            self.defeat.on_enter();
+
+            return;
+        }
+
+        /*
          * Movimiento y rotación del jugador. Se observa la posición
          * antes/después para alimentar la cadencia de pasos con
          * desplazamiento REAL: un jugador empujando contra una pared
@@ -337,38 +359,20 @@ impl<'aud> App<'aud> {
         self.audio.update_footsteps(moved, window.get_frame_time());
 
         /*
-         * Comprobación de meta DESPUÉS del movimiento de este
-         * cuadro: si el jugador acaba de entrar a la celda de meta,
-         * la partida termina aquí mismo. `on_enter` reinicia la
-         * selección de Victoria según si existe un nivel siguiente
-         * (Tarea 30), y el `return` inmediato evita que el resto de
-         * esta función (arma, entidades, hitscan, alternar vista)
-         * siga ejecutando gameplay sobre un nivel ya completado. El
-         * efecto `Victory` suena EXACTAMENTE en esta transición
-         * (Playing -> Victory causada por la meta), nunca en cuadros
-         * posteriores mientras la pantalla de Victoria ya está
-         * activa.
+         * Tarea 46.B: la meta se COMPRUEBA aquí, justo después del
+         * movimiento de este cuadro (misma posición que antes), pero
+         * la transición YA NO se decide ni se ejecuta en este punto.
+         * Antes de esta tarea, un `return` inmediato aquí permitía
+         * que el jugador ganara la partida sin que el combate de
+         * Dealer de este MISMO cuadro llegara siquiera a resolverse
+         * — por lo que un golpe letal simultáneo nunca podía competir
+         * con la Victoria. Ahora `reached_goal` se recuerda en una
+         * variable local y la decisión real (con la prioridad
+         * obligatoria de Defeat sobre Victory) se aplica DESPUÉS de
+         * que el daño de Dealer de este cuadro (más abajo) ya se haya
+         * aplicado, mediante `GameState::resolve_playing_terminal_state`.
          */
-        if self.session.has_reached_goal(BLOCK_SIZE) {
-            let previous_state = self.state;
-
-            /*
-             * `GameState::after_goal_check` (Tarea 37) es la ÚNICA
-             * regla de decisión de la transición Playing -> Victory;
-             * `App` solo coordina los efectos secundarios (selección
-             * de Victoria, sonido) cuando esa regla realmente
-             * produjo un cambio de estado.
-             */
-            self.state = previous_state.after_goal_check(true);
-
-            if self.state != previous_state {
-                self.victory.on_enter(self.level_manager.has_next());
-
-                self.audio.play_sound(SoundEffect::Victory);
-            }
-
-            return;
-        }
+        let reached_goal = self.session.has_reached_goal(BLOCK_SIZE);
 
         /*
          * Avanza la animación de antorcha según el tiempo real
@@ -482,34 +486,51 @@ impl<'aud> App<'aud> {
         }
 
         /*
-         * Tarea 46: derrota. La comprobación de la meta (arriba) YA
-         * retornó este cuadro si `has_reached_goal` era verdadero —
-         * usando la posición del jugador de ANTES de que el combate
-         * de este cuadro se resolviera, ya que ningún paso entre
-         * ambos bloques mueve al jugador. Por lo tanto, si llegamos
-         * hasta aquí, la meta NO se alcanzó este cuadro, y
-         * comprobar salud ahora — DESPUÉS de aplicar el daño de
-         * Tarea 45 — no puede competir con una Victoria legítima:
-         * `GameState::after_health_check` es la ÚNICA regla de
-         * decisión de la transición Playing -> Defeat, exactamente
-         * como `after_goal_check` lo es para Victoria. El `return`
-         * detiene aquí cualquier acción jugable adicional de este
-         * cuadro (disparo, reload, alternar vista) sin necesidad de
-         * banderas de estado nuevas.
+         * Tarea 46.B: resolución terminal ÚNICA de este cuadro, ahora
+         * que tanto `reached_goal` (recordado arriba, antes de
+         * combate) como el daño de Dealer de ESTE MISMO cuadro (justo
+         * arriba) ya están disponibles. `resolve_playing_terminal_state`
+         * es la ÚNICA regla de decisión — nunca dos comprobaciones
+         * independientes con un `return` intermedio entre ellas — y
+         * garantiza `Defeat` sobre `Victory` cuando ambas condiciones
+         * se cumplen en el mismo cuadro. El `return` detiene aquí
+         * cualquier acción jugable adicional de este cuadro (disparo,
+         * reload, alternar vista) sin necesidad de banderas de estado
+         * nuevas.
          */
         let previous_state = self.state;
 
-        self.state = previous_state.after_health_check(self.session.player_health());
+        self.state = previous_state
+            .resolve_playing_terminal_state(self.session.player_health(), reached_goal);
 
         if self.state != previous_state {
-            /*
-             * Tarea 46, sección 22: sin música/SFX nuevos para
-             * derrota. El `player_hit.wav` de Tarea 45 ya sonó
-             * (arriba) si el golpe que causó la muerte era daño
-             * real; esta transición en sí NO reproduce nada
-             * adicional.
-             */
-            self.defeat.on_enter();
+            match self.state {
+                GameState::Defeat => {
+                    /*
+                     * Tarea 46, sección 22: sin música/SFX nuevos
+                     * para derrota. El `player_hit.wav` de Tarea 45
+                     * ya sonó (arriba) si el golpe que causó la
+                     * muerte era daño real; esta transición en sí NO
+                     * reproduce nada adicional.
+                     */
+                    self.defeat.on_enter();
+                }
+
+                GameState::Victory => {
+                    /*
+                     * Solo se alcanza aquí cuando `resolve_playing_terminal_state`
+                     * decidió Victory — es decir, la vida seguía > 0
+                     * este cuadro (Tarea 46.B, sección 12): un golpe
+                     * letal simultáneo ya se resolvió como `Defeat`
+                     * arriba y nunca llega a esta rama.
+                     */
+                    self.victory.on_enter(self.level_manager.has_next());
+
+                    self.audio.play_sound(SoundEffect::Victory);
+                }
+
+                _ => {}
+            }
 
             return;
         }
