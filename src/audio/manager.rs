@@ -3,8 +3,54 @@ use std::path::Path;
 
 use raylib::prelude::*;
 
-/// Única ubicación de la ruta del archivo de música de fondo.
-const BACKGROUND_MUSIC_PATH: &str = "assets/audio/music/background.ogg";
+use crate::world::LevelTheme;
+
+/// Identidad tipada de una de las cuatro pistas de música de fondo
+/// (Tarea 46.5). `App` selecciona la pista activa por este valor
+/// (`AudioManager::set_music(MusicTrack::Menu)`), nunca por ruta de
+/// archivo ni por una cadena de texto suelta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum MusicTrack {
+    Menu,
+    CrimsonEntrance,
+    BlackClub,
+    HouseOfCards,
+}
+
+/// Enumeración completa de `MusicTrack`, usada para cargar el
+/// catálogo completo y para las pruebas puras de cobertura del
+/// catálogo. Mantener en sincronía con la definición del enum.
+const ALL_MUSIC_TRACKS: [MusicTrack; 4] = [
+    MusicTrack::Menu,
+    MusicTrack::CrimsonEntrance,
+    MusicTrack::BlackClub,
+    MusicTrack::HouseOfCards,
+];
+
+/// Única ubicación del catálogo ruta<->pista. Ningún otro módulo
+/// conoce estas rutas.
+fn music_path(track: MusicTrack) -> &'static str {
+    match track {
+        MusicTrack::Menu => "assets/audio/music/menu.ogg",
+        MusicTrack::CrimsonEntrance => "assets/audio/music/crimson_entrance.ogg",
+        MusicTrack::BlackClub => "assets/audio/music/black_club.ogg",
+        MusicTrack::HouseOfCards => "assets/audio/music/house_of_cards.ogg",
+    }
+}
+
+/// Única ubicación de la asociación `LevelTheme -> MusicTrack`
+/// (Tarea 46.5, sección 18): ningún otro módulo duplica esta
+/// correspondencia. `App` la usa exclusivamente a través del
+/// `LevelTheme` ya resuelto por `LevelManager` (la fuente de verdad
+/// real de qué nivel está activo) — nunca infiere la pista a partir
+/// de la posición seleccionada en Level Select.
+pub(crate) fn music_track_for_theme(theme: LevelTheme) -> MusicTrack {
+    match theme {
+        LevelTheme::CrimsonEntrance => MusicTrack::CrimsonEntrance,
+        LevelTheme::BlackClub => MusicTrack::BlackClub,
+        LevelTheme::HouseOfCards => MusicTrack::HouseOfCards,
+    }
+}
 
 /// Identidad semántica de un efecto de sonido de partida/UI. `App`
 /// solicita reproducción por este valor (`play_sound(SoundEffect::Shoot)`),
@@ -160,16 +206,29 @@ impl FootstepCadence {
 /// `unsafe`, ni `transmute`: es el modelo de propiedad más simple que
 /// el API segura de `raylib-rs` permite.
 ///
-/// La ausencia de pista (archivo faltante, fallo de decodificación,
-/// o dispositivo de audio no disponible) se representa con
-/// `music: None`; todas las operaciones son no-op seguras en ese caso.
+/// Tarea 46.5: `music` pasa de una única pista (`Option<Music>`) a un
+/// catálogo de hasta cuatro (`MusicTrack -> Music`), pero SOLO una
+/// puede sonar a la vez — `current_track` es la única fuente de
+/// verdad de cuál. Una pista sin archivo (faltante, fallo de
+/// decodificación, o dispositivo de audio no disponible) simplemente
+/// no tiene entrada en el mapa; todas las operaciones son no-op
+/// seguras para esa pista en particular, sin afectar a las demás.
 ///
 /// `sounds` sigue el mismo principio para los doce efectos (Tarea
 /// 32 en adelante): un `SoundEffect` sin entrada en el mapa (archivo faltante o
 /// fallo de carga) hace que `play_sound` sea no-op seguro para ese
 /// efecto en particular, sin afectar a los demás.
 pub(crate) struct AudioManager<'aud> {
-    music: Option<Music<'aud>>,
+    music: HashMap<MusicTrack, Music<'aud>>,
+
+    /// Pista actualmente seleccionada (sonando o en pausa). `None`
+    /// únicamente cuando ninguna pista ha sido seleccionada aún, o
+    /// tras un estado terminal (Victoria/Derrota) que detiene la
+    /// música por completo (Tarea 46.5, secciones 5/8) — la próxima
+    /// llamada a `set_music` arranca esa pista desde el principio,
+    /// nunca reanuda una posición vieja.
+    current_track: Option<MusicTrack>,
+
     sounds: HashMap<SoundEffect, Sound<'aud>>,
     enemy_idle_cooldown: f32,
     enemy_alert_cooldown: f32,
@@ -177,56 +236,70 @@ pub(crate) struct AudioManager<'aud> {
 }
 
 impl<'aud> AudioManager<'aud> {
-    /// Construye el manager e intenta cargar la música de fondo y
-    /// los doce efectos de sonido, cada uno EXACTAMENTE una vez. Si
-    /// la música carga con éxito, la reproducción comienza de
-    /// inmediato (sin requerir entrada de teclado).
+    /// Construye el manager e intenta cargar las cuatro pistas de
+    /// música y los doce efectos de sonido, cada uno EXACTAMENTE una
+    /// vez. Termina seleccionando `MusicTrack::Menu` como pista
+    /// activa a través de `set_music` (Tarea 46.5): la reproducción
+    /// del menú comienza de inmediato, sin requerir entrada de
+    /// teclado, y sin duplicar la lógica de "iniciar una pista desde
+    /// el principio" que `set_music` ya centraliza.
     ///
     /// `audio` es `None` cuando el dispositivo de audio no pudo
     /// inicializarse; en ese caso el manager queda completamente
-    /// deshabilitado (música y SFX). Una música ausente/fallida NO
-    /// impide que los SFX se carguen: son intentos independientes
-    /// sobre el mismo `RaylibAudio`.
+    /// deshabilitado (música y SFX). Una pista ausente/fallida NO
+    /// impide que las demás o los SFX se carguen: son intentos
+    /// independientes sobre el mismo `RaylibAudio`.
     pub(crate) fn new(audio: Option<&'aud RaylibAudio>) -> Self {
-        let music = audio.and_then(Self::load_background_music);
-
-        if let Some(music) = &music {
-            music.play_stream();
-        }
-
+        let music = audio.map(Self::load_music_tracks).unwrap_or_default();
         let sounds = audio.map(Self::load_sound_effects).unwrap_or_default();
 
-        Self {
+        let mut manager = Self {
             music,
+            current_track: None,
             sounds,
             enemy_idle_cooldown: 0.0,
             enemy_alert_cooldown: 0.0,
             footstep_cadence: FootstepCadence::new(),
-        }
+        };
+
+        manager.set_music(MusicTrack::Menu);
+
+        manager
     }
 
-    fn load_background_music(audio: &'aud RaylibAudio) -> Option<Music<'aud>> {
-        if !Path::new(BACKGROUND_MUSIC_PATH).exists() {
-            eprintln!(
-                "Música de fondo no encontrada en '{BACKGROUND_MUSIC_PATH}'; continuando sin música."
-            );
+    /// Intenta cargar cada una de las cuatro pistas de música
+    /// EXACTAMENTE una vez. Una pista cuyo archivo falte o cuya
+    /// carga falle se reporta con una única advertencia y se omite
+    /// del mapa resultante; las demás pistas cargan con normalidad.
+    /// Todas las que sí cargan quedan en loop nativo (Tarea 46.5,
+    /// sección 14): ninguna pista se reinicia por temporizador o
+    /// duración adivinada manualmente.
+    fn load_music_tracks(audio: &'aud RaylibAudio) -> HashMap<MusicTrack, Music<'aud>> {
+        let mut music = HashMap::new();
 
-            return None;
-        }
+        for track in ALL_MUSIC_TRACKS {
+            let path = music_path(track);
 
-        match audio.new_music(BACKGROUND_MUSIC_PATH) {
-            Ok(mut music) => {
-                music.set_looping(true);
+            if !Path::new(path).exists() {
+                eprintln!("Pista de música '{track:?}' no encontrada en '{path}'; se omite.");
 
-                Some(music)
+                continue;
             }
 
-            Err(error) => {
-                eprintln!("Error al cargar la música de fondo: {error}");
+            match audio.new_music(path) {
+                Ok(mut stream) => {
+                    stream.set_looping(true);
 
-                None
+                    music.insert(track, stream);
+                }
+
+                Err(error) => {
+                    eprintln!("Error al cargar la pista de música '{path}': {error}");
+                }
             }
         }
+
+        music
     }
 
     /// Intenta cargar cada uno de los doce efectos de sonido
@@ -261,13 +334,17 @@ impl<'aud> AudioManager<'aud> {
 
     /// Debe llamarse exactamente una vez por iteración del bucle
     /// principal, independientemente del `GameState` activo: avanza
-    /// el stream de música (no-op seguro si no hay pista) y decrementa
-    /// los cooldowns anti-spam de `EnemyIdle`/`EnemyAlert`.
+    /// el stream de la ÚNICA pista actualmente activa (no-op seguro
+    /// si no hay ninguna, o si esa pista en particular no cargó) y
+    /// decrementa los cooldowns anti-spam de `EnemyIdle`/`EnemyAlert`.
+    /// Es la única responsabilidad de actualización del stream de
+    /// música de todo el proyecto — ningún `GameState` individual
+    /// duplica esta llamada.
     ///
     /// `delta_time` no finito o no positivo se ignora para los
     /// cooldowns, sin corromper su estado.
     pub(crate) fn update(&mut self, delta_time: f32) {
-        if let Some(music) = &self.music {
+        if let Some(music) = self.current_music() {
             music.update_stream();
         }
 
@@ -277,27 +354,66 @@ impl<'aud> AudioManager<'aud> {
         }
     }
 
-    /// Inicia o reanuda la reproducción usando el recurso ya
-    /// cargado (nunca recarga desde disco). No-op seguro si no hay
-    /// pista.
+    fn current_music(&self) -> Option<&Music<'aud>> {
+        self.current_track.and_then(|track| self.music.get(&track))
+    }
+
+    /// Selecciona `track` como la pista activa (Tarea 46.5, sección
+    /// 13): única forma de cambiar QUÉ suena. No-op si `track` ya es
+    /// la pista activa — evita reiniciar el stream en llamadas
+    /// redundantes (p. ej. `Welcome` <-> `Level Select`, que ambas
+    /// piden `MusicTrack::Menu` sin que la transición deba reiniciar
+    /// nada). En caso contrario detiene por completo la pista
+    /// anterior (si había una) e inicia `track` desde el principio,
+    /// de modo que nunca puedan sonar dos pistas a la vez.
+    pub(crate) fn set_music(&mut self, track: MusicTrack) {
+        if self.current_track == Some(track) {
+            return;
+        }
+
+        if let Some(previous) = self.current_track {
+            if let Some(music) = self.music.get(&previous) {
+                music.stop_stream();
+            }
+        }
+
+        if let Some(music) = self.music.get(&track) {
+            music.play_stream();
+        }
+
+        self.current_track = Some(track);
+    }
+
+    /// Reanuda la pista actualmente activa desde donde quedó
+    /// pausada (nunca recarga desde disco ni reinicia la posición).
+    /// No-op seguro si no hay pista activa.
     pub(crate) fn play_music(&self) {
-        if let Some(music) = &self.music {
+        if let Some(music) = self.current_music() {
             music.resume_stream();
         }
     }
 
-    /// Pausa la reproducción. No-op seguro si no hay pista.
+    /// Pausa la pista actualmente activa preservando su posición de
+    /// reproducción (nunca la detiene ni la reinicia). No-op seguro
+    /// si no hay pista activa.
     pub(crate) fn pause_music(&self) {
-        if let Some(music) = &self.music {
+        if let Some(music) = self.current_music() {
             music.pause_stream();
         }
     }
 
-    /// Detiene la reproducción. No-op seguro si no hay pista.
-    pub(crate) fn stop_music(&self) {
-        if let Some(music) = &self.music {
+    /// Detiene por completo la pista actualmente activa y limpia la
+    /// selección (Tarea 46.5, secciones 5/8: estados terminales de
+    /// `Playing` quedan sin música). Como `current_track` queda en
+    /// `None`, la siguiente llamada a `set_music` — incluso con la
+    /// MISMA pista que sonaba antes de este `stop_music` (Retry) —
+    /// siempre la arranca desde el principio en vez de no-operar.
+    pub(crate) fn stop_music(&mut self) {
+        if let Some(music) = self.current_music() {
             music.stop_stream();
         }
+
+        self.current_track = None;
     }
 
     /// Solicita la reproducción de un efecto discreto
@@ -349,13 +465,80 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /*
-     * Prueba pura, sin dispositivo de audio ni archivo local: solo
-     * verifica que la ruta genérica del proyecto es la esperada.
-     */
+    // --- Catálogo de música: pruebas puras, sin `RaylibAudio`. ---
+
     #[test]
-    fn background_music_path_is_the_expected_generic_project_path() {
-        assert_eq!(BACKGROUND_MUSIC_PATH, "assets/audio/music/background.ogg");
+    fn catalog_contains_exactly_four_music_tracks() {
+        assert_eq!(ALL_MUSIC_TRACKS.len(), 4);
+    }
+
+    #[test]
+    fn every_music_track_maps_to_a_unique_expected_path() {
+        assert_eq!(music_path(MusicTrack::Menu), "assets/audio/music/menu.ogg");
+        assert_eq!(
+            music_path(MusicTrack::CrimsonEntrance),
+            "assets/audio/music/crimson_entrance.ogg"
+        );
+        assert_eq!(
+            music_path(MusicTrack::BlackClub),
+            "assets/audio/music/black_club.ogg"
+        );
+        assert_eq!(
+            music_path(MusicTrack::HouseOfCards),
+            "assets/audio/music/house_of_cards.ogg"
+        );
+    }
+
+    #[test]
+    fn music_catalog_contains_no_duplicate_path() {
+        let paths: HashSet<&str> = ALL_MUSIC_TRACKS.iter().copied().map(music_path).collect();
+
+        assert_eq!(paths.len(), ALL_MUSIC_TRACKS.len());
+    }
+
+    #[test]
+    fn all_music_paths_are_under_the_music_directory() {
+        for track in ALL_MUSIC_TRACKS {
+            assert!(music_path(track).starts_with("assets/audio/music/"));
+        }
+    }
+
+    #[test]
+    fn no_music_path_equals_any_sfx_path() {
+        for track in ALL_MUSIC_TRACKS {
+            for effect in ALL_SOUND_EFFECTS {
+                assert_ne!(music_path(track), sfx_path(effect));
+            }
+        }
+    }
+
+    // --- LevelTheme -> MusicTrack: única asociación del proyecto. ---
+
+    #[test]
+    fn each_level_theme_maps_to_its_own_dedicated_music_track() {
+        assert_eq!(
+            music_track_for_theme(LevelTheme::CrimsonEntrance),
+            MusicTrack::CrimsonEntrance
+        );
+        assert_eq!(
+            music_track_for_theme(LevelTheme::BlackClub),
+            MusicTrack::BlackClub
+        );
+        assert_eq!(
+            music_track_for_theme(LevelTheme::HouseOfCards),
+            MusicTrack::HouseOfCards
+        );
+    }
+
+    #[test]
+    fn no_level_theme_maps_to_the_menu_track() {
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            assert_ne!(music_track_for_theme(theme), MusicTrack::Menu);
+        }
     }
 
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
@@ -409,13 +592,6 @@ mod tests {
             sfx_path(SoundEffect::PlayerHit),
             "assets/audio/sfx/player_hit.wav"
         );
-    }
-
-    #[test]
-    fn no_sfx_path_equals_the_background_music_path() {
-        for effect in ALL_SOUND_EFFECTS {
-            assert_ne!(sfx_path(effect), BACKGROUND_MUSIC_PATH);
-        }
     }
 
     #[test]

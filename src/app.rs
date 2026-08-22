@@ -1,4 +1,4 @@
-use crate::audio::{AudioManager, SoundEffect};
+use crate::audio::{AudioManager, MusicTrack, SoundEffect, music_track_for_theme};
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameSession, GameState, ViewMode};
 use crate::input::controller::process_events;
@@ -307,6 +307,8 @@ impl<'aud> App<'aud> {
 
             self.pause.on_enter();
 
+            self.audio.pause_music();
+
             return;
         }
 
@@ -328,6 +330,8 @@ impl<'aud> App<'aud> {
 
         if self.state == GameState::Defeat {
             self.defeat.on_enter();
+
+            self.audio.stop_music();
 
             return;
         }
@@ -512,8 +516,16 @@ impl<'aud> App<'aud> {
                      * ya sonó (arriba) si el golpe que causó la
                      * muerte era daño real; esta transición en sí NO
                      * reproduce nada adicional.
+                     *
+                     * Tarea 46.5, sección 5: la música del nivel SÍ
+                     * se detiene por completo (no pausa, no cambia a
+                     * Menu Music) — la pantalla de derrota queda sin
+                     * música hasta que el jugador elija Retry o
+                     * Main Menu.
                      */
                     self.defeat.on_enter();
+
+                    self.audio.stop_music();
                 }
 
                 GameState::Victory => {
@@ -523,8 +535,15 @@ impl<'aud> App<'aud> {
                      * este cuadro (Tarea 46.B, sección 12): un golpe
                      * letal simultáneo ya se resolvió como `Defeat`
                      * arriba y nunca llega a esta rama.
+                     *
+                     * Tarea 46.5, sección 8: la música del nivel se
+                     * detiene por completo (background music); el
+                     * SFX de Victoria es una responsabilidad
+                     * totalmente separada y no se toca.
                      */
                     self.victory.on_enter(self.level_manager.has_next());
+
+                    self.audio.stop_music();
 
                     self.audio.play_sound(SoundEffect::Victory);
                 }
@@ -649,6 +668,8 @@ impl<'aud> App<'aud> {
         if window.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
             self.state = GameState::Playing;
 
+            self.audio.play_music();
+
             return;
         }
 
@@ -677,7 +698,11 @@ impl<'aud> App<'aud> {
             self.audio.play_sound(SoundEffect::MenuSelect);
 
             match self.pause.selected_item() {
-                PauseMenuItem::Continue => self.state = GameState::Playing,
+                PauseMenuItem::Continue => {
+                    self.state = GameState::Playing;
+
+                    self.audio.play_music();
+                }
 
                 /*
                  * `self.session` NO se destruye ni se reinicia aquí:
@@ -688,8 +713,16 @@ impl<'aud> App<'aud> {
                  * `update`/`render` dejen de tocarla, y la próxima
                  * partida (`start_selected_level`/`next`/`restart`)
                  * la reemplaza atómicamente de todas formas.
+                 *
+                 * Tarea 46.5, sección 4: la pista del nivel se
+                 * detiene (nunca queda sonando detrás del menú) y
+                 * `Menu Music` arranca en loop.
                  */
-                PauseMenuItem::ExitToMenu => self.state = GameState::Welcome,
+                PauseMenuItem::ExitToMenu => {
+                    self.state = GameState::Welcome;
+
+                    self.audio.set_music(MusicTrack::Menu);
+                }
             }
         }
     }
@@ -773,6 +806,8 @@ impl<'aud> App<'aud> {
 
             VictoryAction::MainMenu => {
                 self.state = GameState::Welcome;
+
+                self.audio.set_music(MusicTrack::Menu);
             }
         }
     }
@@ -844,6 +879,8 @@ impl<'aud> App<'aud> {
 
             DefeatMenuItem::MainMenu => {
                 self.state = GameState::Welcome;
+
+                self.audio.set_music(MusicTrack::Menu);
             }
         }
     }
@@ -856,12 +893,27 @@ impl<'aud> App<'aud> {
     /// `NEXT LEVEL` y `RETRY` (Tarea 30): los tres solo difieren en
     /// CÓMO obtuvieron `level` (`LevelManager::load`/`next`/
     /// `restart`), nunca en cómo se construye la sesión resultante.
+    ///
+    /// Tarea 46.5, sección 12: también es el único punto que
+    /// selecciona la música del nivel, a través de
+    /// `LevelManager::current` — la fuente de verdad real de qué
+    /// nivel se acaba de cargar (`load`/`next`/`restart` ya
+    /// actualizaron `current` antes de llegar aquí) — nunca a partir
+    /// de la posición resaltada en Level Select. `set_music` decide
+    /// por sí mismo si eso implica reiniciar la pista desde el
+    /// principio: como Victoria/Derrota ya llamaron `stop_music`
+    /// antes de poder llegar a Retry/Next Level, la pista siempre
+    /// arranca limpia, nunca desde la posición donde el jugador
+    /// ganó/murió.
     fn replace_session_with_level(&mut self, level: Level) {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
         self.session = GameSession::new(level, player, BLOCK_SIZE);
 
         self.state = GameState::Playing;
+
+        self.audio
+            .set_music(music_track_for_theme(self.level_manager.current().theme));
     }
 
     fn render(&self, framebuffer: &mut Framebuffer) {
