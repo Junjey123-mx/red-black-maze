@@ -11,6 +11,7 @@ pub(crate) enum Tile {
     EnemySpawn,
     Torch,
     AmmoSpawn,
+    HealthSpawn,
 }
 
 impl Tile {
@@ -29,6 +30,7 @@ impl Tile {
             'e' => Some(Tile::EnemySpawn),
             't' => Some(Tile::Torch),
             'a' => Some(Tile::AmmoSpawn),
+            'h' => Some(Tile::HealthSpawn),
             _ => None,
         }
     }
@@ -44,7 +46,8 @@ impl Tile {
     /// y su propio billboard quedaría auto-ocluido detrás de esa
     /// "pared". `AmmoSpawn` (Tarea 44) sigue exactamente el mismo
     /// principio: es solo un marcador de aparición de un
-    /// `AmmoPickup` runtime, nunca una pared.
+    /// `AmmoPickup` runtime, nunca una pared. `HealthSpawn` (Health
+    /// Pickup) sigue exactamente el mismo principio.
     pub(crate) fn is_walkable(self) -> bool {
         matches!(
             self,
@@ -54,6 +57,7 @@ impl Tile {
                 | Tile::Torch
                 | Tile::EnemySpawn
                 | Tile::AmmoSpawn
+                | Tile::HealthSpawn
         )
     }
 }

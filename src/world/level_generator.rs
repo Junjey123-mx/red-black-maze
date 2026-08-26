@@ -78,6 +78,13 @@ const AMMO_PER_PICKUP: u32 = 6;
 const MIN_AMMO_PICKUPS: usize = 8;
 const MAX_AMMO_PICKUPS: usize = 20;
 
+/// Cantidad FIJA de Health Pickups que debe colocar cada generación
+/// de "The Dealer's True Maze" (sección 11: "Genera exactamente 3
+/// Health Pickups por generación"). A diferencia de la munición, esto
+/// NUNCA depende de un presupuesto calculado (cantidad de Dealers,
+/// etc.) — es un número de diseño de nivel fijo.
+const HEALTH_PICKUP_COUNT: usize = 3;
+
 /// Intentos máximos de generación antes de recurrir al mapa de
 /// emergencia (sección 15). Las garantías "por construcción" del
 /// algoritmo (ver comentarios en `generate`) hacen que el intento 1
@@ -97,6 +104,7 @@ pub(crate) struct GeneratedLevel {
     pub(crate) seed: u64,
     pub(crate) dealer_count: usize,
     pub(crate) ammo_pickup_count: usize,
+    pub(crate) health_pickup_count: usize,
 }
 
 /// Semilla nueva y (para fines prácticos) única por partida, para
@@ -743,6 +751,43 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
         cells[r][c] = 'a';
     }
 
+    // --- Colocación de Health Pickups (sección 11) ---
+    //
+    // Reutiliza EXACTAMENTE las mismas listas ya barajadas
+    // (`dead_ends`/`remaining_eligible`) que la munición: `occupied`
+    // ya incluye spawn/meta/Dealers/munición en este punto, así que
+    // continuar la misma secuencia determinista simplemente entrega
+    // las siguientes celdas libres — callejones sin salida primero
+    // (rutas secundarias que recompensan exploración, sección 11),
+    // nunca concentradas todas juntas porque cada una sale de un
+    // punto distinto del mapa ya barajado.
+    let mut health_positions = Vec::with_capacity(HEALTH_PICKUP_COUNT);
+
+    for &pos in dead_ends.iter().chain(remaining_eligible.iter()) {
+        if health_positions.len() >= HEALTH_PICKUP_COUNT {
+            break;
+        }
+
+        if occupied.contains(&pos) {
+            continue;
+        }
+
+        occupied.insert(pos);
+        health_positions.push(pos);
+    }
+
+    // Un mapa recién generado tiene, por construcción, muchas más
+    // celdas transitables libres que `HEALTH_PICKUP_COUNT` — no
+    // colocar los tres es señal de un intento degenerado; el
+    // llamador (`generate`) ya reintenta con otra semilla derivada.
+    if health_positions.len() < HEALTH_PICKUP_COUNT {
+        return None;
+    }
+
+    for &(r, c) in &health_positions {
+        cells[r][c] = 'h';
+    }
+
     let theme = rng.choice(&[
         LevelTheme::CrimsonEntrance,
         LevelTheme::BlackClub,
@@ -781,10 +826,17 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
         }
     }
 
+    for &(r, c) in &health_positions {
+        if final_distances.distance_at(r, c).is_none() {
+            return None;
+        }
+    }
+
     let all_positions: Vec<(usize, usize)> = std::iter::once(spawn)
         .chain(std::iter::once(goal))
         .chain(dealer_positions.iter().copied())
         .chain(ammo_positions.iter().copied())
+        .chain(health_positions.iter().copied())
         .collect();
 
     let unique_positions: HashSet<(usize, usize)> = all_positions.iter().copied().collect();
@@ -799,6 +851,7 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
         seed: attempt_seed,
         dealer_count: dealer_positions.len(),
         ammo_pickup_count: ammo_positions.len(),
+        health_pickup_count: health_positions.len(),
     })
 }
 
@@ -813,15 +866,15 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
 /// para que el juego jamás arranque con un mapa roto.
 const FALLBACK_MAZE: &str = "\
 #############
-#p   e     g#
+#p  he     g#
 # ### ### # #
 # #e#   #e# #
-# # ##### # #
+#h# ##### # #
 # #   a   # #
 # # ##### # #
 #e#       #e#
 # ######### #
-#     a     #
+#  h  a     #
 #############
 ";
 
@@ -837,6 +890,7 @@ fn fallback_generated_level(seed: u64) -> GeneratedLevel {
         seed,
         dealer_count: 4,
         ammo_pickup_count: 2,
+        health_pickup_count: 3,
     }
 }
 
@@ -878,8 +932,12 @@ pub(crate) fn generate(seed: u64) -> GeneratedLevel {
 /// mostrar la semilla en pantalla, solo de poder reproducirla.
 fn log_generation(generated: &GeneratedLevel) {
     eprintln!(
-        "The Dealer's True Maze — Seed: {} | tema: {:?} | Dealers: {} | pickups de munición: {}",
-        generated.seed, generated.theme, generated.dealer_count, generated.ammo_pickup_count
+        "The Dealer's True Maze — Seed: {} | tema: {:?} | Dealers: {} | pickups de munición: {} | pickups de vida: {}",
+        generated.seed,
+        generated.theme,
+        generated.dealer_count,
+        generated.ammo_pickup_count,
+        generated.health_pickup_count
     );
 }
 
@@ -933,6 +991,7 @@ mod tests {
         assert_eq!(a.theme, b.theme);
         assert_eq!(a.dealer_count, b.dealer_count);
         assert_eq!(a.ammo_pickup_count, b.ammo_pickup_count);
+        assert_eq!(a.health_pickup_count, b.health_pickup_count);
     }
 
     #[test]
@@ -1025,6 +1084,7 @@ mod tests {
             let mut all = vec![level.player_spawn(), level.goal()];
             all.extend(level.enemy_spawns());
             all.extend(level.ammo_spawns());
+            all.extend(level.health_spawns());
 
             let unique: HashSet<(usize, usize)> = all.iter().copied().collect();
 
@@ -1033,6 +1093,81 @@ mod tests {
                 all.len(),
                 "seed {seed}: posiciones duplicadas"
             );
+        }
+    }
+
+    // --- Health Pickup: colocación procedural (sección 11). ---
+
+    #[test]
+    fn generated_level_always_places_exactly_three_health_pickups() {
+        for seed in [1u64, 2, 3, 837_492, u64::MAX, 0, 999_999] {
+            let generated = generate(seed);
+
+            assert_eq!(
+                generated.health_pickup_count, 3,
+                "seed {seed}: se esperaban exactamente 3 Health Pickups"
+            );
+
+            let level = Level::from_cells(generated.cells.clone())
+                .expect("el nivel generado debe ser válido");
+
+            assert_eq!(level.health_spawns().len(), 3);
+        }
+    }
+
+    #[test]
+    fn same_seed_produces_the_same_health_pickup_positions() {
+        let a = generate(837_492);
+        let b = generate(837_492);
+
+        let level_a = Level::from_cells(a.cells).expect("el nivel generado (a) debe ser válido");
+        let level_b = Level::from_cells(b.cells).expect("el nivel generado (b) debe ser válido");
+
+        assert_eq!(level_a.health_spawns(), level_b.health_spawns());
+    }
+
+    #[test]
+    fn health_pickups_are_never_placed_on_a_wall_player_goal_dealer_or_ammo_pickup() {
+        for seed in [1u64, 2, 3, 837_492] {
+            let generated = generate(seed);
+
+            let level = Level::from_cells(generated.cells.clone())
+                .expect("el nivel generado debe ser válido");
+
+            let mut occupied: HashSet<(usize, usize)> =
+                HashSet::from([level.player_spawn(), level.goal()]);
+            occupied.extend(level.enemy_spawns());
+            occupied.extend(level.ammo_spawns());
+
+            for &(r, c) in level.health_spawns() {
+                assert!(
+                    level.is_walkable(r, c),
+                    "seed {seed}: Health Pickup en ({r},{c}) no es transitable"
+                );
+                assert!(
+                    !occupied.contains(&(r, c)),
+                    "seed {seed}: Health Pickup en ({r},{c}) colisiona con otro marcador"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn health_pickups_are_reachable_from_the_player_spawn() {
+        for seed in [1u64, 2, 3, 837_492] {
+            let generated = generate(seed);
+
+            let level = Level::from_cells(generated.cells.clone())
+                .expect("el nivel generado debe ser válido");
+
+            let distances = DistanceField::from_level(&level, level.player_spawn());
+
+            for &(r, c) in level.health_spawns() {
+                assert!(
+                    distances.distance_at(r, c).is_some(),
+                    "seed {seed}: Health Pickup en ({r},{c}) es inalcanzable desde el spawn"
+                );
+            }
         }
     }
 
@@ -1100,13 +1235,21 @@ mod tests {
     fn fallback_maze_is_structurally_valid() {
         let generated = fallback_generated_level(0);
 
+        assert_eq!(generated.health_pickup_count, 3);
+
         let level =
             Level::from_cells(generated.cells).expect("el mapa de emergencia debe ser válido");
+
+        assert_eq!(level.health_spawns().len(), 3);
 
         let distances = DistanceField::from_level(&level, level.player_spawn());
 
         let goal = level.goal();
 
         assert!(distances.distance_at(goal.0, goal.1).is_some());
+
+        for &(r, c) in level.health_spawns() {
+            assert!(distances.distance_at(r, c).is_some());
+        }
     }
 }

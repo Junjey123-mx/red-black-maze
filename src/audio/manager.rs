@@ -130,12 +130,23 @@ pub(crate) enum SoundEffect {
     /// los tres terminan en el mismo `Vec<AmmoPickup>` y pasan por la
     /// misma comprobación.
     AmmoPickup,
+
+    /// Curación EXITOSA de un `HealthPickup` (Health Pickup): solo se
+    /// dispara cuando `GameSession::collect_nearby_health_pickups`
+    /// reporta que un pickup en particular acaba de desactivarse este
+    /// cuadro (vida realmente restaurada) — nunca por simplemente
+    /// estar cerca de uno todavía activo, y nunca con la vida ya en
+    /// el máximo (el corazón permanece intacto y silencioso en ese
+    /// caso). Funciona igual para los tres niveles estáticos y para
+    /// los procedurales de The Dealer's True Maze; Dealer Hands nunca
+    /// genera Health Pickups adicionales.
+    HealthPickup,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 13] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 14] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -149,6 +160,7 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 13] = [
     SoundEffect::Reload,
     SoundEffect::PlayerHit,
     SoundEffect::AmmoPickup,
+    SoundEffect::HealthPickup,
 ];
 
 /// Única ubicación del catálogo ruta<->efecto. Ningún otro módulo
@@ -168,6 +180,7 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::Reload => "assets/audio/sfx/reload.wav",
         SoundEffect::PlayerHit => "assets/audio/sfx/player_hit.wav",
         SoundEffect::AmmoPickup => "assets/audio/sfx/ammo_pickup.wav",
+        SoundEffect::HealthPickup => "assets/audio/sfx/health_pickup.wav",
     }
 }
 
@@ -262,7 +275,7 @@ impl FootstepCadence {
 /// no tiene entrada en el mapa; todas las operaciones son no-op
 /// seguras para esa pista en particular, sin afectar a las demás.
 ///
-/// `sounds` sigue el mismo principio para los doce efectos (Tarea
+/// `sounds` sigue el mismo principio para los catorce efectos (Tarea
 /// 32 en adelante): un `SoundEffect` sin entrada en el mapa (archivo faltante o
 /// fallo de carga) hace que `play_sound` sea no-op seguro para ese
 /// efecto en particular, sin afectar a los demás.
@@ -285,7 +298,7 @@ pub(crate) struct AudioManager<'aud> {
 
 impl<'aud> AudioManager<'aud> {
     /// Construye el manager e intenta cargar las cuatro pistas de
-    /// música y los doce efectos de sonido, cada uno EXACTAMENTE una
+    /// música y los catorce efectos de sonido, cada uno EXACTAMENTE una
     /// vez. Termina seleccionando `MusicTrack::Menu` como pista
     /// activa a través de `set_music` (Tarea 46.5): la reproducción
     /// del menú comienza de inmediato, sin requerir entrada de
@@ -350,7 +363,7 @@ impl<'aud> AudioManager<'aud> {
         music
     }
 
-    /// Intenta cargar cada uno de los doce efectos de sonido
+    /// Intenta cargar cada uno de los catorce efectos de sonido
     /// EXACTAMENTE una vez. Un efecto cuyo archivo falte o cuya
     /// carga falle se reporta con una única advertencia y se omite
     /// del mapa resultante; los demás efectos cargan con normalidad.
@@ -621,8 +634,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_thirteen_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 13);
+    fn catalog_contains_exactly_fourteen_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 14);
     }
 
     #[test]
@@ -672,6 +685,10 @@ mod tests {
         assert_eq!(
             sfx_path(SoundEffect::AmmoPickup),
             "assets/audio/sfx/ammo_pickup.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::HealthPickup),
+            "assets/audio/sfx/health_pickup.wav"
         );
     }
 

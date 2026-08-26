@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{AmmoPickup, Entity, Level, LevelTheme};
+use crate::world::{AmmoPickup, Entity, HealthPickup, Level, LevelTheme};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -224,6 +224,13 @@ struct BillboardItem<'a> {
 /// billboard existente ya acepta cualquier `world_size`.
 const AMMO_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.5;
 
+/// Tamaño de mundo del billboard del pickup de vida (Health Pickup),
+/// misma proporción que `AMMO_PICKUP_WORLD_SIZE_FACTOR` (sección 7:
+/// "escala de los demás objetos") — un corazón del mismo tamaño
+/// aparente que el diamante de munición, sin introducir una segunda
+/// escala arbitraria.
+const HEALTH_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.5;
+
 /// Dibuja todos los sprites billboard de la escena actual (meta y
 /// antorchas), ordenados de más lejano a más cercano y ocluidos
 /// contra `wall_depth_buffer` de este mismo cuadro.
@@ -245,6 +252,7 @@ pub(crate) fn render_world_sprites(
     torch_frame_index: usize,
     entities: &[Entity],
     ammo_pickups: &[AmmoPickup],
+    health_pickups: &[HealthPickup],
     wall_depth_buffer: &[f32],
     theme: LevelTheme,
 ) {
@@ -308,6 +316,27 @@ pub(crate) fn render_world_sprites(
                 world_position: pickup.position(),
                 texture,
                 world_size: block_size as f32 * AMMO_PICKUP_WORLD_SIZE_FACTOR,
+            });
+        }
+    }
+
+    /*
+     * Health Pickup: mismo pipeline que el pickup de munición
+     * (proyección/orden/oclusión), con una diferencia deliberada —
+     * `health_pickup_texture` NUNCA se resuelve por tema (sección 8):
+     * el corazón conserva siempre su único color rojo/crimson en los
+     * tres temas visuales.
+     */
+    if let Some(texture) = textures.health_pickup_texture() {
+        for pickup in health_pickups {
+            if !pickup.is_active() {
+                continue;
+            }
+
+            items.push(BillboardItem {
+                world_position: pickup.position(),
+                texture,
+                world_size: block_size as f32 * HEALTH_PICKUP_WORLD_SIZE_FACTOR,
             });
         }
     }

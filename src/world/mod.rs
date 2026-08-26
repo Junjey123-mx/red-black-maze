@@ -1,6 +1,7 @@
 mod ammo_pickup;
 mod collision;
 mod entity;
+mod health_pickup;
 mod level;
 mod level_generator;
 mod level_manager;
@@ -21,6 +22,7 @@ pub use collision::can_occupy;
 pub(crate) use entity::{
     Entity, EntityDamageOutcome, EntitySprite, EntityState, EntityStateTransition,
 };
+pub(crate) use health_pickup::HealthPickup;
 pub use level::{Level, LevelError};
 pub(crate) use level_manager::LevelTheme;
 pub use level_manager::{LevelManager, LevelManagerError};

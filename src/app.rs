@@ -409,6 +409,20 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Health Pickup: mismo patrón exacto que la recolección de
+         * munición de arriba — vive aquí, dentro de `update_playing`
+         * (el ÚNICO llamador), para que Pause/Victory/Defeat lo
+         * congelen automáticamente sin ningún caso especial nuevo.
+         * `collect_nearby_health_pickups` ya decide por sí sola si
+         * hay algo que curar (vida < máximo) y si el pickup se
+         * consume; el conteo retornado es el ÚNICO evento semántico
+         * de "curación exitosa".
+         */
+        for _ in 0..self.session.collect_nearby_health_pickups() {
+            self.audio.play_sound(SoundEffect::HealthPickup);
+        }
+
+        /*
          * Avanza la máquina de estados visual del arma ANTES de
          * procesar el clic de este cuadro, de modo que un disparo
          * aceptado ahora comience en `Fire` con tiempo cero y se
@@ -1099,6 +1113,7 @@ impl<'aud> App<'aud> {
                     self.session.torch_frame_index(),
                     self.session.entities(),
                     self.session.ammo_pickups(),
+                    self.session.health_pickups(),
                     &wall_depth_buffer,
                     theme,
                 );
@@ -1292,6 +1307,11 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_ammo_pickup_texture() {
         eprintln!("Error al cargar la textura del pickup de munición: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_health_pickup_texture() {
+        eprintln!("Error al cargar la textura del pickup de vida: {error}");
         return;
     }
 

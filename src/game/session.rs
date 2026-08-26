@@ -5,7 +5,7 @@ use raylib::prelude::Vector2;
 use crate::player::{Player, Weapon, WeaponState};
 use crate::world::{
     AmmoPickup, DistanceField, Entity, EntityDamageOutcome, EntityState, EntityStateTransition,
-    Level,
+    HealthPickup, Level,
 };
 
 use super::hand::{self, HandHudMessage, HandState};
@@ -27,13 +27,22 @@ const DEALER_DAMAGE_PER_HIT: i32 = 50;
 /// vía `Weapon::add_reserve_ammo`, que ya respeta el tope.
 const AMMO_PICKUP_AMOUNT: u32 = 6;
 
-/// Radio de recolección de un `AmmoPickup`, en píxeles de mundo.
+/// Radio de recolección de un pickup (`AmmoPickup` o `HealthPickup`),
+/// en píxeles de mundo.
 ///
 /// ~40% del ancho de una celda (`BLOCK_SIZE = 48` en el proyecto:
 /// `0.4 * 48 = 19.2`), deliberadamente pequeño para que el jugador
-/// no pueda recoger munición a través de una pared ni desde un
-/// pasillo paralelo.
-const AMMO_PICKUP_RADIUS: f32 = 19.2;
+/// no pueda recoger munición/vida a través de una pared ni desde un
+/// pasillo paralelo. Ambos tipos de pickup comparten el mismo
+/// criterio espacial (Health Pickup, sección 14): un solo radio, sin
+/// una segunda constante duplicada.
+const PICKUP_RADIUS: f32 = 19.2;
+
+/// Vida real que restaura cada `HealthPickup` recogido (Health
+/// Pickup), aplicada siempre vía `Player::heal`, que ya respeta el
+/// tope `PLAYER_MAX_HEALTH` — nunca se escribe `health` directamente
+/// aquí.
+const HEALTH_PICKUP_AMOUNT: i32 = 20;
 
 /// Daño que un ataque de Dealer ACEPTADO inflige al jugador
 /// (Tarea 45). Las condiciones de aceptación (estado `Alert`,
@@ -143,6 +152,7 @@ pub(crate) struct GameSession {
     weapon: Weapon,
     entities: Vec<Entity>,
     ammo_pickups: Vec<AmmoPickup>,
+    health_pickups: Vec<HealthPickup>,
     hit_flash: HitFlashState,
 
     /// Sistema de "Dealer Hands": HAND I/II/III..., cadáveres aparte
@@ -196,6 +206,12 @@ impl GameSession {
             .map(|&(row, column)| AmmoPickup::at_cell(row, column, block_size))
             .collect();
 
+        let health_pickups = level
+            .health_spawns()
+            .iter()
+            .map(|&(row, column)| HealthPickup::at_cell(row, column, block_size))
+            .collect();
+
         let hand_state = HandState::new(entities.len());
 
         Self {
@@ -206,6 +222,7 @@ impl GameSession {
             weapon: Weapon::new(),
             entities,
             ammo_pickups,
+            health_pickups,
             hand_state,
             hand_seed,
             hit_flash: HitFlashState::new(),
@@ -502,7 +519,7 @@ impl GameSession {
     }
 
     /// Recoge cualquier `AmmoPickup` activo dentro de
-    /// `AMMO_PICKUP_RADIUS` de la posición actual del jugador.
+    /// `PICKUP_RADIUS` de la posición actual del jugador.
     ///
     /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
     /// (`App::update_playing`) — nunca desde rendering, HUD, ni el
@@ -537,11 +554,65 @@ impl GameSession {
                 continue;
             }
 
-            if !ammo_pickup_in_range(player_position, pickup.position(), AMMO_PICKUP_RADIUS) {
+            if !pickup_in_range(player_position, pickup.position(), PICKUP_RADIUS) {
                 continue;
             }
 
             if self.weapon.add_reserve_ammo(AMMO_PICKUP_AMOUNT) > 0 {
+                pickup.deactivate();
+
+                collected += 1;
+            }
+        }
+
+        collected
+    }
+
+    /// Pickups de vida de la sesión actual (activos Y ya recogidos):
+    /// rendering decide por sí mismo, vía `HealthPickup::is_active`,
+    /// cuáles dibujar.
+    pub(crate) fn health_pickups(&self) -> &[HealthPickup] {
+        &self.health_pickups
+    }
+
+    /// Recoge cualquier `HealthPickup` activo dentro de
+    /// `PICKUP_RADIUS` de la posición actual del jugador (Health
+    /// Pickup).
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
+    /// (`App::update_playing`) — mismo motivo/patrón exacto que
+    /// `collect_nearby_ammo_pickups` — para que `App::update_paused`
+    /// congele la curación automáticamente sin ningún caso especial
+    /// nuevo.
+    ///
+    /// Un pickup se consume (`HealthPickup::deactivate`) únicamente
+    /// si `Player::heal` reporta que realmente restauró al menos un
+    /// punto de vida; con la vida ya en `PLAYER_MAX_HEALTH`, el
+    /// pickup permanece disponible para curar más adelante si el
+    /// jugador vuelve a recibir daño (sección 2: "el corazón debe
+    /// permanecer en el nivel"). La vida nunca se toca aquí — solo
+    /// `Player::heal`, la única autoridad sobre `health`.
+    ///
+    /// Retorna cuántos pickups se consumieron REALMENTE este cuadro:
+    /// el único evento semántico de "curación exitosa" — `App` lo usa
+    /// para solicitar `SoundEffect::HealthPickup` exactamente una vez
+    /// POR PICKUP consumido, nunca por simple proximidad a uno
+    /// todavía activo ni cuando la vida ya estaba completa.
+    pub(crate) fn collect_nearby_health_pickups(&mut self) -> u32 {
+        let player_position = self.player.pos;
+
+        let mut collected = 0;
+
+        for pickup in &mut self.health_pickups {
+            if !pickup.is_active() {
+                continue;
+            }
+
+            if !pickup_in_range(player_position, pickup.position(), PICKUP_RADIUS) {
+                continue;
+            }
+
+            if self.player.heal(HEALTH_PICKUP_AMOUNT) > 0 {
                 pickup.deactivate();
 
                 collected += 1;
@@ -685,7 +756,12 @@ fn cell_center(row: usize, column: usize, block_size: usize) -> Vector2 {
 /// (`dx² + dy² <= radius²`) para evitar `sqrt`, tal como sugiere la
 /// tarea — la claridad de la fórmula pesa más que la
 /// microoptimización, pero evitar la raíz cuadrada es gratis aquí.
-fn ammo_pickup_in_range(player_position: Vector2, pickup_position: Vector2, radius: f32) -> bool {
+///
+/// Compartida por `collect_nearby_ammo_pickups` y
+/// `collect_nearby_health_pickups` (Health Pickup, sección 14): ambos
+/// pickups usan EXACTAMENTE el mismo criterio espacial, así que no
+/// existen dos copias de esta comprobación.
+fn pickup_in_range(player_position: Vector2, pickup_position: Vector2, radius: f32) -> bool {
     let dx = player_position.x - pickup_position.x;
 
     let dy = player_position.y - pickup_position.y;
@@ -1304,7 +1380,7 @@ mod tests {
         let mut session = new_test_session_with_one_ammo_spawn();
 
         // El spawn del jugador (fila 1, columna 1) está a 2 celdas
-        // (96 px) del pickup — muy por fuera de `AMMO_PICKUP_RADIUS`
+        // (96 px) del pickup — muy por fuera de `PICKUP_RADIUS`
         // (~19.2 px).
         session.collect_nearby_ammo_pickups();
 
@@ -1410,7 +1486,7 @@ mod tests {
         // que los cubra todos a la vez — se simula colocando al
         // jugador exactamente sobre el pickup central y ampliando
         // artificialmente ninguna constante de dominio (la prueba
-        // solo reubica al jugador, nunca toca `AMMO_PICKUP_RADIUS`).
+        // solo reubica al jugador, nunca toca `PICKUP_RADIUS`).
         // Con el radio real (~19.2px) y pickups separados 96px entre
         // sí, un único cuadro solo alcanza a uno; esta prueba refleja
         // exactamente ese caso real: eventos van sumando 1 en 1,
@@ -1517,20 +1593,278 @@ mod tests {
         assert_eq!(session.weapon_reserve_ammo(), 24);
     }
 
+    // --- Health Pickup: curación. ---
+
+    /// Sesión de prueba con un único Health Pickup en (fila 1,
+    /// columna 3), a la derecha del spawn del jugador (fila 1,
+    /// columna 1) — misma convención de mapa que
+    /// `new_test_session_with_one_ammo_spawn`.
+    fn new_test_session_with_one_health_spawn() -> GameSession {
+        let map = "\
+#######
+#p h g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE, 0)
+    }
+
+    /// Coloca al jugador exactamente sobre el Health Pickup de
+    /// `new_test_session_with_one_health_spawn` ((fila 1, columna 3)
+    /// -> x=168, y=72).
+    fn move_player_onto_the_health_pickup(session: &mut GameSession) {
+        session.player.pos = Vector2::new(168.0, 72.0);
+    }
+
     #[test]
-    fn ammo_pickup_in_range_matches_the_radius_boundary() {
+    fn healing_from_sixty_reaches_eighty() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(40);
+        assert_eq!(session.player_health(), 60);
+
+        move_player_onto_the_health_pickup(&mut session);
+        session.collect_nearby_health_pickups();
+
+        assert_eq!(session.player_health(), 80);
+        assert!(!session.health_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn healing_from_eighty_reaches_one_hundred() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(20);
+        assert_eq!(session.player_health(), 80);
+
+        move_player_onto_the_health_pickup(&mut session);
+        session.collect_nearby_health_pickups();
+
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn healing_from_ninety_clamps_at_one_hundred_and_still_consumes_the_pickup() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(10);
+        assert_eq!(session.player_health(), 90);
+
+        move_player_onto_the_health_pickup(&mut session);
+
+        assert_eq!(session.collect_nearby_health_pickups(), 1);
+        assert_eq!(session.player_health(), 100);
+        assert!(!session.health_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn healing_from_ninety_nine_clamps_at_one_hundred() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(1);
+        assert_eq!(session.player_health(), 99);
+
+        move_player_onto_the_health_pickup(&mut session);
+        session.collect_nearby_health_pickups();
+
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn health_never_exceeds_the_maximum_no_matter_how_many_pickups_are_collected() {
+        let map = "\
+###########
+#p h h h g#
+###########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        session.player.apply_damage(5);
+        assert_eq!(session.player_health(), 95);
+
+        for column in [3, 5, 7] {
+            session.player.pos = Vector2::new(column as f32 * 48.0 + 24.0, 72.0);
+            session.collect_nearby_health_pickups();
+        }
+
+        assert_eq!(session.player_health(), 100);
+        assert!(session.player_health() <= 100);
+    }
+
+    /// Sección 2/22: con la vida ya en el máximo, tocar el corazón NO
+    /// debe curar, NO debe consumir el pickup y NO debe reportar
+    /// ningún evento de curación. Pertenece a la lógica de dominio
+    /// (`GameSession`), no solo a `App`.
+    #[test]
+    fn full_health_leaves_the_pickup_untouched_and_reports_no_event() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        assert_eq!(session.player_health(), 100);
+
+        move_player_onto_the_health_pickup(&mut session);
+
+        assert_eq!(session.collect_nearby_health_pickups(), 0);
+        assert_eq!(session.player_health(), 100);
+        assert!(session.health_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn being_out_of_range_leaves_the_health_pickup_and_health_unchanged() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(40);
+
+        // Spawn del jugador, a 2 celdas del pickup: fuera de rango.
+        assert_eq!(session.collect_nearby_health_pickups(), 0);
+
+        assert_eq!(session.player_health(), 60);
+        assert!(session.health_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn a_successful_heal_reports_exactly_one_event() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(40);
+
+        move_player_onto_the_health_pickup(&mut session);
+
+        assert_eq!(session.collect_nearby_health_pickups(), 1);
+    }
+
+    #[test]
+    fn the_same_health_pickup_never_reports_a_second_event() {
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(40);
+
+        move_player_onto_the_health_pickup(&mut session);
+
+        assert_eq!(session.collect_nearby_health_pickups(), 1);
+
+        for _ in 0..5 {
+            assert_eq!(session.collect_nearby_health_pickups(), 0);
+        }
+    }
+
+    #[test]
+    fn not_calling_collect_nearby_health_pickups_is_how_pause_freezes_healing() {
+        // Mismo patrón que
+        // `not_calling_collect_nearby_ammo_pickups_is_how_pause_freezes_collection`:
+        // `App::update_paused` congela la curación simplemente NO
+        // llamando a `collect_nearby_health_pickups` mientras
+        // `GameState::Paused` está activo.
+        let mut session = new_test_session_with_one_health_spawn();
+
+        session.player.apply_damage(40);
+
+        move_player_onto_the_health_pickup(&mut session);
+
+        let health_before = session.player_health();
+
+        // "Pause": ninguna llamada a `collect_nearby_health_pickups`
+        // aquí.
+        assert_eq!(session.player_health(), health_before);
+        assert!(session.health_pickups()[0].is_active());
+
+        // "Resume": la primera llamada real todavía cura con
+        // normalidad.
+        assert_eq!(session.collect_nearby_health_pickups(), 1);
+        assert_eq!(session.player_health(), 80);
+    }
+
+    #[test]
+    fn a_freshly_constructed_session_restores_a_consumed_health_pickup() {
+        // Mismo patrón de Retry que
+        // `retry_style_fresh_session_can_collect_its_pickups_again`.
+        let mut dirty_session = new_test_session_with_one_health_spawn();
+
+        dirty_session.player.apply_damage(40);
+        move_player_onto_the_health_pickup(&mut dirty_session);
+        assert_eq!(dirty_session.collect_nearby_health_pickups(), 1);
+        assert!(!dirty_session.health_pickups()[0].is_active());
+
+        let clean_session = new_test_session_with_one_health_spawn();
+
+        assert_eq!(clean_session.player_health(), 100);
+        assert!(clean_session.health_pickups()[0].is_active());
+    }
+
+    /// Sección 13: una Hand nueva NO debe generar Health Pickups
+    /// adicionales — solo munición, según su propio presupuesto. Este
+    /// test construye una sesión con un Dealer y fuerza el spawn de
+    /// HAND II, y confirma que la cantidad de Health Pickups no
+    /// cambió.
+    #[test]
+    fn a_new_hand_never_creates_additional_health_pickups() {
+        let map = "\
+#########
+#p      #
+#  e    #
+#      g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        let health_pickups_before = session.health_pickups().len();
+        assert_eq!(health_pickups_before, 0);
+
+        // Elimina el único Dealer para que `alive_dealer_count()`
+        // llegue a cero y `HandState::tick` detecte la Hand
+        // completada tan pronto como el cooldown lo permita.
+        session.damage_entity(0);
+        session.damage_entity(0);
+        assert_eq!(session.alive_dealer_count(), 0);
+
+        for _ in 0..200 {
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+
+            if session.hand_number() > 1 {
+                break;
+            }
+        }
+
+        assert!(
+            session.hand_number() > 1,
+            "la Hand debería haber avanzado en esta ventana de tiempo"
+        );
+        assert_eq!(session.health_pickups().len(), health_pickups_before);
+    }
+
+    #[test]
+    fn pickup_in_range_matches_the_radius_boundary() {
         let player = Vector2::new(0.0, 0.0);
 
-        assert!(ammo_pickup_in_range(
+        assert!(pickup_in_range(
             player,
-            Vector2::new(AMMO_PICKUP_RADIUS, 0.0),
-            AMMO_PICKUP_RADIUS
+            Vector2::new(PICKUP_RADIUS, 0.0),
+            PICKUP_RADIUS
         ));
 
-        assert!(!ammo_pickup_in_range(
+        assert!(!pickup_in_range(
             player,
-            Vector2::new(AMMO_PICKUP_RADIUS + 0.5, 0.0),
-            AMMO_PICKUP_RADIUS
+            Vector2::new(PICKUP_RADIUS + 0.5, 0.0),
+            PICKUP_RADIUS
         ));
     }
 

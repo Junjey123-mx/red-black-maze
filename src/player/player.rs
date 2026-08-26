@@ -95,6 +95,32 @@ impl Player {
 
         health_before - self.health
     }
+
+    /// Restaura vida real al jugador (Health Pickup) y retorna la
+    /// cantidad REALMENTE aplicada (nunca más de lo que faltaba para
+    /// llegar a `PLAYER_MAX_HEALTH`).
+    ///
+    /// La vida se recorta con un techo de `PLAYER_MAX_HEALTH` — nunca
+    /// queda por encima. Un `amount` no positivo no cura nada y
+    /// retorna `0`. Esta es la ÚNICA función que incrementa
+    /// `self.health`; `GameSession`/`App` nunca mutan el campo
+    /// directamente. Mismo patrón "solo lo realmente aplicado" que
+    /// `apply_damage` y que `Weapon::add_reserve_ammo`.
+    ///
+    /// Ejemplos: `60 + 20 -> 80` (retorna `20`); `90 + 20 -> 100`
+    /// (retorna `10`, lo único que faltaba); `100 + 20 -> 100`
+    /// (retorna `0`: ya estaba en el máximo).
+    pub(crate) fn heal(&mut self, amount: i32) -> i32 {
+        if amount <= 0 {
+            return 0;
+        }
+
+        let health_before = self.health;
+
+        self.health = (self.health + amount).min(PLAYER_MAX_HEALTH);
+
+        self.health - health_before
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +193,69 @@ mod tests {
         assert_eq!(player.apply_damage(0), 0);
         assert_eq!(player.apply_damage(-10), 0);
         assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+    }
+
+    // --- Health Pickup: Player::heal. ---
+
+    #[test]
+    fn ordinary_heal_increases_health_and_returns_the_amount_applied() {
+        let mut player = new_test_player();
+
+        player.apply_damage(40);
+        assert_eq!(player.health(), 60);
+
+        let applied = player.heal(20);
+
+        assert_eq!(player.health(), 80);
+        assert_eq!(applied, 20);
+    }
+
+    #[test]
+    fn heal_clamps_at_the_maximum_and_returns_only_what_was_missing() {
+        let mut player = new_test_player();
+
+        player.apply_damage(10);
+        assert_eq!(player.health(), 90);
+
+        let applied = player.heal(20);
+
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+        assert_eq!(applied, 10);
+    }
+
+    #[test]
+    fn heal_at_full_health_applies_nothing() {
+        let mut player = new_test_player();
+
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+
+        let applied = player.heal(20);
+
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+        assert_eq!(applied, 0);
+    }
+
+    #[test]
+    fn non_positive_heal_is_a_no_op() {
+        let mut player = new_test_player();
+
+        player.apply_damage(50);
+
+        assert_eq!(player.heal(0), 0);
+        assert_eq!(player.heal(-10), 0);
+        assert_eq!(player.health(), 50);
+    }
+
+    #[test]
+    fn exact_heal_lands_precisely_on_the_maximum() {
+        let mut player = new_test_player();
+
+        player.apply_damage(20);
+        assert_eq!(player.health(), 80);
+
+        let applied = player.heal(20);
+
+        assert_eq!(player.health(), PLAYER_MAX_HEALTH);
+        assert_eq!(applied, 20);
     }
 }

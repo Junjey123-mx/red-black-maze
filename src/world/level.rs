@@ -61,6 +61,7 @@ pub struct Level {
     torch_spawns: Vec<(usize, usize)>,
     enemy_spawns: Vec<(usize, usize)>,
     ammo_spawns: Vec<(usize, usize)>,
+    health_spawns: Vec<(usize, usize)>,
 }
 
 impl Level {
@@ -150,6 +151,16 @@ impl Level {
          */
         let ammo_spawns = Self::find_cells(&cells, 'a');
 
+        /*
+         * Health Pickup: los marcadores de aparición de vida son
+         * opcionales, igual que `a`/`t`/`e` — cero, uno o varios son
+         * válidos, sin validación estructural adicional. Solo
+         * aportan POSICIONES; el estado de partida (activo/recogido)
+         * vive en `world::HealthPickup`, construido a partir de estas
+         * posiciones por `GameSession`, nunca aquí.
+         */
+        let health_spawns = Self::find_cells(&cells, 'h');
+
         let height = cells.len();
 
         Ok(Self {
@@ -160,6 +171,7 @@ impl Level {
             torch_spawns,
             enemy_spawns,
             ammo_spawns,
+            health_spawns,
             cells,
         })
     }
@@ -234,6 +246,12 @@ impl Level {
     /// de munición. Puede estar vacío.
     pub(crate) fn ammo_spawns(&self) -> &[(usize, usize)] {
         &self.ammo_spawns
+    }
+
+    /// Posiciones (fila, columna) de todas las celdas de aparición
+    /// de vida (Health Pickup). Puede estar vacío.
+    pub(crate) fn health_spawns(&self) -> &[(usize, usize)] {
+        &self.health_spawns
     }
 }
 
@@ -391,6 +409,183 @@ mod tests {
         let house_of_cards = Level::load(&format!("{manifest_dir}/levels/level_03.txt"))
             .expect("House of Cards debe cargar");
         assert_eq!(house_of_cards.ammo_spawns().len(), 4);
+    }
+
+    // --- Health Pickup: marcador 'h'. ---
+
+    #[test]
+    fn health_marker_is_recognized_as_a_health_spawn() {
+        let map = "\
+#####
+#p h#
+#  g#
+#####
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el mapa con vida debe cargar");
+
+        assert_eq!(level.health_spawns(), &[(1, 3)]);
+    }
+
+    #[test]
+    fn health_spawn_cell_remains_walkable() {
+        let map = "\
+#####
+#p h#
+#  g#
+#####
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el mapa con vida debe cargar");
+
+        assert!(level.is_walkable(1, 3));
+    }
+
+    #[test]
+    fn health_spawn_tile_classifies_as_health_spawn() {
+        let map = "\
+#####
+#p h#
+#  g#
+#####
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el mapa con vida debe cargar");
+
+        assert_eq!(level.tile_at(1, 3), Some(Tile::HealthSpawn));
+    }
+
+    #[test]
+    fn multiple_health_spawns_are_all_recorded_without_validation_limit() {
+        let map = "\
+#######
+#p h  #
+# h  h#
+#    g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el mapa con varias 'h' debe cargar");
+
+        assert_eq!(level.health_spawns().len(), 3);
+    }
+
+    #[test]
+    fn level_with_no_health_markers_has_an_empty_spawn_list() {
+        let map = "\
+#####
+#p g#
+#####
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el mapa sin vida debe cargar");
+
+        assert!(level.health_spawns().is_empty());
+    }
+
+    /// Distribución real de Health Pickups sobre los tres niveles
+    /// estáticos finales del proyecto: Crimson Entrance y Black Club
+    /// con uno cada uno, House of Cards con dos.
+    #[test]
+    fn real_levels_have_the_exact_expected_health_spawn_counts() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        let crimson = Level::load(&format!("{manifest_dir}/levels/level_01.txt"))
+            .expect("Crimson Entrance debe cargar");
+        assert_eq!(crimson.health_spawns().len(), 1);
+
+        let black_club = Level::load(&format!("{manifest_dir}/levels/level_02.txt"))
+            .expect("Black Club debe cargar");
+        assert_eq!(black_club.health_spawns().len(), 1);
+
+        let house_of_cards = Level::load(&format!("{manifest_dir}/levels/level_03.txt"))
+            .expect("House of Cards debe cargar");
+        assert_eq!(house_of_cards.health_spawns().len(), 2);
+    }
+
+    /// Ningún Health Pickup real coincide con el spawn del jugador,
+    /// la meta, un Dealer, una antorcha o un pickup de munición —
+    /// cada uno posee su propia celda.
+    #[test]
+    fn real_levels_health_spawns_do_not_overlap_other_semantic_markers() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        for path in ["level_01.txt", "level_02.txt", "level_03.txt"] {
+            let level = Level::load(&format!("{manifest_dir}/levels/{path}"))
+                .unwrap_or_else(|_| panic!("{path} debe cargar"));
+
+            let mut occupied: Vec<(usize, usize)> = vec![level.player_spawn(), level.goal()];
+            occupied.extend(level.torch_spawns());
+            occupied.extend(level.enemy_spawns());
+            occupied.extend(level.ammo_spawns());
+
+            for &health_position in level.health_spawns() {
+                assert!(
+                    !occupied.contains(&health_position),
+                    "{path}: la posición de vida {health_position:?} colisiona con otro marcador"
+                );
+
+                assert!(level.is_walkable(health_position.0, health_position.1));
+            }
+        }
+    }
+
+    /// Los Health Pickups reales son alcanzables desde el spawn del
+    /// jugador vía la geometría normal del nivel, mismo BFS que ya
+    /// usa `real_levels_ammo_spawns_are_reachable_from_the_player_spawn`.
+    #[test]
+    fn real_levels_health_spawns_are_reachable_from_the_player_spawn() {
+        use std::collections::{HashSet, VecDeque};
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        for path in ["level_01.txt", "level_02.txt", "level_03.txt"] {
+            let level = Level::load(&format!("{manifest_dir}/levels/{path}"))
+                .unwrap_or_else(|_| panic!("{path} debe cargar"));
+
+            let start = level.player_spawn();
+
+            let mut visited: HashSet<(usize, usize)> = HashSet::from([start]);
+
+            let mut queue: VecDeque<(usize, usize)> = VecDeque::from([start]);
+
+            while let Some((row, column)) = queue.pop_front() {
+                let neighbors = [
+                    row.checked_sub(1).map(|r| (r, column)),
+                    Some((row + 1, column)),
+                    column.checked_sub(1).map(|c| (row, c)),
+                    Some((row, column + 1)),
+                ];
+
+                for neighbor in neighbors.into_iter().flatten() {
+                    if visited.contains(&neighbor) {
+                        continue;
+                    }
+
+                    if level.is_walkable(neighbor.0, neighbor.1) {
+                        visited.insert(neighbor);
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+
+            for &health_position in level.health_spawns() {
+                assert!(
+                    visited.contains(&health_position),
+                    "{path}: la vida en {health_position:?} es inalcanzable desde el spawn del jugador"
+                );
+            }
+        }
     }
 
     /// Ningún pickup de munición real coincide con la posición del
