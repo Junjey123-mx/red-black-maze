@@ -331,7 +331,7 @@ impl<'aud> App<'aud> {
         if self.state == GameState::Defeat {
             self.defeat.on_enter();
 
-            self.audio.stop_music();
+            self.audio.set_music(MusicTrack::Defeat);
 
             return;
         }
@@ -530,21 +530,24 @@ impl<'aud> App<'aud> {
             match self.state {
                 GameState::Defeat => {
                     /*
-                     * Tarea 46, sección 22: sin música/SFX nuevos
-                     * para derrota. El `player_hit.wav` de Tarea 45
-                     * ya sonó (arriba) si el golpe que causó la
-                     * muerte era daño real; esta transición en sí NO
-                     * reproduce nada adicional.
+                     * Tarea 46, sección 22: sin SFX nuevo para
+                     * derrota. El `player_hit.wav` de Tarea 45 ya
+                     * sonó (arriba) si el golpe que causó la muerte
+                     * era daño real; esta transición en sí NO
+                     * reproduce ningún SFX adicional.
                      *
-                     * Tarea 46.5, sección 5: la música del nivel SÍ
-                     * se detiene por completo (no pausa, no cambia a
-                     * Menu Music) — la pantalla de derrota queda sin
-                     * música hasta que el jugador elija Retry o
-                     * Main Menu.
+                     * Tarea "Victory/Defeat music": la música del
+                     * nivel se detiene por completo y `defeat.mp3`
+                     * ("The House Always Wins") arranca desde el
+                     * principio — `set_music` ya se encarga de parar
+                     * la pista anterior antes de empezar la nueva, y
+                     * como el nivel nunca deja `current_track` en
+                     * `Defeat` fuera de esta pantalla, siempre
+                     * arranca limpia, nunca a mitad de reproducción.
                      */
                     self.defeat.on_enter();
 
-                    self.audio.stop_music();
+                    self.audio.set_music(MusicTrack::Defeat);
                 }
 
                 GameState::Victory => {
@@ -555,14 +558,20 @@ impl<'aud> App<'aud> {
                      * letal simultáneo ya se resolvió como `Defeat`
                      * arriba y nunca llega a esta rama.
                      *
-                     * Tarea 46.5, sección 8: la música del nivel se
-                     * detiene por completo (background music); el
-                     * SFX de Victoria es una responsabilidad
-                     * totalmente separada y no se toca.
+                     * Tarea "Victory/Defeat music": la música del
+                     * nivel se detiene y `victory.mp3` ("The House
+                     * Has Fallen") arranca desde el principio, igual
+                     * en las CUATRO victorias del juego (Crimson/
+                     * Black/House/True Maze todas entran a este MISMO
+                     * `GameState::Victory` — la única diferencia entre
+                     * ellas es si `NEXT LEVEL` queda habilitado). El
+                     * SFX de Victoria (`SoundEffect::Victory`) sigue
+                     * siendo una responsabilidad totalmente separada
+                     * de la música y no se toca.
                      */
                     self.victory.on_enter(self.level_manager.has_next());
 
-                    self.audio.stop_music();
+                    self.audio.set_music(MusicTrack::Victory);
 
                     self.audio.play_sound(SoundEffect::Victory);
                 }
@@ -920,10 +929,11 @@ impl<'aud> App<'aud> {
     /// (`load`/`next`/`restart` ya actualizaron el estado interno de
     /// `LevelManager` antes de llegar aquí) — nunca a partir de la
     /// posición resaltada en Level Select. `set_music` decide por sí
-    /// mismo si eso implica reiniciar la pista desde el principio:
-    /// como Victoria/Derrota ya llamaron `stop_music` antes de poder
-    /// llegar a Retry/Next Level, la pista siempre arranca limpia,
-    /// nunca desde la posición donde el jugador ganó/murió.
+    /// mismo si eso implica reiniciar la pista desde el principio: la
+    /// pista activa en Retry/Next Level siempre es `Victory`/`Defeat`
+    /// (distinta de la del nivel), así que `set_music` la detiene y
+    /// arranca la del nivel limpia, nunca desde la posición donde el
+    /// jugador ganó/murió.
     ///
     /// Tarea 48: `The Dealer's True Maze` es el único nivel cuya
     /// música NO se deriva de `LevelTheme` (su identidad visual es

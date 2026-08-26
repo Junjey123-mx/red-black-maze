@@ -25,17 +25,33 @@ pub(crate) enum MusicTrack {
     /// `App` la selecciona explícitamente cuando el nivel activo es
     /// el procedural, nunca a través del tema.
     TheDealersTrueMaze,
+
+    /// Tarea "Victory/Defeat music": "The House Has Fallen". Suena en
+    /// las CUATRO pantallas de Victoria del juego (una por nivel
+    /// completado — todas comparten el mismo `GameState::Victory`),
+    /// nunca solo en la victoria final. `App` la selecciona
+    /// explícitamente al entrar a `GameState::Victory`, nunca a
+    /// través de `LevelTheme`.
+    Victory,
+
+    /// Tarea "Victory/Defeat music": "The House Always Wins". Suena
+    /// en la pantalla de Derrota. `App` la selecciona explícitamente
+    /// al entrar a `GameState::Defeat`, nunca a través de
+    /// `LevelTheme`.
+    Defeat,
 }
 
 /// Enumeración completa de `MusicTrack`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_MUSIC_TRACKS: [MusicTrack; 5] = [
+const ALL_MUSIC_TRACKS: [MusicTrack; 7] = [
     MusicTrack::Menu,
     MusicTrack::CrimsonEntrance,
     MusicTrack::BlackClub,
     MusicTrack::HouseOfCards,
     MusicTrack::TheDealersTrueMaze,
+    MusicTrack::Victory,
+    MusicTrack::Defeat,
 ];
 
 /// Única ubicación del catálogo ruta<->pista. Ningún otro módulo
@@ -47,6 +63,8 @@ fn music_path(track: MusicTrack) -> &'static str {
         MusicTrack::BlackClub => "assets/audio/music/black_club.mp3",
         MusicTrack::HouseOfCards => "assets/audio/music/house_of_cards.mp3",
         MusicTrack::TheDealersTrueMaze => "assets/audio/music/the_dealers_true_maze.mp3",
+        MusicTrack::Victory => "assets/audio/music/victory.mp3",
+        MusicTrack::Defeat => "assets/audio/music/defeat.mp3",
     }
 }
 
@@ -419,20 +437,6 @@ impl<'aud> AudioManager<'aud> {
         }
     }
 
-    /// Detiene por completo la pista actualmente activa y limpia la
-    /// selección (Tarea 46.5, secciones 5/8: estados terminales de
-    /// `Playing` quedan sin música). Como `current_track` queda en
-    /// `None`, la siguiente llamada a `set_music` — incluso con la
-    /// MISMA pista que sonaba antes de este `stop_music` (Retry) —
-    /// siempre la arranca desde el principio en vez de no-operar.
-    pub(crate) fn stop_music(&mut self) {
-        if let Some(music) = self.current_music() {
-            music.stop_stream();
-        }
-
-        self.current_track = None;
-    }
-
     /// Solicita la reproducción de un efecto discreto
     /// (`Shoot`/`WallHit`/`EnemyHit`/`EnemyDeath`/`MenuMove`/
     /// `MenuSelect`/`Victory`/`Footstep`/`Reload`/`PlayerHit`). No-op seguro si
@@ -485,8 +489,8 @@ mod tests {
     // --- Catálogo de música: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_five_music_tracks() {
-        assert_eq!(ALL_MUSIC_TRACKS.len(), 5);
+    fn catalog_contains_exactly_seven_music_tracks() {
+        assert_eq!(ALL_MUSIC_TRACKS.len(), 7);
     }
 
     #[test]
@@ -508,6 +512,14 @@ mod tests {
             music_path(MusicTrack::TheDealersTrueMaze),
             "assets/audio/music/the_dealers_true_maze.mp3"
         );
+        assert_eq!(
+            music_path(MusicTrack::Victory),
+            "assets/audio/music/victory.mp3"
+        );
+        assert_eq!(
+            music_path(MusicTrack::Defeat),
+            "assets/audio/music/defeat.mp3"
+        );
     }
 
     #[test]
@@ -521,6 +533,23 @@ mod tests {
             LevelTheme::HouseOfCards,
         ] {
             assert_ne!(music_track_for_theme(theme), MusicTrack::TheDealersTrueMaze);
+        }
+    }
+
+    #[test]
+    fn victory_and_defeat_tracks_are_never_reachable_through_a_level_theme() {
+        // Igual que la pista del nivel procedural: Victoria/Derrota
+        // nunca se derivan de `LevelTheme` — `App` las selecciona
+        // explícitamente al entrar a `GameState::Victory`/`Defeat`.
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            let track = music_track_for_theme(theme);
+
+            assert_ne!(track, MusicTrack::Victory);
+            assert_ne!(track, MusicTrack::Defeat);
         }
     }
 
