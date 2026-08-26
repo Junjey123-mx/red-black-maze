@@ -74,6 +74,55 @@ const AMMO_PER_PICKUP: u32 = 6;
 /// calculado sea enorme.
 const MAX_EXTRA_PICKUPS_PER_HAND: usize = 6;
 
+/// Cantidad de `AmmoPickup` que crea el Emergency Ammo Respawn
+/// (anti-softlock) cada vez que se activa. Un número deliberadamente
+/// pequeño — esto NO es regeneración pasiva, solo una salida de
+/// emergencia.
+pub(crate) const EMERGENCY_AMMO_PICKUP_COUNT: usize = 2;
+
+/// Banda de distancia navegable (pasos de `DistanceField`, nunca
+/// euclidiana) preferida para un `AmmoPickup` de emergencia respecto
+/// a la posición actual del jugador: ni debajo del jugador, ni al
+/// otro extremo del mapa mientras está indefenso. Se relaja
+/// progresivamente si el mapa no ofrece suficientes candidatos en la
+/// banda estricta — nunca se bloquea el respawn por falta de celdas
+/// perfectamente ideales.
+const EMERGENCY_AMMO_DISTANCE_BANDS: [(u32, u32); 3] = [(3, 8), (1, 16), (1, u32::MAX)];
+
+/// Objetivo mínimo/máximo (inclusive) de Health Pickups activos que
+/// debe haber en el mapa al comenzar cada Hand posterior a HAND I
+/// (Health Respawn por Hand, sección 13).
+const MIN_HAND_HEALTH_PICKUPS: usize = 3;
+const MAX_HAND_HEALTH_PICKUPS: usize = 5;
+
+/// Multiplicador dorado (SplitMix64) ya usado por `derive_hand_seed`;
+/// reutilizado aquí para derivar semillas de recursos SIN acoplar su
+/// cálculo al de spawn de Dealers.
+const SEED_MULTIPLIER_A: u64 = 0x9E3779B97F4A7C15;
+const SEED_MULTIPLIER_B: u64 = 0xD1B54A32D192ED03;
+
+/// Discriminadores arbitrarios pero FIJOS que separan los distintos
+/// propósitos de semilla derivados de la misma `session_seed`
+/// (sección 23: "level_seed + hand_number + resource discriminator").
+/// Sin estos, dos sistemas distintos (por ejemplo Emergency Ammo y
+/// Health Respawn) podrían derivar accidentalmente la MISMA semilla
+/// para el mismo `hand_number`/índice y producir el mismo layout por
+/// coincidencia, en vez de ser independientes.
+const EMERGENCY_AMMO_SEED_DISCRIMINATOR: u64 = 0xE33A_9001;
+const HEALTH_TARGET_SEED_DISCRIMINATOR: u64 = 0x4EA1_7002;
+const HEALTH_SPAWN_SEED_DISCRIMINATOR: u64 = 0x4EA1_7003;
+
+/// Deriva una semilla determinista a partir de `session_seed`, un
+/// `discriminator` fijo por sistema, y un `index` (número de Hand o
+/// contador de invocaciones). Única forma de derivar semillas de
+/// recursos dinámicos del proyecto — evita que cada sistema
+/// reinvente su propia fórmula de mezcla.
+fn derive_resource_seed(session_seed: u64, discriminator: u64, index: u64) -> u64 {
+    session_seed
+        ^ discriminator.wrapping_mul(SEED_MULTIPLIER_A)
+        ^ index.wrapping_mul(SEED_MULTIPLIER_B)
+}
+
 /// Fase temporal del sistema de Hands. Deliberadamente NO es un
 /// `GameState`: el jugador sigue jugando con normalidad durante
 /// `Reloading` (sección 8) — es solo una sub-fase dentro de
@@ -534,6 +583,119 @@ pub(crate) fn extra_ammo_pickups_needed(
     pickups.min(MAX_EXTRA_PICKUPS_PER_HAND)
 }
 
+/// Semilla determinista para la N-ésima activación del Emergency Ammo
+/// Respawn de esta sesión (`spawn_index`: `0`, `1`, `2`, ... — cada
+/// activación real incrementa el contador, nunca cada cuadro). Misma
+/// `session_seed` + mismo `spawn_index` -> exactamente las mismas
+/// posiciones, sin depender de reloj de pared ni del orden de
+/// iteración de ninguna colección.
+pub(crate) fn spawn_seed_for_emergency_ammo(session_seed: u64, spawn_index: u64) -> u64 {
+    derive_resource_seed(session_seed, EMERGENCY_AMMO_SEED_DISCRIMINATOR, spawn_index)
+}
+
+/// Cuántos Health Pickups deben estar activos como objetivo al
+/// comenzar la Hand `hand_number` (Health Respawn por Hand, sección
+/// 15): un valor determinista en `3..=5`, derivado de `session_seed`
+/// y `hand_number` — misma semilla + mismo número de Hand siempre
+/// produce el mismo objetivo.
+pub(crate) fn health_pickup_target_for_hand(session_seed: u64, hand_number: usize) -> usize {
+    let seed = derive_resource_seed(
+        session_seed,
+        HEALTH_TARGET_SEED_DISCRIMINATOR,
+        hand_number as u64,
+    );
+
+    let mut rng = Rng::new(seed);
+
+    MIN_HAND_HEALTH_PICKUPS + rng.gen_range(MAX_HAND_HEALTH_PICKUPS - MIN_HAND_HEALTH_PICKUPS + 1)
+}
+
+/// Semilla determinista de posiciones para los Health Pickups nuevos
+/// de la Hand `hand_number` (sección 23): independiente de
+/// `spawn_seed_for_hand`/`spawn_seed_for_emergency_ammo` gracias al
+/// discriminador propio, así que nunca coincide con el layout de
+/// Dealers ni con el de munición de emergencia por casualidad.
+pub(crate) fn spawn_seed_for_health_replenish(session_seed: u64, hand_number: usize) -> u64 {
+    derive_resource_seed(
+        session_seed,
+        HEALTH_SPAWN_SEED_DISCRIMINATOR,
+        hand_number as u64,
+    )
+}
+
+/// Recolecta hasta `count` celdas para el Emergency Ammo Respawn
+/// (secciones 8-10): transitables, alcanzables, no ocupadas
+/// (jugador/meta/Dealer vivo/cadáver/otro pickup — todo ya
+/// precomputado en `occupied`), dentro de una banda de distancia
+/// navegable razonable respecto al jugador — ni la misma celda, ni al
+/// otro extremo del mapa.
+///
+/// A diferencia de `select_spawn_cells` (que busca la distancia
+/// SEGURA MÁXIMA posible para Dealers), esta función busca una banda
+/// deliberadamente CERCANA: el jugador acaba de quedarse sin
+/// munición y necesita poder alcanzarla. La banda se relaja
+/// progresivamente (`EMERGENCY_AMMO_DISTANCE_BANDS`) solo si el mapa
+/// no ofrece suficientes candidatos en la banda estricta.
+pub(crate) fn select_emergency_ammo_cells(
+    level: &Level,
+    player_position: Vector2,
+    block_size: usize,
+    occupied: &HashSet<(usize, usize)>,
+    count: usize,
+    seed: u64,
+) -> Vec<(usize, usize)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut rng = Rng::new(seed);
+
+    let player_cell = world_to_cell(player_position, block_size);
+
+    let distances = DistanceField::from_level(level, player_cell);
+
+    let height = level.height();
+    let width = level.width();
+
+    for &(min_distance, max_distance) in &EMERGENCY_AMMO_DISTANCE_BANDS {
+        let mut candidates = Vec::new();
+
+        for row in 0..height {
+            for column in 0..width {
+                let cell = (row, column);
+
+                if !level.is_walkable(row, column) {
+                    continue;
+                }
+
+                if cell == player_cell || occupied.contains(&cell) {
+                    continue;
+                }
+
+                let Some(distance) = distances.distance_at(row, column) else {
+                    continue;
+                };
+
+                if distance < min_distance || distance > max_distance {
+                    continue;
+                }
+
+                candidates.push(cell);
+            }
+        }
+
+        if candidates.len() >= count || max_distance == u32::MAX {
+            candidates.sort();
+
+            rng.shuffle(&mut candidates);
+
+            return candidates.into_iter().take(count).collect();
+        }
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,5 +1042,152 @@ mod tests {
     #[test]
     fn extra_pickups_are_capped_even_for_enormous_deficits() {
         assert!(extra_ammo_pickups_needed(1000, 0) <= 6);
+    }
+
+    // --- Emergency Ammo Respawn: selección de posiciones. ---
+
+    #[test]
+    fn emergency_ammo_cells_land_within_the_preferred_distance_band_when_the_map_allows_it() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_cell = (4, 6);
+
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+
+        let distances = DistanceField::from_level(&level, player_cell);
+
+        let cells = select_emergency_ammo_cells(&level, player_position, 48, &occupied, 2, 99);
+
+        assert_eq!(cells.len(), 2);
+
+        for &(row, column) in &cells {
+            let distance = distances
+                .distance_at(row, column)
+                .expect("celda elegida debe ser alcanzable");
+
+            assert!(
+                (3..=8).contains(&distance),
+                "distancia fuera de banda: {distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn emergency_ammo_cells_are_never_the_players_own_cell() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_cell = (4, 6);
+
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+
+        let cells = select_emergency_ammo_cells(&level, player_position, 48, &occupied, 2, 5);
+
+        assert!(!cells.contains(&player_cell));
+    }
+
+    #[test]
+    fn emergency_ammo_cells_never_land_on_occupied_positions() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::from([(4, 5), (4, 6), (4, 7), (3, 6)]);
+
+        let player_position = Vector2::new(4.5 * 48.0, 4.5 * 48.0);
+
+        let cells = select_emergency_ammo_cells(&level, player_position, 48, &occupied, 2, 12);
+
+        for cell in &cells {
+            assert!(!occupied.contains(cell));
+        }
+    }
+
+    #[test]
+    fn emergency_ammo_never_returns_more_cells_than_requested() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_position = Vector2::new(4.5 * 48.0, 4.5 * 48.0);
+
+        let cells = select_emergency_ammo_cells(&level, player_position, 48, &occupied, 2, 3);
+
+        assert!(cells.len() <= 2);
+
+        let unique: HashSet<(usize, usize)> = cells.iter().copied().collect();
+        assert_eq!(unique.len(), cells.len());
+    }
+
+    #[test]
+    fn emergency_ammo_seed_is_deterministic_per_spawn_index() {
+        let a = spawn_seed_for_emergency_ammo(777, 0);
+        let b = spawn_seed_for_emergency_ammo(777, 0);
+        let c = spawn_seed_for_emergency_ammo(777, 1);
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn emergency_ammo_seed_never_collides_with_dealer_spawn_seed() {
+        // Discriminadores distintos (sección 23): la misma
+        // `session_seed`/índice nunca debe producir accidentalmente
+        // la misma semilla para dos sistemas distintos.
+        let dealer_seed = spawn_seed_for_hand(777, 1);
+        let emergency_seed = spawn_seed_for_emergency_ammo(777, 1);
+
+        assert_ne!(dealer_seed, emergency_seed);
+    }
+
+    // --- Health Respawn por Hand: objetivo y semillas. ---
+
+    #[test]
+    fn health_pickup_target_is_always_between_three_and_five() {
+        for hand_number in 2..30 {
+            let target = health_pickup_target_for_hand(12345, hand_number);
+
+            assert!(
+                (3..=5).contains(&target),
+                "hand {hand_number}: target {target} fuera de 3..=5"
+            );
+        }
+    }
+
+    #[test]
+    fn health_pickup_target_is_deterministic_per_seed_and_hand() {
+        let a = health_pickup_target_for_hand(555, 2);
+        let b = health_pickup_target_for_hand(555, 2);
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn health_pickup_target_can_differ_across_hands() {
+        // No es una garantía matemática (podrían coincidir por azar),
+        // pero al menos una Hand distinta en un rango amplio debe
+        // producir un target distinto para esta semilla.
+        let targets: HashSet<usize> = (2..20)
+            .map(|hand_number| health_pickup_target_for_hand(555, hand_number))
+            .collect();
+
+        assert!(targets.len() > 1);
+    }
+
+    #[test]
+    fn health_spawn_seed_never_collides_with_dealer_or_emergency_ammo_seed() {
+        let dealer_seed = spawn_seed_for_hand(42, 2);
+        let emergency_seed = spawn_seed_for_emergency_ammo(42, 2);
+        let health_seed = spawn_seed_for_health_replenish(42, 2);
+
+        assert_ne!(dealer_seed, health_seed);
+        assert_ne!(emergency_seed, health_seed);
     }
 }

@@ -423,6 +423,18 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Emergency Ammo Respawn: anti-softlock, no regeneración
+         * pasiva. Vive aquí (dentro de `update_playing`, el ÚNICO
+         * llamador) por el mismo motivo que la recolección de
+         * pickups de arriba — Pause/Victory/Defeat lo congelan
+         * automáticamente sin ningún caso especial. A diferencia de
+         * la recolección, esto NUNCA reproduce sonido: el spawn es
+         * silencioso, `SoundEffect::AmmoPickup` sigue perteneciendo
+         * exclusivamente a la recolección.
+         */
+        self.session.ensure_emergency_ammo(BLOCK_SIZE);
+
+        /*
          * Avanza la máquina de estados visual del arma ANTES de
          * procesar el clic de este cuadro, de modo que un disparo
          * aceptado ahora comience en `Fire` con tiempo cero y se

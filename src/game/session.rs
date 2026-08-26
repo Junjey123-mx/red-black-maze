@@ -171,6 +171,14 @@ pub(crate) struct GameSession {
     /// que `App` decide (no necesitan una semilla "de nivel" real,
     /// pero sí una semilla determinista para poder probarse).
     hand_seed: u64,
+
+    /// Cuántas veces se activó realmente el Emergency Ammo Respawn en
+    /// esta sesión (nunca cuántas veces se EVALUÓ la condición — solo
+    /// se incrementa cuando de verdad se generan pickups). Alimenta
+    /// `hand::spawn_seed_for_emergency_ammo` para que cada activación
+    /// sucesiva reciba una semilla distinta y determinista, en vez de
+    /// repetir siempre las mismas dos celdas.
+    emergency_ammo_spawn_count: u32,
 }
 
 impl GameSession {
@@ -225,6 +233,7 @@ impl GameSession {
             health_pickups,
             hand_state,
             hand_seed,
+            emergency_ammo_spawn_count: 0,
             hit_flash: HitFlashState::new(),
         }
     }
@@ -379,6 +388,12 @@ impl GameSession {
             }
         }
 
+        for pickup in &self.health_pickups {
+            if pickup.is_active() {
+                occupied.insert(world_to_cell(pickup.position(), block_size));
+            }
+        }
+
         let spawn_seed = hand::spawn_seed_for_hand(self.hand_seed, self.hand_state.hand_number());
 
         let spawn_cells = hand::select_spawn_cells(
@@ -433,10 +448,144 @@ impl GameSession {
             );
 
             for (row, column) in pickup_cells {
+                occupied.insert((row, column));
+
                 self.ammo_pickups
                     .push(AmmoPickup::at_cell(row, column, block_size));
             }
         }
+
+        /*
+         * Health Respawn por Hand (sección 13): HAND I nunca llega
+         * aquí (esta rama solo se ejecuta cuando `HandState::tick`
+         * reporta que una Hand NUEVA acaba de comenzar, y
+         * `HandState::new` arranca directamente en HAND I sin pasar
+         * por `tick`), así que la configuración inicial del nivel
+         * queda intacta por construcción — sin necesitar comprobar
+         * `hand_number() > 1` explícitamente.
+         *
+         * `health_pickup_target_for_hand` decide un objetivo
+         * determinista en 3..=5; solo se generan los que faltan para
+         * alcanzarlo (`saturating_sub`), nunca se eliminan corazones
+         * existentes ni se añaden más allá del objetivo (sección 16:
+         * "evitar acumulación infinita").
+         */
+        let health_target = hand::health_pickup_target_for_hand(self.hand_seed, self.hand_number());
+
+        let active_health_pickups = self
+            .health_pickups
+            .iter()
+            .filter(|pickup| pickup.is_active())
+            .count();
+
+        let health_to_spawn = health_target.saturating_sub(active_health_pickups);
+
+        if health_to_spawn > 0 {
+            let health_seed =
+                hand::spawn_seed_for_health_replenish(self.hand_seed, self.hand_number());
+
+            let health_cells = hand::select_spawn_cells(
+                &self.level,
+                self.player.pos,
+                self.player.a,
+                block_size,
+                &occupied,
+                health_to_spawn,
+                false,
+                health_seed,
+            );
+
+            for (row, column) in health_cells {
+                self.health_pickups
+                    .push(HealthPickup::at_cell(row, column, block_size));
+            }
+        }
+    }
+
+    /// Detecta y resuelve un softlock de munición (Emergency Ammo
+    /// Respawn): si NO quedan balas alcanzables (cargador + reserva),
+    /// NO hay ningún `AmmoPickup` activo en el mapa, Y todavía quedan
+    /// Dealers vivos, crea `hand::EMERGENCY_AMMO_PICKUP_COUNT`
+    /// pickups nuevos en celdas cercanas y alcanzables desde el
+    /// jugador.
+    ///
+    /// Las tres comprobaciones baratas (Dealers vivos, munición
+    /// total, pickups activos) se evalúan ANTES de tocar
+    /// `DistanceField`/selección de posiciones (sección 35): el BFS
+    /// solo se ejecuta en el cuadro exacto en que el softlock
+    /// realmente amenaza, nunca en cada cuadro normal de juego.
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
+    /// (`App::update_playing`) — mismo patrón que
+    /// `collect_nearby_ammo_pickups`/`collect_nearby_health_pickups`
+    /// — para que Pause/Victory/Defeat lo congelen automáticamente
+    /// sin ningún caso especial nuevo.
+    ///
+    /// Una vez creados los pickups de emergencia, `active_ammo_pickups
+    /// > 0` deja de cumplir la condición: no hace falta ninguna
+    /// bandera "ya generado" aparte, la propia colección de pickups
+    /// es la fuente de verdad (sección 12). Nunca reproduce
+    /// `SoundEffect::AmmoPickup` — ese sonido pertenece exclusivamente
+    /// a la RECOLECCIÓN (`collect_nearby_ammo_pickups`), nunca a la
+    /// aparición.
+    pub(crate) fn ensure_emergency_ammo(&mut self, block_size: usize) -> usize {
+        if self.alive_dealer_count() == 0 {
+            return 0;
+        }
+
+        let total_ammo = self.weapon.ammo() + self.weapon.reserve_ammo();
+
+        if total_ammo > 0 {
+            return 0;
+        }
+
+        if self.ammo_pickups.iter().any(|pickup| pickup.is_active()) {
+            return 0;
+        }
+
+        let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        occupied.insert(world_to_cell(self.player.pos, block_size));
+        occupied.insert(self.level.goal());
+
+        for entity in &self.entities {
+            occupied.insert(world_to_cell(entity.position(), block_size));
+        }
+
+        for pickup in &self.ammo_pickups {
+            if pickup.is_active() {
+                occupied.insert(world_to_cell(pickup.position(), block_size));
+            }
+        }
+
+        for pickup in &self.health_pickups {
+            if pickup.is_active() {
+                occupied.insert(world_to_cell(pickup.position(), block_size));
+            }
+        }
+
+        let seed = hand::spawn_seed_for_emergency_ammo(
+            self.hand_seed,
+            self.emergency_ammo_spawn_count as u64,
+        );
+
+        self.emergency_ammo_spawn_count += 1;
+
+        let cells = hand::select_emergency_ammo_cells(
+            &self.level,
+            self.player.pos,
+            block_size,
+            &occupied,
+            hand::EMERGENCY_AMMO_PICKUP_COUNT,
+            seed,
+        );
+
+        for &(row, column) in &cells {
+            self.ammo_pickups
+                .push(AmmoPickup::at_cell(row, column, block_size));
+        }
+
+        cells.len()
     }
 
     /// Aplica el daño de un golpe de Dealer aceptado a la entidad
@@ -1809,13 +1958,19 @@ mod tests {
     /// HAND II, y confirma que la cantidad de Health Pickups no
     /// cambió.
     #[test]
-    fn a_new_hand_never_creates_additional_health_pickups() {
+    fn a_new_hand_replenishes_health_pickups_up_to_the_deterministic_target() {
+        // Reemplaza la regla anterior a "Health Respawn por Hand": a
+        // partir de esta tarea, una Hand NUEVA (nunca HAND I) sí
+        // repone corazones hasta un objetivo determinista 3..=5
+        // (`hand::health_pickup_target_for_hand`).
         let map = "\
-#########
-#p      #
-#  e    #
-#      g#
-#########
+###################
+#p                #
+#                 #
+#        e        #
+#                 #
+#                g#
+###################
 ";
 
         let file = TempLevelFile::write(map);
@@ -1826,12 +1981,8 @@ mod tests {
 
         let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
 
-        let health_pickups_before = session.health_pickups().len();
-        assert_eq!(health_pickups_before, 0);
+        assert_eq!(session.health_pickups().len(), 0);
 
-        // Elimina el único Dealer para que `alive_dealer_count()`
-        // llegue a cero y `HandState::tick` detecte la Hand
-        // completada tan pronto como el cooldown lo permita.
         session.damage_entity(0);
         session.damage_entity(0);
         assert_eq!(session.alive_dealer_count(), 0);
@@ -1848,7 +1999,403 @@ mod tests {
             session.hand_number() > 1,
             "la Hand debería haber avanzado en esta ventana de tiempo"
         );
-        assert_eq!(session.health_pickups().len(), health_pickups_before);
+
+        let expected_target = hand::health_pickup_target_for_hand(0, session.hand_number());
+
+        assert!((3..=5).contains(&expected_target));
+        assert_eq!(session.health_pickups().len(), expected_target);
+        assert!(
+            session
+                .health_pickups()
+                .iter()
+                .all(|pickup| pickup.is_active())
+        );
+    }
+
+    // --- Emergency Ammo Respawn (anti-softlock). ---
+
+    /// Nivel de prueba lo bastante grande como para que
+    /// `select_emergency_ammo_cells` tenga margen real para encontrar
+    /// celdas en la banda 3-8 sin degradar al fallback más laxo.
+    fn new_test_session_for_emergency_ammo() -> GameSession {
+        let map = "\
+###################
+#p                #
+#                 #
+#        e        #
+#                 #
+#                g#
+###################
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        GameSession::new(level, player, BLOCK_SIZE, 0)
+    }
+
+    /// Dispara y recarga hasta agotar TODA la munición del jugador
+    /// (cargador + reserva) mediante el flujo real de `Weapon`, sin
+    /// tocar ningún campo privado directamente.
+    fn drain_all_ammo(session: &mut GameSession) {
+        loop {
+            if session.weapon_ammo() > 0 {
+                assert!(session.try_fire_weapon());
+                session.update_weapon(1.0);
+            } else if session.weapon_reserve_ammo() > 0 {
+                assert!(session.try_start_weapon_reload());
+                session.update_weapon(1.0);
+            } else {
+                break;
+            }
+        }
+
+        assert_eq!(session.weapon_ammo(), 0);
+        assert_eq!(session.weapon_reserve_ammo(), 0);
+    }
+
+    #[test]
+    fn caso_a_softlock_condition_spawns_two_emergency_pickups() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        assert_eq!(session.alive_dealer_count(), 1);
+
+        drain_all_ammo(&mut session);
+        assert!(session.ammo_pickups().is_empty());
+
+        let spawned = session.ensure_emergency_ammo(BLOCK_SIZE);
+
+        assert_eq!(spawned, 2);
+        assert_eq!(
+            session
+                .ammo_pickups()
+                .iter()
+                .filter(|pickup| pickup.is_active())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn caso_b_one_bullet_left_in_the_magazine_prevents_emergency_respawn() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        drain_all_ammo(&mut session);
+
+        // Recupera exactamente una bala en el cargador vía munición
+        // de reserva simulada con un pickup: primero hay que
+        // devolverle algo de reserva para poder recargar.
+        session.weapon.add_reserve_ammo(6);
+        assert!(session.try_start_weapon_reload());
+        session.update_weapon(1.0);
+        assert_eq!(session.weapon_ammo(), 6);
+
+        // Dispara todas menos una.
+        for _ in 0..5 {
+            assert!(session.try_fire_weapon());
+            session.update_weapon(1.0);
+        }
+        assert_eq!(session.weapon_ammo(), 1);
+        assert_eq!(session.weapon_reserve_ammo(), 0);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 0);
+        assert!(session.ammo_pickups().is_empty());
+    }
+
+    #[test]
+    fn caso_c_empty_magazine_with_reserve_remaining_prevents_emergency_respawn() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        // Dispara solo el cargador inicial (6 balas): el jugador
+        // todavía puede recargar (reserva inicial = 18).
+        for _ in 0..6 {
+            assert!(session.try_fire_weapon());
+            session.update_weapon(1.0);
+        }
+
+        assert_eq!(session.weapon_ammo(), 0);
+        assert!(session.weapon_reserve_ammo() > 0);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 0);
+        assert!(session.ammo_pickups().is_empty());
+    }
+
+    #[test]
+    fn caso_d_an_existing_active_ammo_pickup_prevents_emergency_respawn() {
+        let map = "\
+###################
+#p a              #
+#                 #
+#        e        #
+#                 #
+#                g#
+###################
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        drain_all_ammo(&mut session);
+
+        assert_eq!(session.ammo_pickups().len(), 1);
+        assert!(session.ammo_pickups()[0].is_active());
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 0);
+        assert_eq!(session.ammo_pickups().len(), 1);
+    }
+
+    #[test]
+    fn caso_e_no_dealers_alive_prevents_emergency_respawn() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        drain_all_ammo(&mut session);
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+        assert_eq!(session.alive_dealer_count(), 0);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 0);
+        assert!(session.ammo_pickups().is_empty());
+    }
+
+    #[test]
+    fn caso_f_a_second_frame_right_after_spawning_generates_nothing_more() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        drain_all_ammo(&mut session);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+
+        // Cuadro inmediatamente siguiente, condición sin cambios
+        // salvo por los pickups recién creados (ya activos): no debe
+        // generar un segundo par.
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 0);
+        assert_eq!(
+            session
+                .ammo_pickups()
+                .iter()
+                .filter(|pickup| pickup.is_active())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn caso_g_a_fresh_softlock_after_consuming_the_emergency_pickups_spawns_again() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        drain_all_ammo(&mut session);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+
+        // Recoge los dos pickups de emergencia recién creados.
+        for index in 0..session.ammo_pickups().len() {
+            let position = session.ammo_pickups()[index].position();
+            session.player.pos = position;
+            session.collect_nearby_ammo_pickups();
+        }
+
+        assert!(
+            session
+                .ammo_pickups()
+                .iter()
+                .all(|pickup| !pickup.is_active())
+        );
+
+        // Gasta de nuevo toda la munición recién recogida.
+        drain_all_ammo(&mut session);
+
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+    }
+
+    #[test]
+    fn emergency_ammo_positions_are_valid_and_never_overlap_other_resources() {
+        let map = "\
+###################
+#p a  h           #
+#                 #
+#        e        #
+#                 #
+#                g#
+###################
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        // Consume el único ammo pickup existente para poder llegar a
+        // la condición de softlock real (el health pickup queda
+        // activo deliberadamente, para probar que emergency ammo
+        // nunca lo pisa).
+        session.player.pos = session.ammo_pickups()[0].position();
+        session.collect_nearby_ammo_pickups();
+
+        drain_all_ammo(&mut session);
+
+        let spawned = session.ensure_emergency_ammo(BLOCK_SIZE);
+        assert_eq!(spawned, 2);
+
+        let dealer_cell = session.entities()[0].position();
+        let health_cell = session.health_pickups()[0].position();
+        let goal_cell = session.level.goal();
+        let player_cell = session.player.pos;
+
+        for pickup in session.ammo_pickups().iter().filter(|p| p.is_active()) {
+            let position = pickup.position();
+
+            assert_ne!(position, dealer_cell);
+            assert_ne!(position, health_cell);
+            assert_ne!(position, player_cell);
+
+            let world_to_cell_local = |p: Vector2| {
+                (
+                    (p.y / BLOCK_SIZE as f32) as usize,
+                    (p.x / BLOCK_SIZE as f32) as usize,
+                )
+            };
+
+            assert_ne!(world_to_cell_local(position), goal_cell);
+        }
+    }
+
+    // --- Pause/Victory/Defeat: ausencia de generación de recursos. ---
+
+    #[test]
+    fn not_calling_ensure_emergency_ammo_is_how_pause_freezes_it() {
+        let mut session = new_test_session_for_emergency_ammo();
+
+        drain_all_ammo(&mut session);
+
+        // "Pause": ninguna llamada a `ensure_emergency_ammo` aquí,
+        // sin importar cuánto tiempo real pase.
+        assert!(session.ammo_pickups().is_empty());
+
+        // "Resume": la primera llamada real todavía genera con
+        // normalidad.
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+    }
+
+    #[test]
+    fn not_calling_update_hand_state_is_how_pause_freezes_health_replenish() {
+        // Mismo mecanismo: `update_hand_state` (que contiene el
+        // Health Respawn por Hand) nunca se invoca mientras
+        // `GameState::Paused`, así que ningún corazón nuevo aparece
+        // sin que exista un caso especial dedicado.
+        let mut session = new_test_session_for_emergency_ammo();
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+
+        let health_before = session.health_pickups().len();
+
+        // "Pause": ninguna llamada a `update_hand_state` aquí.
+        assert_eq!(session.health_pickups().len(), health_before);
+    }
+
+    #[test]
+    fn same_hand_seed_produces_the_same_emergency_ammo_and_health_replenish_positions() {
+        let build_and_dirty = || {
+            let mut session = new_test_session_for_emergency_ammo();
+
+            session.damage_entity(0);
+            session.damage_entity(0);
+
+            for _ in 0..200 {
+                session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+
+                if session.hand_number() > 1 {
+                    break;
+                }
+            }
+
+            drain_all_ammo(&mut session);
+            session.ensure_emergency_ammo(BLOCK_SIZE);
+
+            session
+        };
+
+        let a = build_and_dirty();
+        let b = build_and_dirty();
+
+        assert_eq!(a.hand_number(), b.hand_number());
+
+        let positions = |session: &GameSession, pickups: &[AmmoPickup]| -> Vec<(u32, u32)> {
+            pickups
+                .iter()
+                .map(|pickup| {
+                    let position = pickup.position();
+                    let _ = session;
+                    (position.x.to_bits(), position.y.to_bits())
+                })
+                .collect()
+        };
+
+        assert_eq!(
+            positions(&a, a.ammo_pickups()),
+            positions(&b, b.ammo_pickups())
+        );
+
+        let health_positions = |pickups: &[HealthPickup]| -> Vec<(u32, u32)> {
+            pickups
+                .iter()
+                .map(|pickup| {
+                    let position = pickup.position();
+                    (position.x.to_bits(), position.y.to_bits())
+                })
+                .collect()
+        };
+
+        assert_eq!(
+            health_positions(a.health_pickups()),
+            health_positions(b.health_pickups())
+        );
+    }
+
+    #[test]
+    fn retry_style_fresh_session_discards_dynamically_generated_resources() {
+        // Ensucia una sesión con Emergency Ammo Y Health Respawn de
+        // una Hand avanzada; una sesión "post-Retry" (reconstruida
+        // desde cero con la MISMA semilla, como hace
+        // `App::replace_session_with_level`) debe arrancar en HAND I
+        // sin ningún recurso dinámico heredado.
+        let mut dirty_session = new_test_session_for_emergency_ammo();
+
+        dirty_session.damage_entity(0);
+        dirty_session.damage_entity(0);
+
+        for _ in 0..200 {
+            dirty_session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+
+            if dirty_session.hand_number() > 1 {
+                break;
+            }
+        }
+
+        drain_all_ammo(&mut dirty_session);
+        dirty_session.ensure_emergency_ammo(BLOCK_SIZE);
+
+        assert!(dirty_session.hand_number() > 1);
+        assert!(!dirty_session.ammo_pickups().is_empty());
+        assert!(!dirty_session.health_pickups().is_empty());
+
+        let clean_session = new_test_session_for_emergency_ammo();
+
+        assert_eq!(clean_session.hand_number(), 1);
+        assert!(clean_session.ammo_pickups().is_empty());
+        assert!(clean_session.health_pickups().is_empty());
     }
 
     #[test]
