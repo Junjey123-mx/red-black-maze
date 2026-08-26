@@ -82,7 +82,18 @@ impl Level {
         Self::from_cells(cells)
     }
 
-    fn from_cells(cells: Vec<Vec<char>>) -> Result<Self, LevelError> {
+    /// Construye y valida un nivel directamente desde una cuadrícula
+    /// de caracteres ya en memoria, sin pasar por el sistema de
+    /// archivos.
+    ///
+    /// Misma validación EXACTA que `load` (ancho consistente,
+    /// exactamente un `p`, exactamente un `g`, ...) — `load` es
+    /// simplemente `from_cells` precedido de lectura de archivo.
+    /// Punto de entrada para `world::level_generator` (Tarea 48): el
+    /// nivel procedural nunca escribe ni lee un `.txt`, construye su
+    /// cuadrícula íntegramente en memoria y la valida aquí con la
+    /// MISMA autoridad que ya usan los tres niveles estáticos.
+    pub(crate) fn from_cells(cells: Vec<Vec<char>>) -> Result<Self, LevelError> {
         if cells.is_empty() {
             return Err(LevelError::Empty);
         }

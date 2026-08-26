@@ -39,7 +39,7 @@ const TITLE_TO_ROWS_GAP: i32 = 28;
 
 /// Etiquetas romanas de presentación. Pertenecen a esta pantalla,
 /// NO a `LevelManager`: son puramente visuales.
-const ROMAN_NUMERALS: [&str; 3] = ["I", "II", "III"];
+const ROMAN_NUMERALS: [&str; 4] = ["I", "II", "III", "IV"];
 
 const ROW_SCALE: i32 = 3;
 const ROW_PADDING: i32 = 10;
@@ -48,9 +48,9 @@ const ROW_SPACING: i32 = 12;
 const ROMAN_COLUMN_GAP: i32 = 8;
 
 /// Ancho fijo de cada fila, suficientemente amplio para el nombre
-/// más largo del catálogo actual (`HOUSE OF CARDS`); verificado por
-/// `longest_known_row_text_fits_within_row_width`.
-const ROW_WIDTH: i32 = 340;
+/// más largo del catálogo actual (`THE DEALER'S TRUE MAZE`, Tarea
+/// 48); verificado por `longest_known_row_text_fits_within_row_width`.
+const ROW_WIDTH: i32 = 520;
 
 /// Ancho/alto, en píxeles lógicos (sin escalar), de un glifo.
 const GLYPH_WIDTH: i32 = 5;
@@ -119,6 +119,17 @@ fn glyph_rows(character: char) -> [u8; 7] {
         ],
         'V' => [
             0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+
+        // Tarea 48: "THE DEALER'S TRUE MAZE" es el primer nombre de
+        // nivel que requiere 'Z' y el apóstrofo — únicos dos glifos
+        // añadidos a esta fuente mínima, mismo estilo bitmap 5x7 que
+        // el resto.
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '\'' => [
+            0b01100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000,
         ],
 
         // El espacio, y cualquier carácter no soportado por esta
@@ -601,13 +612,13 @@ mod tests {
         let mut screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
 
         for _ in 0..10 {
-            screen.select_next(3);
-            assert!(screen.selected_index() < 3);
+            screen.select_next(4);
+            assert!(screen.selected_index() < 4);
         }
 
         for _ in 0..10 {
-            screen.select_previous(3);
-            assert!(screen.selected_index() < 3);
+            screen.select_previous(4);
+            assert!(screen.selected_index() < 4);
         }
     }
 
@@ -618,7 +629,7 @@ mod tests {
         assert!(layout.row_x >= 0);
         assert!(layout.row_x + layout.row_width <= REFERENCE_WIDTH);
 
-        for index in 0..3usize {
+        for index in 0..4usize {
             let row_top = layout.row_y(index);
 
             assert!(row_top >= 0);
@@ -627,26 +638,23 @@ mod tests {
     }
 
     #[test]
-    fn three_rows_have_non_overlapping_vertical_positions() {
+    fn four_rows_have_non_overlapping_vertical_positions() {
         let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
 
-        let row0_bottom = layout.row_y(0) + layout.row_height;
+        for index in 0..3usize {
+            let bottom = layout.row_y(index) + layout.row_height;
 
-        let row1_top = layout.row_y(1);
+            let next_top = layout.row_y(index + 1);
 
-        let row1_bottom = layout.row_y(1) + layout.row_height;
-
-        let row2_top = layout.row_y(2);
-
-        assert!(row0_bottom <= row1_top);
-        assert!(row1_bottom <= row2_top);
+            assert!(bottom <= next_top);
+        }
     }
 
     #[test]
     fn longest_known_row_text_fits_within_row_width() {
         let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
 
-        let longest_name_width = text_width("HOUSE OF CARDS", ROW_SCALE);
+        let longest_name_width = text_width("THE DEALER'S TRUE MAZE", ROW_SCALE);
 
         let content_width = layout.roman_column_width + longest_name_width + 2 * ROW_PADDING;
 

@@ -2,6 +2,7 @@ mod ammo_pickup;
 mod collision;
 mod entity;
 mod level;
+mod level_generator;
 mod level_manager;
 mod pathfinding;
 mod tile;

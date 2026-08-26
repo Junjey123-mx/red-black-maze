@@ -15,26 +15,38 @@ pub(crate) enum MusicTrack {
     CrimsonEntrance,
     BlackClub,
     HouseOfCards,
+
+    /// Tarea 48: pista exclusiva de `The Dealer's True Maze`
+    /// (nivel 4, procedural). A diferencia de las otras tres, esta
+    /// pista NUNCA se deriva de un `LevelTheme` — el nivel elige su
+    /// identidad visual al azar entre los tres temas existentes en
+    /// cada generación, pero su música es siempre esta, sin
+    /// excepción. Por eso no participa de `music_track_for_theme`:
+    /// `App` la selecciona explícitamente cuando el nivel activo es
+    /// el procedural, nunca a través del tema.
+    TheDealersTrueMaze,
 }
 
 /// Enumeración completa de `MusicTrack`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_MUSIC_TRACKS: [MusicTrack; 4] = [
+const ALL_MUSIC_TRACKS: [MusicTrack; 5] = [
     MusicTrack::Menu,
     MusicTrack::CrimsonEntrance,
     MusicTrack::BlackClub,
     MusicTrack::HouseOfCards,
+    MusicTrack::TheDealersTrueMaze,
 ];
 
 /// Única ubicación del catálogo ruta<->pista. Ningún otro módulo
 /// conoce estas rutas.
 fn music_path(track: MusicTrack) -> &'static str {
     match track {
-        MusicTrack::Menu => "assets/audio/music/menu.ogg",
-        MusicTrack::CrimsonEntrance => "assets/audio/music/crimson_entrance.ogg",
-        MusicTrack::BlackClub => "assets/audio/music/black_club.ogg",
-        MusicTrack::HouseOfCards => "assets/audio/music/house_of_cards.ogg",
+        MusicTrack::Menu => "assets/audio/music/menu.mp3",
+        MusicTrack::CrimsonEntrance => "assets/audio/music/crimson_entrance.mp3",
+        MusicTrack::BlackClub => "assets/audio/music/black_club.mp3",
+        MusicTrack::HouseOfCards => "assets/audio/music/house_of_cards.mp3",
+        MusicTrack::TheDealersTrueMaze => "assets/audio/music/the_dealers_true_maze.mp3",
     }
 }
 
@@ -44,6 +56,11 @@ fn music_path(track: MusicTrack) -> &'static str {
 /// `LevelTheme` ya resuelto por `LevelManager` (la fuente de verdad
 /// real de qué nivel está activo) — nunca infiere la pista a partir
 /// de la posición seleccionada en Level Select.
+///
+/// Deliberadamente TOTAL sobre los tres temas visuales únicamente
+/// (`CrimsonEntrance`/`BlackClub`/`HouseOfCards`): `MusicTrack::
+/// TheDealersTrueMaze` no tiene tema propio y por lo tanto no
+/// aparece aquí — ver su documentación en la definición del enum.
 pub(crate) fn music_track_for_theme(theme: LevelTheme) -> MusicTrack {
     match theme {
         LevelTheme::CrimsonEntrance => MusicTrack::CrimsonEntrance,
@@ -468,25 +485,43 @@ mod tests {
     // --- Catálogo de música: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_four_music_tracks() {
-        assert_eq!(ALL_MUSIC_TRACKS.len(), 4);
+    fn catalog_contains_exactly_five_music_tracks() {
+        assert_eq!(ALL_MUSIC_TRACKS.len(), 5);
     }
 
     #[test]
     fn every_music_track_maps_to_a_unique_expected_path() {
-        assert_eq!(music_path(MusicTrack::Menu), "assets/audio/music/menu.ogg");
+        assert_eq!(music_path(MusicTrack::Menu), "assets/audio/music/menu.mp3");
         assert_eq!(
             music_path(MusicTrack::CrimsonEntrance),
-            "assets/audio/music/crimson_entrance.ogg"
+            "assets/audio/music/crimson_entrance.mp3"
         );
         assert_eq!(
             music_path(MusicTrack::BlackClub),
-            "assets/audio/music/black_club.ogg"
+            "assets/audio/music/black_club.mp3"
         );
         assert_eq!(
             music_path(MusicTrack::HouseOfCards),
-            "assets/audio/music/house_of_cards.ogg"
+            "assets/audio/music/house_of_cards.mp3"
         );
+        assert_eq!(
+            music_path(MusicTrack::TheDealersTrueMaze),
+            "assets/audio/music/the_dealers_true_maze.mp3"
+        );
+    }
+
+    #[test]
+    fn the_dealers_true_maze_track_is_never_reachable_through_a_level_theme() {
+        // Sección 9/18: la música del nivel procedural nunca se
+        // deriva del tema visual (aleatorio); solo `App` la
+        // selecciona explícitamente para ese nivel.
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            assert_ne!(music_track_for_theme(theme), MusicTrack::TheDealersTrueMaze);
+        }
     }
 
     #[test]

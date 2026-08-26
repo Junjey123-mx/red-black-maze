@@ -82,7 +82,7 @@ fn non_playing_states_never_transition_from_the_goal_condition_alone() {
 // --- Progresión real de LevelManager ---
 
 #[test]
-fn next_progresses_through_all_three_levels_without_wrapping() {
+fn next_progresses_through_all_three_static_levels_without_wrapping() {
     let mut manager = LevelManager::new();
 
     let level1 = manager.load(0).expect("el índice 0 debe cargar");
@@ -113,8 +113,45 @@ fn next_progresses_through_all_three_levels_without_wrapping() {
         &reference_level("levels/level_03.txt")
     ));
 
-    // Nivel final: next() retorna None, sin envolver de vuelta al
-    // nivel 1.
+    assert!(manager.has_next());
+}
+
+/// Tarea 48: la victoria de House of Cards YA NO es el final del
+/// juego — conduce a "The Dealer's True Maze", el cuarto nivel
+/// procedural. Este test solo usa la superficie `pub` de
+/// `LevelManager` (igual que el resto de este archivo): no puede
+/// consultar el tema/seed/`current_is_procedural` (`pub(crate)`),
+/// pero SÍ puede confirmar que el contenido del cuarto nivel no
+/// coincide con ninguno de los tres `.txt` estáticos, que es el
+/// último de verdad (`has_next() == false`), y que un `next()`
+/// adicional no envuelve de vuelta al nivel 1.
+#[test]
+fn house_of_cards_victory_leads_to_the_procedural_fourth_level_as_the_true_final_level() {
+    let mut manager = LevelManager::new();
+
+    manager
+        .load(2)
+        .expect("House of Cards (índice 2) debe cargar");
+    assert!(manager.has_next());
+
+    let level4 = manager
+        .next()
+        .expect("next() no debe fallar")
+        .expect("debe existir un cuarto nivel: el procedural");
+
+    for reference_path in [
+        "levels/level_01.txt",
+        "levels/level_02.txt",
+        "levels/level_03.txt",
+    ] {
+        assert!(
+            !levels_have_identical_content(&level4, &reference_level(reference_path)),
+            "el cuarto nivel procedural no debe coincidir con {reference_path}"
+        );
+    }
+
+    // Ahora sí es el nivel final: next() retorna None, sin envolver
+    // de vuelta al nivel 1.
     let after_final = manager
         .next()
         .expect("next() no debe fallar en el último nivel");

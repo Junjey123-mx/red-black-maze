@@ -896,15 +896,21 @@ impl<'aud> App<'aud> {
     ///
     /// Tarea 46.5, sección 12: también es el único punto que
     /// selecciona la música del nivel, a través de
-    /// `LevelManager::current` — la fuente de verdad real de qué
-    /// nivel se acaba de cargar (`load`/`next`/`restart` ya
-    /// actualizaron `current` antes de llegar aquí) — nunca a partir
-    /// de la posición resaltada en Level Select. `set_music` decide
-    /// por sí mismo si eso implica reiniciar la pista desde el
-    /// principio: como Victoria/Derrota ya llamaron `stop_music`
-    /// antes de poder llegar a Retry/Next Level, la pista siempre
-    /// arranca limpia, nunca desde la posición donde el jugador
-    /// ganó/murió.
+    /// `LevelManager::current_theme`/`current_is_procedural` — la
+    /// fuente de verdad real de qué nivel se acaba de cargar
+    /// (`load`/`next`/`restart` ya actualizaron el estado interno de
+    /// `LevelManager` antes de llegar aquí) — nunca a partir de la
+    /// posición resaltada en Level Select. `set_music` decide por sí
+    /// mismo si eso implica reiniciar la pista desde el principio:
+    /// como Victoria/Derrota ya llamaron `stop_music` antes de poder
+    /// llegar a Retry/Next Level, la pista siempre arranca limpia,
+    /// nunca desde la posición donde el jugador ganó/murió.
+    ///
+    /// Tarea 48: `The Dealer's True Maze` es el único nivel cuya
+    /// música NO se deriva de `LevelTheme` (su identidad visual es
+    /// aleatoria en cada generación, pero su pista es siempre la
+    /// misma) — de ahí la rama explícita antes de caer al mapeo
+    /// tema->pista que ya usan los tres niveles estáticos.
     fn replace_session_with_level(&mut self, level: Level) {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
@@ -912,8 +918,22 @@ impl<'aud> App<'aud> {
 
         self.state = GameState::Playing;
 
-        self.audio
-            .set_music(music_track_for_theme(self.level_manager.current().theme));
+        let music_track = if self.level_manager.current_is_procedural() {
+            if let Some(seed) = self.level_manager.current_procedural_seed() {
+                eprintln!("Entrando a The Dealer's True Maze — Seed activa: {seed}");
+            }
+
+            MusicTrack::TheDealersTrueMaze
+        } else {
+            let theme = self
+                .level_manager
+                .current_theme()
+                .expect("un nivel estático siempre resuelve un LevelTheme");
+
+            music_track_for_theme(theme)
+        };
+
+        self.audio.set_music(music_track);
     }
 
     fn render(&self, framebuffer: &mut Framebuffer) {
@@ -944,7 +964,7 @@ impl<'aud> App<'aud> {
             /*
              * Tarea 46: a diferencia de `Paused`, Derrota es una
              * pantalla COMPLETA — no dibuja el mundo congelado
-             * detrás. `level_manager.current().theme` sigue siendo,
+             * detrás. `level_manager.current_theme()` sigue siendo,
              * en este punto, el nivel donde el jugador murió (Retry/
              * Main Menu son las ÚNICAS acciones que pueden cambiarlo,
              * y ninguna se ejecuta todavía mientras se está
@@ -953,9 +973,12 @@ impl<'aud> App<'aud> {
              * correcto, nunca a una selección obsoleta de Level
              * Select.
              */
-            GameState::Defeat => self
-                .defeat
-                .render(framebuffer, self.level_manager.current().theme),
+            GameState::Defeat => self.defeat.render(
+                framebuffer,
+                self.level_manager
+                    .current_theme()
+                    .expect("Defeat solo se alcanza tras generar/cargar un nivel con tema"),
+            ),
         }
     }
 
@@ -1012,7 +1035,10 @@ impl<'aud> App<'aud> {
                  * renderer, en vez de que cada uno vuelva a leer
                  * `self.level_manager.current().theme` por su cuenta.
                  */
-                let theme = self.level_manager.current().theme;
+                let theme = self
+                    .level_manager
+                    .current_theme()
+                    .expect("Playing solo se alcanza tras generar/cargar un nivel con tema");
 
                 let wall_depth_buffer = render_world(
                     framebuffer,
