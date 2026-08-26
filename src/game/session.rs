@@ -4,8 +4,8 @@ use raylib::prelude::Vector2;
 
 use crate::player::{Player, Weapon, WeaponState};
 use crate::world::{
-    AmmoPickup, DistanceField, Entity, EntityDamageOutcome, EntityState, EntityStateTransition,
-    HealthPickup, Level,
+    AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, Entity, EntityDamageOutcome, EntityState,
+    EntityStateTransition, HealthPickup, Level,
 };
 
 use super::hand::{self, HandHudMessage, HandState};
@@ -278,6 +278,22 @@ impl GameSession {
     /// llama antes que el bloque de disparo dentro de
     /// `update_playing`), así que esos índices siempre reflejan la
     /// colección ya depurada.
+    ///
+    /// Corrección "visual-only corpse": un `Entity` `Dead` participa
+    /// ÚNICAMENTE en rendering + temporizador de cadáver + despawn.
+    /// `Entity::update`/`attempt_attack` ya devolvían de inmediato
+    /// para `Dead` (así que esto nunca fue un bug de CORRECCIÓN), pero
+    /// esta pasada seguía gastando una consulta de
+    /// `DistanceField::step_toward_origin` por CADA cadáver, CADA
+    /// cuadro, para un resultado que `Entity::update` descartaba de
+    /// inmediato — trabajo desperdiciado que escala con la cantidad de
+    /// cadáveres acumulados (hasta ~50 simultáneos en "The Dealer's
+    /// True Maze" entre Hands). Los cadáveres ahora se saltan
+    /// explícitamente ANTES de calcular `pursuit_target`/llamar a
+    /// `entity.update`, dejando el camino caliente de IA
+    /// exclusivamente para Dealers vivos, sin cambiar ningún
+    /// resultado observable (un cadáver nunca reportaba transición ni
+    /// se movía).
     pub(crate) fn update_entities(
         &mut self,
         delta_time: f32,
@@ -285,16 +301,14 @@ impl GameSession {
     ) -> Vec<EntityStateTransition> {
         let player_position = self.player.pos;
 
+        let player_cell = world_to_cell(player_position, block_size);
+
         let any_alert = self
             .entities
             .iter()
             .any(|entity| entity.state() == EntityState::Alert);
 
-        let distance_field = any_alert.then(|| {
-            let player_cell = world_to_cell(player_position, block_size);
-
-            DistanceField::from_level(&self.level, player_cell)
-        });
+        let distance_field = any_alert.then(|| DistanceField::from_level(&self.level, player_cell));
 
         let transitions = self
             .entities
@@ -302,12 +316,69 @@ impl GameSession {
             .filter_map(|entity| {
                 entity.advance_corpse_timer(delta_time);
 
+                if entity.is_dead() {
+                    return None;
+                }
+
+                /*
+                 * Corrección "corner dead zone": `step_toward_origin`
+                 * retorna `None` en cuanto la celda del Dealer YA ES
+                 * la celda del jugador (distancia de ruta 0) — sin
+                 * importar en qué punto EXACTO de esa celda se
+                 * encuentre todavía el Dealer, que puede quedar a
+                 * varios píxeles del centro (la última celda de la
+                 * ruta se abandona en el instante en que se CRUZA su
+                 * borde, no al llegar a su centro). Con el jugador
+                 * cerca de una esquina de esa misma celda, esos pocos
+                 * píxeles bastan para superar `DEALER_ATTACK_RANGE`
+                 * (medido empíricamente: ~37.6px de distancia real
+                 * contra 36.0px de rango, un hueco de ~1.6px) — el
+                 * Dealer queda "congelado": ya no tiene celda
+                 * siguiente hacia la que perseguir, pero tampoco está
+                 * lo bastante cerca para atacar.
+                 *
+                 * Una vez el Dealer y el jugador comparten la MISMA
+                 * celda transitable, esa celda es, por construcción,
+                 * un rectángulo abierto sin paredes internas (`Tile`
+                 * no tiene variantes de "media pared"): cualquier
+                 * segmento recto entre dos puntos de esa celda nunca
+                 * cruza una pared. Es entonces geométricamente seguro
+                 * perseguir la posición EXACTA del jugador — pero
+                 * SOLO mientras siga haciendo falta. El fallback se
+                 * activa ÚNICAMENTE cuando las TRES condiciones se
+                 * cumplen a la vez: sin siguiente paso de ruta, misma
+                 * celda, Y todavía fuera de `DEALER_ATTACK_RANGE`. En
+                 * cuanto la distancia real cae dentro del rango de
+                 * ataque, el fallback deja de activarse (retorna
+                 * `None`, el mismo comportamiento de "quedarse quieto
+                 * y atacar" que ya tenía cualquier Dealer en rango
+                 * antes de esta corrección) — así el Dealer cruza
+                 * exactamente la zona muerta y nunca converge hacia
+                 * la posición exacta del jugador ni invade el espacio
+                 * de la cámara. Nunca se activa entre celdas
+                 * distintas, así que sigue siendo geométricamente
+                 * imposible atacar a través de una pared.
+                 */
                 let pursuit_target = distance_field.as_ref().and_then(|field| {
                     let entity_cell = world_to_cell(entity.position(), block_size);
 
                     field
                         .step_toward_origin(entity_cell)
                         .map(|(row, column)| cell_center(row, column, block_size))
+                        .or_else(|| {
+                            if entity_cell != player_cell {
+                                return None;
+                            }
+
+                            let attack_range = block_size as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+                            let dx = entity.position().x - player_position.x;
+
+                            let dy = entity.position().y - player_position.y;
+
+                            (dx * dx + dy * dy > attack_range * attack_range)
+                                .then_some(player_position)
+                        })
                 });
 
                 entity.update(player_position, delta_time, block_size, pursuit_target)
@@ -631,12 +702,28 @@ impl GameSession {
     /// sin acumular), y `App` decide reproducir `SoundEffect::PlayerHit`
     /// como mucho una vez leyendo el total > 0 retornado, no una vez
     /// por Dealer.
+    ///
+    /// Corrección "visual-only corpse": un cadáver (`Entity::is_dead`)
+    /// se salta explícitamente ANTES de llamar a `attempt_attack` —
+    /// `Entity::apply_damage`/`attempt_attack` ya rechazaban cualquier
+    /// intento sobre una entidad `Dead` (nunca fue posible que un
+    /// cadáver dañara al jugador), pero esta pasada seguía
+    /// decrementando el cooldown ofensivo de CADA cadáver acumulado
+    /// en cada cuadro para un resultado que siempre era `false` —
+    /// trabajo desperdiciado que escala con la cantidad de cadáveres
+    /// vivos en la colección. Ningún Dealer VIVO cambia su
+    /// comportamiento por esto: el orden de iteración y el resultado
+    /// para entidades vivas son idénticos a antes.
     pub(crate) fn process_dealer_attacks(&mut self, delta_time: f32, block_size: usize) -> i32 {
         let player_position = self.player.pos;
 
         let mut total_damage = 0;
 
         for entity in &mut self.entities {
+            if entity.is_dead() {
+                continue;
+            }
+
             if entity.attempt_attack(player_position, delta_time, block_size) {
                 total_damage += self.player.apply_damage(DEALER_ATTACK_DAMAGE);
             }
@@ -966,6 +1053,14 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const BLOCK_SIZE: usize = 48;
+
+    /// Mismo valor que `world::entity::CORPSE_DESPAWN_SECONDS`
+    /// (`pub(crate)` solo dentro de `world`, no reexportado aquí):
+    /// mismo patrón ya establecido en este módulo de pruebas para
+    /// otras constantes privadas de otro módulo (por ejemplo el
+    /// cooldown de ataque de 0.9s, hardcodeado como literal en los
+    /// tests de ataque de más abajo en vez de importado).
+    const CORPSE_DESPAWN_SECONDS: f32 = 15.0;
 
     static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -2580,5 +2675,886 @@ mod tests {
     fn negative_position_is_false() {
         assert!(!point_reaches_goal(-1.0, 0.0, 0, 0, BLOCK_SIZE));
         assert!(!point_reaches_goal(0.0, -1.0, 0, 0, BLOCK_SIZE));
+    }
+
+    // --- Corpse gameplay-inert: cadáveres nunca influyen sobre
+    // Dealers vivos. ---
+    //
+    // Auditoría previa a estas pruebas: `Entity::update`/
+    // `Entity::attempt_attack` ya devolvían de inmediato para `Dead`
+    // (nunca se movían ni atacaban), y `world::DistanceField` es
+    // puramente geometría de `Level` — jamás conoce `Entity` ni
+    // "celdas ocupadas" — así que el pathfinding compartido entre
+    // Dealers nunca pudo verse bloqueado por un cadáver. La causa
+    // real identificada NO era de corrección sino de trabajo
+    // desperdiciado: `update_entities`/`process_dealer_attacks`
+    // seguían ejecutando una consulta de `DistanceField` y un intento
+    // de ataque POR CADA cadáver acumulado, cada cuadro, cuyo
+    // resultado siempre se descartaba de inmediato — costo que escala
+    // con la cantidad de cadáveres vivos en la colección (hasta ~50
+    // simultáneos entre Hands en "The Dealer's True Maze"). Estas
+    // pruebas demuestran, con la API real de `GameSession` (nunca
+    // reimplementando la lógica), que un Dealer vivo se mueve, entra
+    // en rango y ataca con total normalidad sin importar cuántos
+    // cadáveres existan ni dónde estén parados.
+
+    /// Nivel de prueba: jugador a la izquierda, una fila de Dealers
+    /// consecutivos a su derecha. Los primeros `corpse_count` se
+    /// matan (quedan como cadáveres, en las celdas MÁS CERCANAS al
+    /// jugador — literalmente en el camino), el último permanece
+    /// vivo, exactamente en el borde de `DEALER_ALERT_DISTANCE_CELLS`
+    /// (4 celdas = 192px) para que su primer `update_entities` ya lo
+    /// ponga en `Alert`.
+    /// Sesión de prueba con el sobreviviente SIEMPRE a distancia fija
+    /// del jugador (fila 1, justo al lado — dentro de la distancia de
+    /// alerta sin importar `corpse_count`) y `corpse_count` cadáveres
+    /// alineados justo debajo, en la fila inmediatamente siguiente,
+    /// arrancando en la misma columna donde está el sobreviviente —
+    /// literalmente la región que el sobreviviente debe cruzar/rondar
+    /// para perseguir al jugador.
+    ///
+    /// El sobreviviente es SIEMPRE `entities()[0]` (aparece primero
+    /// en el escaneo fila por fila de `Level::from_cells`, antes que
+    /// cualquier cadáver de la fila siguiente); los cadáveres son
+    /// `entities()[1..=corpse_count]`.
+    fn new_test_session_with_a_corpse_row_and_one_survivor(corpse_count: usize) -> GameSession {
+        let interior_width = corpse_count.max(3) + 4;
+
+        let mut player_row = String::from("p e");
+
+        while player_row.len() < interior_width - 1 {
+            player_row.push(' ');
+        }
+
+        player_row.push('g');
+
+        let mut corpse_line = String::from("  ");
+
+        corpse_line.push_str(&"e".repeat(corpse_count));
+
+        while corpse_line.len() < interior_width {
+            corpse_line.push(' ');
+        }
+
+        let border = "#".repeat(interior_width + 2);
+
+        let map = format!("{border}\n#{player_row}#\n#{corpse_line}#\n{border}\n");
+
+        let file = TempLevelFile::write(&map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        assert_eq!(session.entities().len(), corpse_count + 1);
+
+        for index in 1..=corpse_count {
+            session.damage_entity(index);
+            session.damage_entity(index);
+
+            assert!(session.entities()[index].is_dead());
+        }
+
+        assert!(!session.entities()[0].is_dead());
+
+        session
+    }
+
+    /// Avanza `update_entities`/`update_hit_flash`/
+    /// `process_dealer_attacks` en pasos de `step_seconds`, hasta que
+    /// el sobreviviente inflige daño real o se agota `max_steps`.
+    /// Retorna el número de cuadros simulados hasta el primer daño,
+    /// o `None` si nunca ocurrió.
+    fn simulate_until_damage(
+        session: &mut GameSession,
+        step_seconds: f32,
+        max_steps: usize,
+    ) -> Option<usize> {
+        for step in 0..max_steps {
+            session.update_entities(step_seconds, BLOCK_SIZE);
+            session.update_hit_flash(step_seconds);
+
+            let damage = session.process_dealer_attacks(step_seconds, BLOCK_SIZE);
+
+            if damage > 0 {
+                return Some(step);
+            }
+        }
+
+        None
+    }
+
+    #[test]
+    fn dead_entities_between_the_dealer_and_the_player_never_block_its_movement() {
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(3);
+
+        let survivor_index = 0;
+
+        let start_position = session.entities()[survivor_index].position();
+
+        session.update_entities(0.1, BLOCK_SIZE);
+
+        assert_eq!(
+            session.entities()[survivor_index].state(),
+            EntityState::Alert
+        );
+
+        // Varios cuadros de persecución real: la posición debe
+        // acercarse monotónicamente al jugador (columna X
+        // decreciente), atravesando exactamente las mismas celdas
+        // donde yacen los tres cadáveres.
+        let mut previous_x = start_position.x;
+
+        for _ in 0..20 {
+            session.update_entities(0.1, BLOCK_SIZE);
+
+            let current_x = session.entities()[survivor_index].position().x;
+
+            assert!(
+                current_x <= previous_x,
+                "el Dealer vivo debe seguir acercándose al jugador, nunca retroceder ni quedar \
+                 detenido por los cadáveres en su camino"
+            );
+
+            previous_x = current_x;
+        }
+
+        assert!(
+            previous_x < start_position.x,
+            "tras 21 cuadros de persecución el Dealer vivo debe haber avanzado una distancia real"
+        );
+    }
+
+    #[test]
+    fn dead_entities_present_never_block_a_valid_attack() {
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(3);
+
+        let health_before = session.player_health();
+
+        let damaged_at_step =
+            simulate_until_damage(&mut session, 0.1, 100).expect("el sobreviviente debe atacar");
+
+        // 21 cuadros de persecución (misma cifra que la prueba de
+        // movimiento) + margen para el primer ataque tras entrar en
+        // rango: nunca debería acercarse a 100 si los cadáveres no
+        // interfieren.
+        assert!(damaged_at_step < 40);
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    #[test]
+    fn ten_corpses_do_not_change_the_survivors_behavior_at_all() {
+        // Escenario cercano al real reportado en The Dealer's True
+        // Maze: una decena de cadáveres apilados justo en el camino
+        // entre el Dealer vivo y el jugador.
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(10);
+
+        assert_eq!(session.entities().len(), 11);
+        assert_eq!(
+            session.entities().iter().filter(|e| e.is_dead()).count(),
+            10
+        );
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 200)
+            .expect("con 10 cadáveres presentes, el único Dealer vivo debe seguir pudiendo atacar");
+
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+
+        // Los 10 cadáveres siguen presentes (todavía no cumplieron
+        // `CORPSE_DESPAWN_SECONDS`): su sola PRESENCIA nunca fue lo
+        // que había que eliminar, solo su influencia sobre Dealers
+        // vivos.
+        assert_eq!(
+            session.entities().iter().filter(|e| e.is_dead()).count(),
+            10
+        );
+    }
+
+    #[test]
+    fn corpses_from_hand_one_never_block_a_hand_two_dealer_from_attacking() {
+        // Nivel pequeño con un único Dealer de HAND I: se mata para
+        // forzar la transición a HAND II (que sí genera un Dealer
+        // nuevo, vivo, mientras el cadáver de HAND I sigue presente
+        // durante sus 15s).
+        let map = "\
+#########
+#p      #
+#  e    #
+#      g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+
+        assert!(session.entities()[0].is_dead());
+        assert_eq!(session.alive_dealer_count(), 0);
+
+        let mut spawned_hand_two = false;
+
+        for _ in 0..300 {
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+
+            if session.hand_number() > 1 {
+                spawned_hand_two = true;
+                break;
+            }
+        }
+
+        assert!(spawned_hand_two, "HAND II debía haber comenzado");
+
+        // El cadáver de HAND I sigue presente (bien dentro de los
+        // 15s) junto al/los Dealers nuevos de HAND II.
+        assert!(session.entities().iter().any(|e| e.is_dead()));
+        assert!(session.entities().iter().any(|e| !e.is_dead()));
+
+        // Coloca al jugador junto al Dealer vivo más cercano y
+        // confirma que igualmente puede acercarse/atacar con el
+        // cadáver de HAND I todavía en la colección.
+        let live_index = session
+            .entities()
+            .iter()
+            .position(|e| !e.is_dead())
+            .expect("HAND II debe haber dejado al menos un Dealer vivo");
+
+        let live_position = session.entities()[live_index].position();
+
+        session.player.pos = Vector2::new(live_position.x + 10.0, live_position.y);
+
+        let health_before = session.player_health();
+
+        let damaged = simulate_until_damage(&mut session, 0.1, 100)
+            .expect("el Dealer de HAND II debe atacar");
+
+        assert!(damaged < 20);
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    #[test]
+    fn corpse_remains_present_until_exactly_the_documented_lifetime() {
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(1);
+
+        // Justo antes del despawn: el cadáver sigue en la colección
+        // (visible/rendereable).
+        let mut elapsed = 0.0;
+
+        while elapsed < CORPSE_DESPAWN_SECONDS - 0.5 {
+            session.update_entities(0.1, BLOCK_SIZE);
+            elapsed += 0.1;
+        }
+
+        assert!(session.entities().iter().any(|e| e.is_dead()));
+
+        // Cruza el umbral completo: ahora debe haberse eliminado.
+        for _ in 0..10 {
+            session.update_entities(0.1, BLOCK_SIZE);
+        }
+
+        assert!(!session.entities().iter().any(|e| e.is_dead()));
+    }
+
+    #[test]
+    fn not_calling_update_entities_is_how_pause_freezes_corpse_processing_too() {
+        // Mismo mecanismo que el resto de los sistemas de la sesión:
+        // `update_entities` (que avanza el temporizador de cadáver Y
+        // decide qué Dealers vivos persiguen) simplemente no se llama
+        // mientras `GameState::Paused` está activo. Esta prueba
+        // confirma que, sin esa llamada, ni el cadáver despawnea ni
+        // el sobreviviente avanza — exactamente lo esperado durante
+        // una pausa real.
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(1);
+
+        let survivor_position_before = session.entities()[0].position();
+
+        // "Pause": ninguna llamada a `update_entities` aquí, sin
+        // importar cuánto tiempo real pase.
+        assert!(session.entities().iter().any(|e| e.is_dead()));
+        assert_eq!(
+            session.entities()[0].position().x,
+            survivor_position_before.x
+        );
+
+        // "Resume": la primera llamada real todavía funciona con
+        // normalidad.
+        session.update_entities(0.1, BLOCK_SIZE);
+        assert_eq!(session.entities()[0].state(), EntityState::Alert);
+    }
+
+    #[test]
+    fn retain_removing_several_corpses_at_once_leaves_the_survivor_fully_functional() {
+        // Cinco cadáveres que expiran EXACTAMENTE en el mismo cuadro
+        // (todos recibieron el golpe letal en el mismo instante de
+        // prueba): `Vec::retain` debe eliminarlos todos a la vez sin
+        // afectar en absoluto al sobreviviente restante.
+        let mut session = new_test_session_with_a_corpse_row_and_one_survivor(5);
+
+        let survivor_index = 0;
+
+        // Deja que el sobreviviente entre en Alert y acumule algo de
+        // cooldown de ataque real antes de expirar los cadáveres.
+        session.update_entities(0.1, BLOCK_SIZE);
+        assert_eq!(
+            session.entities()[survivor_index].state(),
+            EntityState::Alert
+        );
+
+        let mut elapsed = 0.0;
+
+        while elapsed < CORPSE_DESPAWN_SECONDS + 0.5 {
+            session.update_entities(0.1, BLOCK_SIZE);
+            elapsed += 0.1;
+        }
+
+        // Los cinco cadáveres fueron eliminados de golpe; solo el
+        // sobreviviente permanece.
+        assert_eq!(session.entities().len(), 1);
+        assert!(!session.entities()[0].is_dead());
+
+        // Sigue completamente funcional tras el `retain` masivo:
+        // continúa persiguiendo y puede atacar con normalidad.
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 100)
+            .expect("el sobreviviente debe seguir pudiendo atacar tras el retain masivo");
+
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    // --- Corner dead zone: un Dealer que ya no puede avanzar más
+    // debe poder atacar si el jugador es alcanzable sin pared, PERO
+    // sin converger hacia la posición exacta del jugador una vez
+    // dentro de rango. ---
+    //
+    // Causa raíz medida empíricamente (instrumentación temporal, ya
+    // retirada): `DistanceField::step_toward_origin` retorna `None`
+    // en cuanto la celda del Dealer coincide con la celda del
+    // jugador — sin importar en qué punto EXACTO de esa celda esté
+    // el Dealer en ese instante (la última celda de la ruta se
+    // abandona al CRUZAR su borde, no al llegar a su centro). Con el
+    // jugador cerca de una esquina de esa misma celda, esto medía
+    // ~37.6px de distancia real contra 36.0px de `DEALER_ATTACK_RANGE`
+    // — un hueco de ~1.6px, exactamente del orden de "un píxel" que
+    // describía el reporte original.
+    //
+    // El primer fix perseguía `player_position` de forma incondicional
+    // en cuanto se cumplía "misma celda + sin siguiente paso de
+    // ruta", lo que producía un Dealer que seguía acercándose incluso
+    // ya dentro de rango de ataque (UX: sprite invadiendo la cámara).
+    // La condición ahora exige TAMBIÉN `distance > DEALER_ATTACK_RANGE`
+    // — ver `GameSession::update_entities` — así que el fallback deja
+    // de activarse en el instante exacto en que el Dealer entra en
+    // rango real, y el Dealer vuelve al comportamiento normal de
+    // "quedarse quieto y atacar" desde ahí.
+
+    /// Nivel de prueba: sala abierta con el jugador cerca de una
+    /// esquina de su propia celda (celda (3,6), centro=(312,168)) y
+    /// un único Dealer a 3 celdas de distancia en la misma fila —
+    /// exactamente el escenario con el que se midió la zona muerta
+    /// original (~37.57px de distancia real contra 36.0px de rango).
+    fn new_test_session_for_the_corner_dead_zone() -> GameSession {
+        let map = "\
+#############
+#p g        #
+#           #
+#        e  #
+#           #
+#           #
+#############
+";
+
+        let file = TempLevelFile::write(map);
+
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        let cell_center = Vector2::new(6.0 * 48.0 + 24.0, 3.0 * 48.0 + 24.0);
+
+        session.player.pos = Vector2::new(cell_center.x - 17.0, cell_center.y - 17.0);
+
+        session
+    }
+
+    fn distance_to_player(session: &GameSession, entity_index: usize) -> f32 {
+        let dealer = session.entities()[entity_index].position();
+
+        let dx = dealer.x - session.player.pos.x;
+        let dy = dealer.y - session.player.pos.y;
+
+        dx.hypot(dy)
+    }
+
+    #[test]
+    fn corner_dead_zone_reproduction_still_lets_the_dealer_attack() {
+        let mut session = new_test_session_for_the_corner_dead_zone();
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400)
+            .expect("el Dealer debe cruzar la zona muerta original (~1.57px) y atacar");
+
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    #[test]
+    fn dealer_stops_closing_once_within_attack_range() {
+        let mut session = new_test_session_for_the_corner_dead_zone();
+
+        let attack_range = BLOCK_SIZE as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+        // Avanza justo hasta que el Dealer entra en rango de ataque
+        // real (sin necesitar que llegue a golpear todavía).
+        let mut entered_range = false;
+
+        for _ in 0..400 {
+            session.update_entities(0.1, BLOCK_SIZE);
+
+            if distance_to_player(&session, 0) <= attack_range {
+                entered_range = true;
+                break;
+            }
+        }
+
+        assert!(
+            entered_range,
+            "el Dealer debe entrar en rango tras cruzar la zona muerta"
+        );
+
+        let distance_on_entry = distance_to_player(&session, 0);
+
+        assert!(
+            distance_on_entry <= attack_range,
+            "distancia al entrar en rango: {distance_on_entry}"
+        );
+
+        // Muchos cuadros adicionales, jugador completamente quieto:
+        // el Dealer NO debe seguir convergiendo hacia la posición
+        // exacta del jugador (distancia -> 0). Debe permanecer
+        // razonablemente cerca del límite de alcance, nunca
+        // prácticamente encima del jugador.
+        for _ in 0..200 {
+            session.update_entities(0.1, BLOCK_SIZE);
+        }
+
+        let distance_after_many_frames = distance_to_player(&session, 0);
+
+        assert!(
+            distance_after_many_frames <= attack_range,
+            "sigue dentro de rango: {distance_after_many_frames}"
+        );
+
+        // "Razonablemente cerca del límite de alcance": nunca por
+        // debajo de la mitad del rango de ataque — el fallback nunca
+        // debía activarse ya dentro de rango, así que la distancia no
+        // puede haberse desplomado hacia 0.
+        assert!(
+            distance_after_many_frames > attack_range / 2.0,
+            "el Dealer convergió demasiado cerca del jugador: {distance_after_many_frames} \
+             (rango de ataque: {attack_range})"
+        );
+    }
+
+    #[test]
+    fn distance_to_player_does_not_keep_shrinking_frame_after_frame_once_in_range() {
+        // Invariante de UX/cámara: una vez dentro de rango de ataque,
+        // la distancia cuadro a cuadro debe estabilizarse (nunca
+        // seguir disminuyendo monótonamente hacia 0) mientras el
+        // jugador permanece quieto.
+        let mut session = new_test_session_for_the_corner_dead_zone();
+
+        let attack_range = BLOCK_SIZE as f32 * DEALER_ATTACK_RANGE_CELLS;
+
+        for _ in 0..400 {
+            session.update_entities(0.1, BLOCK_SIZE);
+
+            if distance_to_player(&session, 0) <= attack_range {
+                break;
+            }
+        }
+
+        assert!(distance_to_player(&session, 0) <= attack_range);
+
+        let mut previous_distance = distance_to_player(&session, 0);
+
+        let mut ever_shrank_after_stabilizing = false;
+
+        for _ in 0..100 {
+            session.update_entities(0.1, BLOCK_SIZE);
+
+            let current_distance = distance_to_player(&session, 0);
+
+            // Un pequeño margen de asentamiento (el cuadro en que
+            // entra en rango puede seguir moviéndose ese único
+            // cuadro): a partir de ahí, la distancia no debe seguir
+            // reduciéndose cuadro a cuadro.
+            if current_distance < previous_distance - 0.01 {
+                ever_shrank_after_stabilizing = true;
+            }
+
+            previous_distance = current_distance;
+        }
+
+        assert!(
+            !ever_shrank_after_stabilizing,
+            "la distancia al jugador siguió disminuyendo cuadro a cuadro tras entrar en rango"
+        );
+    }
+
+    #[test]
+    fn single_dealer_in_a_ninety_degree_corridor_can_still_reach_and_attack() {
+        // Corredor en Z/L de una sola celda de ancho: el Dealer debe
+        // recorrer DOS giros de 90° reales (nunca una habitación
+        // abierta) para alcanzar al jugador.
+        let map = "\
+#######
+#e    #
+##### #
+#p   g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        // Jugador desplazado hacia la esquina de SU celda más alejada
+        // de por dónde llega el Dealer (que entra desde arriba-
+        // izquierda tras el segundo giro).
+        let cell_center = session.player.pos;
+        session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400)
+            .expect("un único Dealer debe poder rodear la esquina de 90° y atacar");
+
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    #[test]
+    fn two_dealers_from_perpendicular_corridors_never_leave_the_player_invulnerable() {
+        // Sala abierta con el jugador cerca de una esquina de su
+        // propia celda; un Dealer se aproxima por el eje horizontal,
+        // el otro por el eje vertical — exactamente la geometría en
+        // "V"/intersección de 90° descrita en el reporte.
+        let map = "\
+#############
+#p g        #
+#           #
+#        e  #
+#           #
+e           #
+#############
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        assert_eq!(session.entities().len(), 2);
+
+        let cell_center = Vector2::new(6.0 * 48.0 + 24.0, 3.0 * 48.0 + 24.0);
+        session.player.pos = Vector2::new(cell_center.x - 17.0, cell_center.y - 17.0);
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400).expect(
+            "al menos uno de los dos Dealers perpendiculares debe poder atacar; el jugador \
+             nunca debe quedar invulnerable en una intersección de 90°",
+        );
+
+        assert!(session.player_health() < health_before);
+    }
+
+    #[test]
+    fn three_to_five_dealers_at_an_intersection_are_not_all_frozen() {
+        // Sala abierta con 4 Dealers rodeando al jugador desde
+        // distintas direcciones — una "plaga" en intersección.
+        let map = "\
+###############
+#p g          #
+#             #
+e             #
+#      e      #
+#             #
+#            e#
+e             #
+###############
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        assert_eq!(session.entities().len(), 4);
+
+        let cell_center = Vector2::new(6.0 * 48.0 + 24.0, 4.0 * 48.0 + 24.0);
+        session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400)
+            .expect("con 3-5 Dealers rodeando la intersección, al menos uno debe poder atacar");
+
+        assert!(session.player_health() < health_before);
+
+        // Ningún Dealer debería quedar "congelado" en un limbo
+        // Alert-sin-daño indefinido: tras suficiente tiempo adicional,
+        // al menos uno vuelve a poder golpear (el cooldown de 0.9s no
+        // deja al jugador permanentemente a salvo).
+        let health_after_first_hit = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400)
+            .expect("un segundo golpe debe seguir siendo posible tras el primero");
+
+        assert!(session.player_health() < health_after_first_hit);
+    }
+
+    #[test]
+    fn dealer_never_attacks_through_a_straight_wall() {
+        // Jugador y Dealer en columnas adyacentes separadas por una
+        // pared completa — ninguna corrección de rango debe permitir
+        // que esto ataque.
+        let map = "\
+#####
+#p#e#
+#g# #
+#####
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        for _ in 0..400 {
+            session.update_entities(0.1, BLOCK_SIZE);
+            session.update_hit_flash(0.1);
+
+            let damage = session.process_dealer_attacks(0.1, BLOCK_SIZE);
+
+            assert_eq!(
+                damage, 0,
+                "un Dealer separado por una pared completa nunca debe hacer daño"
+            );
+        }
+
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn dealer_never_attacks_through_a_diagonal_corner_wall() {
+        // "P█ / █E": jugador y Dealer diagonalmente adyacentes, con
+        // una esquina sólida separándolos por completo (ninguno de
+        // los dos vecinos cardinales está abierto en ningún lado).
+        let map = "\
+#####
+#p# #
+#g#e#
+#####
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        // Confirma que la distancia euclidiana real (celdas
+        // diagonalmente adyacentes) excede el rango de ataque por
+        // construcción geométrica, nunca por casualidad.
+        let dx = session.entities()[0].position().x - session.player.pos.x;
+        let dy = session.entities()[0].position().y - session.player.pos.y;
+        assert!((dx * dx + dy * dy).sqrt() > 36.0);
+
+        for _ in 0..400 {
+            session.update_entities(0.1, BLOCK_SIZE);
+            session.update_hit_flash(0.1);
+
+            let damage = session.process_dealer_attacks(0.1, BLOCK_SIZE);
+
+            assert_eq!(
+                damage, 0,
+                "un Dealer separado por una esquina sólida en diagonal nunca debe hacer daño"
+            );
+        }
+
+        assert_eq!(session.player_health(), 100);
+    }
+
+    #[test]
+    fn corpses_around_the_player_do_not_prevent_a_corner_approach_from_attacking() {
+        // Combina el escenario de cadáveres (tarea anterior) con la
+        // geometría de esquina de 90° de esta tarea: varios cadáveres
+        // en la celda del jugador no deben impedir que un Dealer VIVO
+        // que llega desde un corredor perpendicular alcance y ataque.
+        let map = "\
+#######
+#e    #
+##### #
+#p   g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        let cell_center = session.player.pos;
+        session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
+
+        // Añade cadáveres directamente en la celda del jugador
+        // (simula el escenario de la tarea anterior: varios Dealers
+        // murieron justo ahí). `entities` es un campo privado de
+        // `GameSession`, accesible aquí por estar en el mismo módulo
+        // de pruebas.
+        let (spawn_row, spawn_column) = session.level.player_spawn();
+
+        for _ in 0..5 {
+            session
+                .entities
+                .push(Entity::dealer_at_cell(spawn_row, spawn_column, BLOCK_SIZE));
+
+            let last = session.entities.len() - 1;
+
+            session.damage_entity(last);
+            session.damage_entity(last);
+        }
+
+        assert_eq!(session.entities().len(), 6);
+        assert_eq!(session.entities().iter().filter(|e| e.is_dead()).count(), 5);
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400).expect(
+            "el Dealer vivo debe poder rodear la esquina y atacar con normalidad pese a los \
+             cadáveres acumulados en la celda del jugador",
+        );
+
+        assert_eq!(
+            session.player_health(),
+            health_before - DEALER_ATTACK_DAMAGE
+        );
+    }
+
+    #[test]
+    fn hand_two_dealers_at_a_corner_attack_with_the_same_correct_behavior() {
+        let map = "\
+#########
+#p      #
+#       #
+#      g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        // HAND I no tiene Dealers (0 marcadores 'e'): fuerza
+        // inmediatamente la transición a HAND II.
+        assert_eq!(session.entities().len(), 0);
+
+        let mut spawned_hand_two = false;
+
+        for _ in 0..300 {
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+
+            if session.hand_number() > 1 {
+                spawned_hand_two = true;
+                break;
+            }
+        }
+
+        assert!(spawned_hand_two, "HAND II debía haber comenzado");
+        assert!(!session.entities().is_empty());
+
+        // Coloca al jugador en la MISMA celda que uno de los Dealers
+        // recién generados por HAND II (`select_spawn_cells` los
+        // aleja deliberadamente del spawn original del jugador — Tarea
+        // "Dealer Hands" — así que hay que ir a buscarlo en vez de
+        // esperar a que recorra todo el mapa), desplazado hacia una
+        // esquina de esa celda: ejercita exactamente la corrección de
+        // esta tarea con un Dealer generado dinámicamente.
+        let dealer_position = session.entities()[0].position();
+
+        let dealer_cell = world_to_cell(dealer_position, BLOCK_SIZE);
+
+        let cell_center = cell_center(dealer_cell.0, dealer_cell.1, BLOCK_SIZE);
+
+        session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
+
+        let health_before = session.player_health();
+
+        simulate_until_damage(&mut session, 0.1, 400).expect(
+            "los Dealers generados por HAND II deben poder atacar con la misma corrección de \
+             esquina que los Dealers estáticos",
+        );
+
+        assert!(session.player_health() < health_before);
+    }
+
+    #[test]
+    fn cooldown_is_still_respected_after_the_corner_fix() {
+        let map = "\
+#######
+#e    #
+##### #
+#p   g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+
+        let cell_center = session.player.pos;
+        session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
+
+        let first_hit_step = simulate_until_damage(&mut session, 0.1, 400)
+            .expect("el Dealer debe alcanzar y golpear al jugador");
+
+        // Inmediatamente después del primer golpe: el cooldown
+        // (0.9s) debe seguir bloqueando un segundo golpe instantáneo.
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+
+        let _ = first_hit_step;
     }
 }

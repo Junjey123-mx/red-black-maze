@@ -109,7 +109,14 @@ const DEALER_PURSUIT_STOP_DISTANCE_CELLS: f32 = 0.05;
 /// completa, sin necesitar ningún chequeo de línea de visión nuevo:
 /// un rango de 36px no alcanza a cruzar una celda de 48px de pared
 /// en ninguna configuración recta.
-const DEALER_ATTACK_RANGE_CELLS: f32 = 0.75;
+///
+/// `pub(crate)` (en vez de privado) para que `GameSession` pueda
+/// derivar exactamente el mismo umbral al decidir cuándo el fallback
+/// de persecución "misma celda, sin siguiente paso de ruta" (corner
+/// dead zone) debe seguir empujando al Dealer hacia la posición
+/// exacta del jugador, y cuándo debe dejar de hacerlo — nunca una
+/// segunda copia del valor.
+pub(crate) const DEALER_ATTACK_RANGE_CELLS: f32 = 0.75;
 
 /// Cooldown entre ataques aceptados de un mismo Dealer, en segundos.
 const DEALER_ATTACK_COOLDOWN: f32 = 0.9;

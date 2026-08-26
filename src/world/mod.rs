@@ -20,7 +20,8 @@ mod tile;
 pub(crate) use ammo_pickup::AmmoPickup;
 pub use collision::can_occupy;
 pub(crate) use entity::{
-    Entity, EntityDamageOutcome, EntitySprite, EntityState, EntityStateTransition,
+    DEALER_ATTACK_RANGE_CELLS, Entity, EntityDamageOutcome, EntitySprite, EntityState,
+    EntityStateTransition,
 };
 pub(crate) use health_pickup::HealthPickup;
 pub use level::{Level, LevelError};
