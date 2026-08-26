@@ -311,6 +311,175 @@ pub(crate) fn render_fps(framebuffer: &mut Framebuffer, fps: u32) {
     );
 }
 
+// --- Mensajes del sistema de Hands (Dealer Hands) ---
+//
+// "THE HOUSE IS RELOADING...", "NEXT HAND IN 3/2/1...", "HAND N".
+// Escala/anclaje/paleta propios de este mensaje, deliberadamente
+// separados de `render_hud`/`render_fps` (misma filosofía de
+// composición que ya existe entre ambos).
+
+/// Ancho/alto, en píxeles lógicos, de un glifo de LETRA (distinto del
+/// glifo de DÍGITO de `DIGIT_FONT`, que sigue siendo 3 de ancho): un
+/// mensaje puede mezclar letras y dígitos en la misma línea (p. ej.
+/// "NEXT HAND IN 3..."), cada uno con su propio ancho.
+const LETTER_WIDTH: i32 = 5;
+
+/// Escala de dibujo de los mensajes de Hand — mayor que `GLYPH_SCALE`
+/// (vida/munición/FPS) porque este texto debe leerse con claridad
+/// desde el centro de la pantalla durante el gameplay activo.
+const HAND_MESSAGE_SCALE: i32 = 3;
+
+/// Margen superior del mensaje de Hand, anclado arriba-centro: no
+/// compite con el HUD de vida/munición (abajo-izquierda) ni con el
+/// contador de FPS (arriba-izquierda).
+const HAND_MESSAGE_TOP_MARGIN: i32 = 40;
+
+/// Marfil cálido, ligeramente dorado — distinto del `HUD_IVORY`
+/// neutro de vida/munición, para que el mensaje de la casa se
+/// perciba como un acento propio sin depender del `LevelTheme`
+/// activo (aparece en los cuatro niveles por igual).
+const HAND_MESSAGE_COLOR: Color = Color::new(224, 196, 120, 255);
+
+/// Fuente bitmap 5x7 mínima, privada de este módulo: solo las letras
+/// que los mensajes de Hand requieren realmente (T,H,E,O,U,S,I,R,L,
+/// D,A,N,X,V,G) más un punto. Mismo patrón ya establecido por
+/// `welcome.rs`/`level_select.rs`/`victory.rs`/`pause.rs`/
+/// `defeat.rs`: cada pantalla posee su propia fuente mínima privada,
+/// deliberadamente sin compartir implementación entre ellas. Los
+/// dígitos NO se redefinen aquí: `draw_hand_message` reutiliza
+/// `DIGIT_FONT` (3 de ancho) ya existente para cualquier carácter
+/// `'0'..='9'` dentro del mismo mensaje.
+fn letter_glyph_rows(character: char) -> [u8; 7] {
+    match character {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
+
+        // El espacio, y cualquier carácter no soportado por esta
+        // fuente mínima, se dibuja en blanco en vez de entrar en
+        // pánico o intentar una fuente completa.
+        _ => [0; 7],
+    }
+}
+
+/// Ancho total, en píxeles ya escalados, que ocupará `text` al
+/// dibujarse con `draw_hand_message`: cada dígito ASCII pesa
+/// `DIGIT_WIDTH`, cualquier otro carácter (letra, punto, espacio)
+/// pesa `LETTER_WIDTH`.
+fn hand_message_width(text: &str, scale: i32) -> i32 {
+    let mut width = 0;
+
+    for character in text.chars() {
+        let glyph_width = if character.is_ascii_digit() {
+            DIGIT_WIDTH
+        } else {
+            LETTER_WIDTH
+        };
+
+        width += (glyph_width + GLYPH_GAP) * scale;
+    }
+
+    if width > 0 {
+        width -= GLYPH_GAP * scale;
+    }
+
+    width
+}
+
+/// Dibuja un mensaje del sistema de Hands, centrado horizontalmente,
+/// anclado cerca de la parte superior del framebuffer.
+///
+/// Presentación pura: recibe el texto ya resuelto por el llamador
+/// (`App`, a partir de `game::hand::HandHudMessage`) — este módulo no
+/// conoce `GameSession`/`HandState`, solo dibuja la cadena que se le
+/// da, mezclando la fuente de letras local con `DIGIT_FONT` ya
+/// existente para cualquier dígito embebido (p. ej. "NEXT HAND IN
+/// 3...").
+pub(crate) fn render_hand_message(framebuffer: &mut Framebuffer, text: &str) {
+    let framebuffer_width = framebuffer.width();
+
+    if framebuffer_width <= 0 || text.is_empty() {
+        return;
+    }
+
+    let content_width = hand_message_width(text, HAND_MESSAGE_SCALE);
+
+    let mut cursor_x = (framebuffer_width - content_width) / 2;
+
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            let digit = character.to_digit(10).unwrap_or(0) as u8;
+
+            draw_glyph(
+                framebuffer,
+                &DIGIT_FONT[digit as usize % 10],
+                DIGIT_WIDTH,
+                cursor_x,
+                HAND_MESSAGE_TOP_MARGIN,
+                HAND_MESSAGE_COLOR,
+            );
+
+            cursor_x += (DIGIT_WIDTH + GLYPH_GAP) * HAND_MESSAGE_SCALE;
+        } else {
+            let rows = letter_glyph_rows(character);
+
+            draw_glyph(
+                framebuffer,
+                &rows,
+                LETTER_WIDTH,
+                cursor_x,
+                HAND_MESSAGE_TOP_MARGIN,
+                HAND_MESSAGE_COLOR,
+            );
+
+            cursor_x += (LETTER_WIDTH + GLYPH_GAP) * HAND_MESSAGE_SCALE;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -114,6 +114,14 @@ const DEALER_ATTACK_RANGE_CELLS: f32 = 0.75;
 /// Cooldown entre ataques aceptados de un mismo Dealer, en segundos.
 const DEALER_ATTACK_COOLDOWN: f32 = 0.9;
 
+/// Tarea "Dealer Hands": segundos de tiempo de PARTIDA (nunca reloj
+/// absoluto — se congela automáticamente durante `Paused`, exactamente
+/// como el resto de temporizadores de esta entidad) que un cadáver
+/// permanece en la colección activa de entidades antes de ser
+/// elegible para eliminación definitiva. Única fuente de verdad de
+/// este valor en todo el proyecto.
+pub(crate) const CORPSE_DESPAWN_SECONDS: f32 = 15.0;
+
 /// Entidad de dominio del mundo/juego: posición, vida, estado de
 /// comportamiento, identidad visual y radio de impacto.
 ///
@@ -132,6 +140,15 @@ pub(crate) struct Entity {
     /// PARTICULAR, pueda volver a atacar. Cooldown por-entidad — no
     /// existe ningún timer global compartido entre Dealers.
     attack_cooldown_remaining: f32,
+
+    /// Tiempo de PARTIDA transcurrido desde que esta entidad murió
+    /// (`0.0` mientras está viva). Solo avanza vía
+    /// `advance_corpse_timer`, llamado exclusivamente para entidades
+    /// `Dead` — nunca es un reloj de pared independiente del bucle de
+    /// actualización, así que `Paused` lo congela automáticamente
+    /// (esa llamada solo ocurre dentro de `update_playing`, igual que
+    /// el resto de temporizadores de partida).
+    corpse_elapsed: f32,
 }
 
 impl Entity {
@@ -153,6 +170,7 @@ impl Entity {
             hit_radius: DEALER_HIT_RADIUS,
             hit_time_remaining: 0.0,
             attack_cooldown_remaining: 0.0,
+            corpse_elapsed: 0.0,
         }
     }
 
@@ -185,6 +203,36 @@ impl Entity {
     /// Indica si la entidad está muerta.
     pub(crate) fn is_dead(&self) -> bool {
         self.state == EntityState::Dead
+    }
+
+    /// Avanza el temporizador de cadáver. No-op absoluto mientras la
+    /// entidad sigue viva (`corpse_elapsed` nunca avanza fuera de
+    /// `Dead`, así que revivir conceptualmente — cosa que hoy no
+    /// ocurre, `Dead` es terminal — nunca heredaría tiempo viejo), y
+    /// también no-op para `delta_time` no finito/no positivo, mismo
+    /// patrón que el resto de temporizadores de esta entidad.
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde dentro del update jugable
+    /// (`GameSession::update_entities`, a su vez solo invocado por
+    /// `App::update_playing`) para que `Paused` lo congele
+    /// automáticamente sin ningún caso especial — mismo patrón ya
+    /// establecido para cooldowns/persecución/flash de daño.
+    pub(crate) fn advance_corpse_timer(&mut self, delta_time: f32) {
+        if self.state != EntityState::Dead {
+            return;
+        }
+
+        if delta_time.is_finite() && delta_time > 0.0 {
+            self.corpse_elapsed += delta_time;
+        }
+    }
+
+    /// `true` una vez que un cadáver ya cumplió
+    /// `CORPSE_DESPAWN_SECONDS` de tiempo de partida visible. `false`
+    /// para cualquier entidad viva, sin importar cuánto tiempo lleve
+    /// existiendo (`corpse_elapsed` permanece en `0.0` mientras vive).
+    pub(crate) fn should_despawn(&self) -> bool {
+        self.state == EntityState::Dead && self.corpse_elapsed >= CORPSE_DESPAWN_SECONDS
     }
 
     /// Aplica daño controlado a la entidad y reporta el resultado
@@ -1100,5 +1148,118 @@ mod tests {
         assert!(!entity.attempt_attack(player_position, 0.0, BLOCK_SIZE));
         assert!(!entity.attempt_attack(player_position, -1.0, BLOCK_SIZE));
         assert!(!entity.attempt_attack(player_position, f32::NAN, BLOCK_SIZE));
+    }
+
+    // --- Dealer Hands: temporizador de cadáver ---
+
+    #[test]
+    fn corpse_timer_does_not_advance_while_alive() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.advance_corpse_timer(20.0);
+
+        assert!(!entity.should_despawn());
+    }
+
+    #[test]
+    fn corpse_is_not_despawnable_before_the_full_duration() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.apply_damage(1000);
+        assert!(entity.is_dead());
+
+        entity.advance_corpse_timer(CORPSE_DESPAWN_SECONDS - 0.1);
+
+        assert!(!entity.should_despawn());
+    }
+
+    #[test]
+    fn corpse_becomes_despawnable_at_or_after_the_full_duration() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.apply_damage(1000);
+        assert!(entity.is_dead());
+
+        entity.advance_corpse_timer(CORPSE_DESPAWN_SECONDS);
+
+        assert!(entity.should_despawn());
+    }
+
+    #[test]
+    fn corpse_timer_accumulates_across_many_small_updates() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.apply_damage(1000);
+
+        for _ in 0..935 {
+            entity.advance_corpse_timer(0.016);
+        }
+
+        // 935 * 0.016 = 14.96s: todavía no llega a 15.0s.
+        assert!(!entity.should_despawn());
+
+        entity.advance_corpse_timer(0.05);
+
+        assert!(entity.should_despawn());
+    }
+
+    #[test]
+    fn corpse_timer_ignores_non_finite_or_non_positive_delta_time() {
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.apply_damage(1000);
+
+        entity.advance_corpse_timer(0.0);
+        entity.advance_corpse_timer(-5.0);
+        entity.advance_corpse_timer(f32::NAN);
+        entity.advance_corpse_timer(f32::INFINITY);
+
+        assert!(!entity.should_despawn());
+    }
+
+    #[test]
+    fn pausing_freezes_the_corpse_timer_because_it_never_advances_without_an_explicit_call() {
+        // No hay reloj de pared: `corpse_elapsed` SOLO avanza cuando
+        // `advance_corpse_timer` es invocado explícitamente (desde
+        // `update_playing`, nunca desde `update_paused`). Simular
+        // "20 segundos reales de Pause" es, en la práctica, no
+        // llamar a `advance_corpse_timer` en absoluto durante ese
+        // intervalo — exactamente lo que esta prueba demuestra no
+        // moviendo el timer entre dos verificaciones.
+        let mut entity = Entity::dealer_at_cell(0, 0, BLOCK_SIZE);
+
+        entity.apply_damage(1000);
+        entity.advance_corpse_timer(7.0);
+
+        // "Pause": ninguna llamada a advance_corpse_timer aquí,
+        // sin importar cuánto tiempo real pase.
+        assert!(!entity.should_despawn());
+
+        // "Resume": retoma exactamente en 7.0s, no en 7.0 + tiempo
+        // de pausa.
+        entity.advance_corpse_timer(CORPSE_DESPAWN_SECONDS - 7.0 - 0.01);
+
+        assert!(!entity.should_despawn());
+    }
+
+    #[test]
+    fn dead_dealer_never_pursues_or_attacks_regardless_of_corpse_age() {
+        let (mut entity, player_position) = alert_dealer_in_range();
+
+        entity.apply_damage(1000);
+        assert!(entity.is_dead());
+
+        entity.advance_corpse_timer(10.0);
+
+        let start_position = entity.position();
+
+        let target = Vector2::new(start_position.x + 48.0, start_position.y);
+
+        entity.update(player_position, 0.5, BLOCK_SIZE, Some(target));
+
+        assert_eq!(entity.position().x, start_position.x);
+        assert_eq!(entity.position().y, start_position.y);
+        assert!(!entity.attempt_attack(player_position, 0.5, BLOCK_SIZE));
+        assert_eq!(entity.apply_damage(50), EntityDamageOutcome::None);
     }
 }

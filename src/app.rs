@@ -1,6 +1,6 @@
 use crate::audio::{AudioManager, MusicTrack, SoundEffect, music_track_for_theme};
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
-use crate::game::{GameSession, GameState, ViewMode};
+use crate::game::{GameSession, GameState, HandHudMessage, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
 use crate::raycasting::{HitscanHit, HitscanTarget, cast_hitscan};
@@ -11,8 +11,8 @@ use crate::rendering::map_2d::{
 };
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
-    render_fps, render_hit_flash_overlay, render_hud, render_minimap, render_weapon,
-    render_world_sprites,
+    render_fps, render_hand_message, render_hit_flash_overlay, render_hud, render_minimap,
+    render_weapon, render_world_sprites,
 };
 use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
@@ -490,6 +490,25 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Dealer Hands: countdown de "The House is reloading" y
+         * spawn de la siguiente Hand cuando corresponda. Llamado
+         * exclusivamente aquí, dentro de `update_playing` (mismo
+         * patrón que `process_dealer_attacks`/
+         * `collect_nearby_ammo_pickups`), para que Pause/Victory/
+         * Defeat lo congelen automáticamente sin ningún caso
+         * especial: esos estados simplemente no vuelven a invocar
+         * `update_playing`. `level_cap`/`use_clusters` son identidad
+         * del NIVEL (LevelManager), no de la sesión — `GameSession`
+         * los recibe como parámetros y no conoce `LevelTheme`.
+         */
+        self.session.update_hand_state(
+            window.get_frame_time(),
+            BLOCK_SIZE,
+            self.level_manager.current_dealer_cap(),
+            self.level_manager.current_is_procedural(),
+        );
+
+        /*
          * Tarea 46.B: resolución terminal ÚNICA de este cuadro, ahora
          * que tanto `reached_goal` (recordado arriba, antes de
          * combate) como el daño de Dealer de ESTE MISMO cuadro (justo
@@ -914,7 +933,9 @@ impl<'aud> App<'aud> {
     fn replace_session_with_level(&mut self, level: Level) {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        self.session = GameSession::new(level, player, BLOCK_SIZE);
+        let hand_seed = self.level_manager.current_hand_seed();
+
+        self.session = GameSession::new(level, player, BLOCK_SIZE, hand_seed);
 
         self.state = GameState::Playing;
 
@@ -1121,6 +1142,24 @@ impl<'aud> App<'aud> {
         render_fps(framebuffer, self.current_fps);
 
         /*
+         * Dealer Hands: "THE HOUSE IS RELOADING...", cuenta
+         * regresiva, y el banner breve "HAND N". Visible en ambas
+         * vistas (World3D/Map2D), como el contador de FPS, pero SOLO
+         * mientras la sesión sigue activa detrás (Playing/Paused) —
+         * nunca en Welcome/LevelSelect/Victory/Defeat, donde
+         * `self.session` puede seguir conteniendo el `HandState`
+         * congelado de la última partida. `App` resuelve el texto
+         * exacto a partir de `HandHudMessage` (dominio puro, sin
+         * vocabulario de presentación) — `rendering::hud` solo dibuja
+         * la cadena ya resuelta.
+         */
+        if matches!(self.state, GameState::Playing | GameState::Paused) {
+            if let Some(message) = hand_message_text(self.session.hand_hud_message()) {
+                render_hand_message(framebuffer, &message);
+            }
+        }
+
+        /*
          * Tarea 45: flash de daño al jugador, dibujado AL FINAL de
          * todo lo demás (mundo/arma/HUD/minimapa/FPS) para quedar
          * siempre por encima, igual que el contador de FPS. Se
@@ -1132,6 +1171,61 @@ impl<'aud> App<'aud> {
             render_hit_flash_overlay(framebuffer);
         }
     }
+}
+
+/// Traduce el mensaje de dominio puro del sistema de Hands
+/// (`HandHudMessage`, sin vocabulario de presentación) al texto EXACTO
+/// que debe mostrarse — únicamente el lenguaje de la casa (sección
+/// 30): nunca "WAVE"/"ENEMIES RESPAWNING". `None` cuando no hay nada
+/// que mostrar este cuadro.
+fn hand_message_text(message: HandHudMessage) -> Option<String> {
+    match message {
+        HandHudMessage::None => None,
+
+        HandHudMessage::HouseIsReloading => Some("THE HOUSE IS RELOADING...".to_string()),
+
+        HandHudMessage::NextHandIn(remaining) => Some(format!("NEXT HAND IN {remaining}...")),
+
+        HandHudMessage::HandBanner(hand_number) => {
+            Some(format!("HAND {}", roman_numeral(hand_number)))
+        }
+    }
+}
+
+/// Numeral romano de `value` (`1` -> "I", `2` -> "II", ...),
+/// puramente visual — pertenece a esta pantalla, no a `GameSession`/
+/// `HandState`, mismo principio que las etiquetas romanas privadas de
+/// `ui::level_select`. Notación subtractiva estándar; `0` produce una
+/// cadena vacía (no debería alcanzar `HandBanner` con `hand_number ==
+/// 0` en la práctica, `HandState` siempre arranca en `1`).
+fn roman_numeral(mut value: usize) -> String {
+    const NUMERALS: [(usize, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+
+    let mut result = String::new();
+
+    for &(magnitude, symbol) in &NUMERALS {
+        while value >= magnitude {
+            result.push_str(symbol);
+
+            value -= magnitude;
+        }
+    }
+
+    result
 }
 
 /// Punto de entrada de la aplicación.
@@ -1286,7 +1380,7 @@ pub fn run() {
 
     let mut app = App::new(
         level_manager,
-        GameSession::new(level, player, BLOCK_SIZE),
+        GameSession::new(level, player, BLOCK_SIZE, 0),
         texture_manager,
         welcome,
         level_select,

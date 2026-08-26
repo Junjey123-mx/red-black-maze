@@ -5,6 +5,7 @@ mod level;
 mod level_generator;
 mod level_manager;
 mod pathfinding;
+mod rng;
 mod tile;
 
 /// `can_occupy` y `Level`/`LevelError` se re-exportan como `pub`
@@ -24,4 +25,5 @@ pub use level::{Level, LevelError};
 pub(crate) use level_manager::LevelTheme;
 pub use level_manager::{LevelManager, LevelManagerError};
 pub(crate) use pathfinding::DistanceField;
+pub(crate) use rng::Rng;
 pub(crate) use tile::Tile;

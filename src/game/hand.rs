@@ -1,0 +1,884 @@
+use std::collections::HashSet;
+
+use raylib::prelude::Vector2;
+
+use crate::world::{DistanceField, Level, Rng};
+
+/// Límite superior ABSOLUTO de Dealers vivos simultáneos, válido para
+/// los cuatro niveles: ningún `dealer_cap` por nivel puede superarlo
+/// (verificado en `world::level_manager::tests`).
+pub(crate) const GLOBAL_HARD_DEALER_CAP: usize = 52;
+
+/// Duración total de la fase "The House is reloading" (mensaje +
+/// cuenta regresiva 3-2-1), en segundos de tiempo de PARTIDA.
+const RELOADING_PHASE_DURATION: f32 = 4.0;
+
+/// Fin del tramo "THE HOUSE IS RELOADING..." dentro de la fase
+/// (0.0-1.0s transcurridos).
+const RELOADING_MESSAGE_END: f32 = 1.0;
+/// Fin del tramo "NEXT HAND IN 3..." (1.0-2.0s transcurridos).
+const COUNTDOWN_3_END: f32 = 2.0;
+/// Fin del tramo "NEXT HAND IN 2..." (2.0-3.0s transcurridos).
+const COUNTDOWN_2_END: f32 = 3.0;
+/// El resto (3.0-4.0s transcurridos) es "NEXT HAND IN 1...".
+
+/// Duración del banner "HAND N" mostrado brevemente tras spawnear una
+/// nueva Hand (0.8-1.2s pedido; se usa el punto medio).
+const HAND_BANNER_DURATION: f32 = 1.0;
+
+/// Distancia mínima navegable (en pasos de `DistanceField`, no
+/// euclidiana) entre el spawn de un Dealer de una Hand nueva y la
+/// posición actual del jugador — misma filosofía y mismo valor que
+/// `world::level_generator::SAFE_SPAWN_DISTANCE_CELLS` usa para la
+/// generación inicial de "The Dealer's True Maze" (sección 13:
+/// "reutiliza esa filosofía").
+const SAFE_RESPAWN_DISTANCE_CELLS: u32 = 6;
+
+/// Umbrales de distancia de seguridad, probados en orden de mayor a
+/// menor: si el más estricto no produce suficientes candidatos (nivel
+/// pequeño, mucho ya ocupado), se relaja progresivamente en vez de
+/// fallar — nunca se bloquea un respawn completo por falta de
+/// celdas perfectamente seguras.
+const SAFE_DISTANCE_FALLBACKS: [u32; 4] = [SAFE_RESPAWN_DISTANCE_CELLS, 4, 2, 0];
+
+/// Radio (en celdas) dentro del cual una celda candidata se considera
+/// potencialmente "a la vista" del jugador para la heurística barata
+/// de la sección 14 — nunca un raycast real contra las paredes, solo
+/// una aproximación distancia+cono.
+const VISIBILITY_RADIUS_CELLS: f32 = 6.0;
+
+/// Coseno del semi-ángulo del cono de visión aproximado (60°): una
+/// celda dentro de `VISIBILITY_RADIUS_CELLS` Y dentro de este cono
+/// respecto a hacia dónde mira el jugador se considera "visible" y
+/// se evita como spawn mientras existan alternativas.
+const VISIBILITY_CONE_COS: f32 = 0.5;
+
+/// Disparos necesarios para eliminar un Dealer
+/// (`game::session::DEALER_DAMAGE_PER_HIT` / `world::entity::
+/// DEALER_MAX_HEALTH` = 50/100 = 2), duplicado aquí SOLO como
+/// literal de cálculo de presupuesto de munición — mismo patrón ya
+/// documentado en `world::level_generator`.
+const SHOTS_TO_KILL_ONE_DEALER: u32 = 2;
+
+/// Margen por errores de puntería (sección 19), igual que en la
+/// generación inicial procedural.
+const MISS_MARGIN_MULTIPLIER: f32 = 1.5;
+
+/// Munición de reserva otorgada por cada `AmmoPickup`
+/// (`game::session::AMMO_PICKUP_AMOUNT`), duplicado aquí por el mismo
+/// motivo que las constantes anteriores.
+const AMMO_PER_PICKUP: u32 = 6;
+
+/// Tope de pickups adicionales inyectados de una sola vez al iniciar
+/// una Hand, para no inundar el nivel de munición aunque el déficit
+/// calculado sea enorme.
+const MAX_EXTRA_PICKUPS_PER_HAND: usize = 6;
+
+/// Fase temporal del sistema de Hands. Deliberadamente NO es un
+/// `GameState`: el jugador sigue jugando con normalidad durante
+/// `Reloading` (sección 8) — es solo una sub-fase dentro de
+/// `Playing`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum HandPhase {
+    Active,
+    Reloading { countdown: f32 },
+}
+
+/// Mensaje HUD que el sistema de Hands quiere mostrar este cuadro, o
+/// `None` si no hay nada que mostrar. Dominio puro: no conoce
+/// `Framebuffer` ni ninguna fuente/glifo — `rendering::hud` decide
+/// CÓMO dibujarlo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandHudMessage {
+    None,
+    HouseIsReloading,
+    NextHandIn(u32),
+    HandBanner(usize),
+}
+
+/// Estado completo del sistema de Hands para UNA `GameSession`.
+///
+/// Pertenece a la sesión/nivel (Tarea "Dealer Hands", sección 24),
+/// nunca a `AudioManager`/rendering/`App`. `GameSession::new` siempre
+/// arranca en `HAND I` (`hand_number: 1`, `phase: Active`) — Retry y
+/// cambio de nivel reconstruyen una `GameSession` enteramente nueva
+/// (mismo mecanismo ya establecido para vida/arma/pickups desde Tarea
+/// 30), así que este estado nunca sobrevive entre partidas sin que
+/// nadie tenga que resetearlo campo por campo.
+pub(crate) struct HandState {
+    hand_number: usize,
+    previous_spawn_count: usize,
+    phase: HandPhase,
+    banner_remaining: f32,
+}
+
+impl HandState {
+    /// Construye el estado inicial: HAND I, con `initial_dealer_count`
+    /// Dealers ya colocados por el nivel (estático o procedural) —
+    /// esta llamada NO spawnea nada, solo registra cuántos había para
+    /// que la Hand II sepa a partir de qué número doblar.
+    pub(crate) fn new(initial_dealer_count: usize) -> Self {
+        Self {
+            hand_number: 1,
+            previous_spawn_count: initial_dealer_count,
+            phase: HandPhase::Active,
+            banner_remaining: 0.0,
+        }
+    }
+
+    pub(crate) fn hand_number(&self) -> usize {
+        self.hand_number
+    }
+
+    /// Solo usado por pruebas (verificar la fase interna
+    /// directamente, sin pasar por `hud_message`): no forma parte de
+    /// la API que `GameSession`/`App` consumen en producción, que
+    /// solo necesitan `hud_message`/`tick`.
+    #[cfg(test)]
+    pub(crate) fn phase(&self) -> HandPhase {
+        self.phase
+    }
+
+    /// Mensaje HUD correspondiente al instante actual.
+    pub(crate) fn hud_message(&self) -> HandHudMessage {
+        match self.phase {
+            HandPhase::Reloading { countdown } => {
+                let elapsed = RELOADING_PHASE_DURATION - countdown;
+
+                if elapsed < RELOADING_MESSAGE_END {
+                    HandHudMessage::HouseIsReloading
+                } else if elapsed < COUNTDOWN_3_END {
+                    HandHudMessage::NextHandIn(3)
+                } else if elapsed < COUNTDOWN_2_END {
+                    HandHudMessage::NextHandIn(2)
+                } else {
+                    HandHudMessage::NextHandIn(1)
+                }
+            }
+
+            HandPhase::Active => {
+                if self.banner_remaining > 0.0 {
+                    HandHudMessage::HandBanner(self.hand_number)
+                } else {
+                    HandHudMessage::None
+                }
+            }
+        }
+    }
+
+    /// Avanza el sistema de Hands un cuadro. Debe llamarse
+    /// EXCLUSIVAMENTE desde el update jugable (`App::update_playing`,
+    /// vía `GameSession`) para que `Paused`/`Victory`/`Defeat` lo
+    /// congelen automáticamente sin ningún caso especial — mismo
+    /// patrón ya establecido para el resto de temporizadores de
+    /// partida (nunca reloj de pared).
+    ///
+    /// Retorna `Some(next_hand_dealer_count)` EXACTAMENTE en el
+    /// cuadro en que corresponde spawnear la siguiente Hand (el
+    /// llamador es quien realmente coloca las entidades); `None` en
+    /// cualquier otro cuadro.
+    ///
+    /// `alive_dealer_count` es la fuente de verdad de "la Hand
+    /// terminó" (sección 6): nunca `entities.len()`/`is_empty()`,
+    /// que seguirían contando cadáveres durante sus 15s de despawn.
+    pub(crate) fn tick(
+        &mut self,
+        delta_time: f32,
+        alive_dealer_count: usize,
+        level_cap: usize,
+    ) -> Option<usize> {
+        if !delta_time.is_finite() || delta_time <= 0.0 {
+            return None;
+        }
+
+        // El límite superior ABSOLUTO nunca depende de que el
+        // llamador haya pasado un `level_cap` correcto: se aplica
+        // aquí también, como última línea de defensa.
+        let level_cap = level_cap.min(GLOBAL_HARD_DEALER_CAP);
+
+        match &mut self.phase {
+            HandPhase::Active => {
+                if self.banner_remaining > 0.0 {
+                    self.banner_remaining = (self.banner_remaining - delta_time).max(0.0);
+                }
+
+                if alive_dealer_count == 0 {
+                    self.phase = HandPhase::Reloading {
+                        countdown: RELOADING_PHASE_DURATION,
+                    };
+                }
+
+                None
+            }
+
+            HandPhase::Reloading { countdown } => {
+                *countdown -= delta_time;
+
+                if *countdown > 0.0 {
+                    return None;
+                }
+
+                // La progresión nunca depende de `previous_spawn_count`
+                // en 0 (un nivel estático hipotético sin Dealers
+                // iniciales no debe quedar atascado doblando 0 para
+                // siempre).
+                let next_count = (self.previous_spawn_count.max(1) * 2).min(level_cap);
+
+                self.hand_number += 1;
+                self.previous_spawn_count = next_count;
+                self.phase = HandPhase::Active;
+                self.banner_remaining = HAND_BANNER_DURATION;
+
+                Some(next_count)
+            }
+        }
+    }
+}
+
+/// Deriva una semilla determinista para la Hand `hand_number` a
+/// partir de la semilla de sesión (sección 17): "misma level seed +
+/// mismo hand index -> mismo layout". Mismo patrón exacto que
+/// `world::level_generator` ya usa para derivar semillas de reintento
+/// a partir de una semilla base.
+fn derive_hand_seed(session_seed: u64, hand_number: usize) -> u64 {
+    session_seed ^ (hand_number as u64).wrapping_mul(0x9E3779B97F4A7C15)
+}
+
+fn world_to_cell(position: Vector2, block_size: usize) -> (usize, usize) {
+    if block_size == 0 || !position.x.is_finite() || !position.y.is_finite() {
+        return (0, 0);
+    }
+
+    let column = (position.x / block_size as f32).floor().max(0.0) as usize;
+
+    let row = (position.y / block_size as f32).floor().max(0.0) as usize;
+
+    (row, column)
+}
+
+/// `true` si la celda de caracteres `(row, column)` cae dentro del
+/// cono de visión aproximado del jugador — heurística barata
+/// (distancia + producto punto), nunca un raycast real (sección 14:
+/// "no necesitas implementar un sistema extremadamente costoso").
+fn is_immediately_visible(
+    row: usize,
+    column: usize,
+    player_position: Vector2,
+    player_facing: f32,
+    block_size: usize,
+) -> bool {
+    let half_block = block_size as f32 / 2.0;
+
+    let cell_x = column as f32 * block_size as f32 + half_block;
+    let cell_y = row as f32 * block_size as f32 + half_block;
+
+    let dx = cell_x - player_position.x;
+    let dy = cell_y - player_position.y;
+
+    let distance = dx.hypot(dy);
+
+    let visibility_radius = block_size as f32 * VISIBILITY_RADIUS_CELLS;
+
+    if distance > visibility_radius || distance <= f32::EPSILON {
+        return false;
+    }
+
+    let facing_x = player_facing.cos();
+    let facing_y = player_facing.sin();
+
+    let dot = (dx / distance) * facing_x + (dy / distance) * facing_y;
+
+    dot >= VISIBILITY_CONE_COS
+}
+
+/// Recolecta hasta `count` celdas válidas para spawnear Dealers de
+/// una Hand nueva (secciones 12-15): transitables, no ocupadas
+/// (jugador/meta/pickup/otro Dealer/cadáver todavía visible — todo
+/// ya viene precomputado en `occupied`), a distancia navegable segura
+/// del jugador, priorizando celdas fuera de visión inmediata.
+///
+/// `use_clusters` reproduce, cuando es `true` (solo "The Dealer's
+/// True Maze"), la misma filosofía de individuales/grupos/plagas que
+/// la generación inicial procedural (sección 15/16); en `false`
+/// (niveles estáticos) simplemente dispersa Dealers individuales por
+/// las celdas elegibles ya barajadas.
+///
+/// Nunca promete más posiciones de las que el mapa realmente permite:
+/// si `count` excede las celdas elegibles disponibles, retorna menos.
+pub(crate) fn select_spawn_cells(
+    level: &Level,
+    player_position: Vector2,
+    player_facing: f32,
+    block_size: usize,
+    occupied: &HashSet<(usize, usize)>,
+    count: usize,
+    use_clusters: bool,
+    seed: u64,
+) -> Vec<(usize, usize)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut rng = Rng::new(seed);
+
+    let player_cell = world_to_cell(player_position, block_size);
+
+    let distances = DistanceField::from_level(level, player_cell);
+
+    let height = level.height();
+    let width = level.width();
+
+    let mut ordered_pool = Vec::new();
+
+    for &threshold in &SAFE_DISTANCE_FALLBACKS {
+        let mut not_visible = Vec::new();
+        let mut visible = Vec::new();
+
+        for row in 0..height {
+            for column in 0..width {
+                let cell = (row, column);
+
+                if !level.is_walkable(row, column) {
+                    continue;
+                }
+
+                if cell == player_cell || occupied.contains(&cell) {
+                    continue;
+                }
+
+                let Some(distance) = distances.distance_at(row, column) else {
+                    continue;
+                };
+
+                if distance < threshold {
+                    continue;
+                }
+
+                if is_immediately_visible(row, column, player_position, player_facing, block_size) {
+                    visible.push(cell);
+                } else {
+                    not_visible.push(cell);
+                }
+            }
+        }
+
+        let total_candidates = not_visible.len() + visible.len();
+
+        if total_candidates >= count || threshold == 0 {
+            not_visible.sort();
+            visible.sort();
+
+            rng.shuffle(&mut not_visible);
+            rng.shuffle(&mut visible);
+
+            ordered_pool = not_visible;
+            ordered_pool.extend(visible);
+
+            break;
+        }
+    }
+
+    if use_clusters {
+        select_with_clusters(level, &ordered_pool, count, &mut rng)
+    } else {
+        ordered_pool.into_iter().take(count).collect()
+    }
+}
+
+/// Coloca hasta `count` posiciones agrupadas en pequeños racimos (1-2
+/// plagas de 4-6, un puñado de grupos de 2-3, el resto individuales),
+/// tomando los orígenes de racimo de `ordered_pool` (ya priorizado
+/// fuera-de-visión y barajado) — misma filosofía de distribución que
+/// `world::level_generator::try_generate` usa para la generación
+/// inicial de "The Dealer's True Maze".
+fn select_with_clusters(
+    level: &Level,
+    ordered_pool: &[(usize, usize)],
+    count: usize,
+    rng: &mut Rng,
+) -> Vec<(usize, usize)> {
+    let mut chosen: HashSet<(usize, usize)> = HashSet::new();
+    let mut result = Vec::with_capacity(count);
+
+    let plague_zone_count = if count >= 22 { 2 } else { 1 };
+
+    let mut pool_cursor = 0usize;
+
+    let place_cluster = |origin: (usize, usize),
+                         size: usize,
+                         chosen: &mut HashSet<(usize, usize)>,
+                         result: &mut Vec<(usize, usize)>| {
+        let mut placed = 0;
+
+        let mut frontier = vec![origin];
+
+        while placed < size {
+            let Some(candidate) = frontier.pop() else {
+                break;
+            };
+
+            if chosen.contains(&candidate) {
+                continue;
+            }
+
+            chosen.insert(candidate);
+            result.push(candidate);
+            placed += 1;
+
+            let neighbors: [Option<(usize, usize)>; 4] = [
+                candidate.0.checked_sub(1).map(|r| (r, candidate.1)),
+                Some((candidate.0 + 1, candidate.1)),
+                candidate.1.checked_sub(1).map(|c| (candidate.0, c)),
+                Some((candidate.0, candidate.1 + 1)),
+            ];
+
+            for neighbor in neighbors.into_iter().flatten() {
+                if level.is_walkable(neighbor.0, neighbor.1) && !chosen.contains(&neighbor) {
+                    frontier.push(neighbor);
+                }
+            }
+        }
+    };
+
+    for zone in 0..plague_zone_count {
+        if result.len() >= count {
+            break;
+        }
+
+        while pool_cursor < ordered_pool.len() && chosen.contains(&ordered_pool[pool_cursor]) {
+            pool_cursor += 1;
+        }
+
+        if pool_cursor >= ordered_pool.len() {
+            break;
+        }
+
+        let origin = ordered_pool[pool_cursor];
+        pool_cursor += 1;
+
+        let remaining_budget = count - result.len();
+
+        let size = 4 + rng.gen_range(3); // 4..=6
+
+        place_cluster(origin, size.min(remaining_budget), &mut chosen, &mut result);
+
+        let _ = zone;
+    }
+
+    let small_group_target = (count / 6).max(2);
+
+    for _ in 0..small_group_target {
+        if result.len() >= count {
+            break;
+        }
+
+        while pool_cursor < ordered_pool.len() && chosen.contains(&ordered_pool[pool_cursor]) {
+            pool_cursor += 1;
+        }
+
+        if pool_cursor >= ordered_pool.len() {
+            break;
+        }
+
+        let origin = ordered_pool[pool_cursor];
+        pool_cursor += 1;
+
+        let remaining_budget = count - result.len();
+
+        let size = 2 + rng.gen_range(2); // 2..=3
+
+        place_cluster(origin, size.min(remaining_budget), &mut chosen, &mut result);
+    }
+
+    while result.len() < count && pool_cursor < ordered_pool.len() {
+        let candidate = ordered_pool[pool_cursor];
+        pool_cursor += 1;
+
+        if chosen.contains(&candidate) {
+            continue;
+        }
+
+        chosen.insert(candidate);
+        result.push(candidate);
+    }
+
+    result
+}
+
+/// Semilla determinista de spawn para la Hand `hand_number` de una
+/// sesión con semilla base `session_seed` (sección 17). Expuesta para
+/// que `GameSession` (que orquesta cuándo llamar a `select_spawn_cells`)
+/// no tenga que reimplementar la derivación.
+pub(crate) fn spawn_seed_for_hand(session_seed: u64, hand_number: usize) -> u64 {
+    derive_hand_seed(session_seed, hand_number)
+}
+
+/// Cuántos `AmmoPickup` adicionales conviene inyectar al comenzar una
+/// Hand con `new_hand_dealer_count` Dealers, dado que el jugador ya
+/// tiene `accessible_ammo` balas alcanzables (cargador + reserva +
+/// pickups activos × munición por pickup) — sección 19. Misma fórmula
+/// que `world::level_generator::ammo_pickup_budget`, pero relativa a
+/// la munición YA disponible en vez de partir de cero.
+pub(crate) fn extra_ammo_pickups_needed(
+    new_hand_dealer_count: usize,
+    accessible_ammo: u32,
+) -> usize {
+    let shots_needed = new_hand_dealer_count as u32 * SHOTS_TO_KILL_ONE_DEALER;
+
+    let shots_with_margin = (shots_needed as f32 * MISS_MARGIN_MULTIPLIER).ceil() as u32;
+
+    let deficit = shots_with_margin.saturating_sub(accessible_ammo);
+
+    let pickups = deficit.div_ceil(AMMO_PER_PICKUP) as usize;
+
+    pickups.min(MAX_EXTRA_PICKUPS_PER_HAND)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Doblado y cap ---
+
+    #[test]
+    fn starts_at_hand_one_with_the_level_initial_count() {
+        let state = HandState::new(4);
+
+        assert_eq!(state.hand_number(), 1);
+        assert_eq!(state.phase(), HandPhase::Active);
+    }
+
+    fn run_full_reload(state: &mut HandState, level_cap: usize) -> usize {
+        // Último Dealer muere.
+        assert_eq!(state.tick(0.016, 0, level_cap), None);
+
+        // 4 segundos completos de countdown, en pasos pequeños.
+        let mut spawned = None;
+
+        let mut elapsed = 0.0;
+
+        while elapsed < 4.5 {
+            if let Some(count) = state.tick(0.05, 0, level_cap) {
+                spawned = Some(count);
+                break;
+            }
+
+            elapsed += 0.05;
+        }
+
+        spawned.expect("la Hand debe spawnear dentro de ~4s")
+    }
+
+    #[test]
+    fn hand_two_doubles_hand_one() {
+        let mut state = HandState::new(4);
+
+        let hand_two_count = run_full_reload(&mut state, 100);
+
+        assert_eq!(hand_two_count, 8);
+        assert_eq!(state.hand_number(), 2);
+    }
+
+    #[test]
+    fn hand_three_doubles_hand_two() {
+        let mut state = HandState::new(4);
+
+        run_full_reload(&mut state, 100);
+        let hand_three_count = run_full_reload(&mut state, 100);
+
+        assert_eq!(hand_three_count, 16);
+        assert_eq!(state.hand_number(), 3);
+    }
+
+    #[test]
+    fn doubling_never_exceeds_the_level_cap() {
+        let mut state = HandState::new(23);
+
+        let hand_two = run_full_reload(&mut state, 50);
+        assert_eq!(hand_two, 46);
+
+        let hand_three = run_full_reload(&mut state, 50);
+        assert_eq!(hand_three, 50);
+
+        let hand_four = run_full_reload(&mut state, 50);
+        assert_eq!(hand_four, 50);
+    }
+
+    #[test]
+    fn cap_is_never_allowed_to_exceed_the_global_hard_cap_in_this_test_matrix() {
+        let mut state = HandState::new(23);
+
+        for _ in 0..5 {
+            let count = run_full_reload(&mut state, GLOBAL_HARD_DEALER_CAP);
+
+            assert!(count <= GLOBAL_HARD_DEALER_CAP);
+        }
+    }
+
+    #[test]
+    fn zero_initial_dealers_does_not_get_stuck_doubling_zero() {
+        let mut state = HandState::new(0);
+
+        let hand_two = run_full_reload(&mut state, 10);
+
+        assert_eq!(hand_two, 2);
+    }
+
+    // --- Detección de fin de Hand y fase Reloading ---
+
+    #[test]
+    fn active_with_dealers_alive_never_enters_reloading() {
+        let mut state = HandState::new(4);
+
+        for _ in 0..120 {
+            assert_eq!(state.tick(0.016, 3, 100), None);
+        }
+
+        assert_eq!(state.phase(), HandPhase::Active);
+    }
+
+    #[test]
+    fn last_dealer_death_immediately_starts_reloading() {
+        let mut state = HandState::new(4);
+
+        state.tick(0.016, 0, 100);
+
+        assert!(matches!(state.phase(), HandPhase::Reloading { .. }));
+    }
+
+    #[test]
+    fn invalid_delta_time_does_not_advance_the_phase() {
+        let mut state = HandState::new(4);
+
+        state.tick(0.016, 0, 100);
+
+        let phase_before = state.phase();
+
+        state.tick(0.0, 0, 100);
+        state.tick(-1.0, 0, 100);
+        state.tick(f32::NAN, 0, 100);
+
+        assert_eq!(state.phase(), phase_before);
+    }
+
+    // --- Mensajes HUD / countdown ---
+
+    #[test]
+    fn hud_sequence_matches_the_documented_timeline() {
+        let mut state = HandState::new(4);
+
+        state.tick(0.016, 0, 100);
+
+        // t=0.5s: mensaje de "reloading".
+        state.tick(0.5 - 0.016, 0, 100);
+        assert_eq!(state.hud_message(), HandHudMessage::HouseIsReloading);
+
+        // t=1.5s: NEXT HAND IN 3.
+        state.tick(1.0, 0, 100);
+        assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(3));
+
+        // t=2.5s: NEXT HAND IN 2.
+        state.tick(1.0, 0, 100);
+        assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(2));
+
+        // t=3.5s: NEXT HAND IN 1.
+        state.tick(1.0, 0, 100);
+        assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(1));
+
+        // t=4.5s: ya debería haber spawneado y mostrar el banner.
+        let spawned = state.tick(1.0, 0, 100);
+        assert!(spawned.is_some());
+        assert_eq!(
+            state.hud_message(),
+            HandHudMessage::HandBanner(state.hand_number())
+        );
+    }
+
+    #[test]
+    fn banner_disappears_after_its_duration() {
+        let mut state = HandState::new(4);
+
+        run_full_reload(&mut state, 100);
+
+        assert_eq!(
+            state.hud_message(),
+            HandHudMessage::HandBanner(state.hand_number())
+        );
+
+        state.tick(1.5, 5, 100);
+
+        assert_eq!(state.hud_message(), HandHudMessage::None);
+    }
+
+    #[test]
+    fn no_message_while_actively_fighting_without_a_fresh_banner() {
+        let state = HandState::new(4);
+
+        assert_eq!(state.hud_message(), HandHudMessage::None);
+    }
+
+    // --- Determinismo de spawn (sección 17) ---
+
+    #[test]
+    fn same_session_seed_and_hand_number_produce_the_same_spawn_layout() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::from([(1, 1)]);
+
+        let seed_a = spawn_seed_for_hand(12345, 2);
+        let seed_b = spawn_seed_for_hand(12345, 2);
+
+        assert_eq!(seed_a, seed_b);
+
+        let a = select_spawn_cells(
+            &level,
+            Vector2::new(72.0, 72.0),
+            0.0,
+            48,
+            &occupied,
+            4,
+            false,
+            seed_a,
+        );
+
+        let b = select_spawn_cells(
+            &level,
+            Vector2::new(72.0, 72.0),
+            0.0,
+            48,
+            &occupied,
+            4,
+            false,
+            seed_b,
+        );
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_hand_numbers_can_produce_different_layouts() {
+        let seed_hand_2 = spawn_seed_for_hand(12345, 2);
+        let seed_hand_3 = spawn_seed_for_hand(12345, 3);
+
+        assert_ne!(seed_hand_2, seed_hand_3);
+    }
+
+    // --- Spawn válido / distancia segura ---
+
+    /// Sala abierta y completamente conectada (sin muros internos):
+    /// suficientemente grande para que existan celdas a distancia
+    /// navegable >= 6 desde cualquier punto interior razonable.
+    fn test_level() -> Level {
+        let map = "\
+###############
+#p            #
+#             #
+#             #
+#             #
+#             #
+#             #
+#            g#
+###############
+";
+
+        Level::from_cells(map.lines().map(|line| line.chars().collect()).collect())
+            .expect("el mapa de prueba debe ser válido")
+    }
+
+    #[test]
+    fn selected_cells_are_always_walkable_and_never_occupied() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::from([(4, 5), (4, 6), (4, 7)]);
+
+        let player_position = Vector2::new(4.5 * 48.0, 4.5 * 48.0);
+
+        let cells = select_spawn_cells(&level, player_position, 0.0, 48, &occupied, 10, false, 999);
+
+        assert!(!cells.is_empty());
+
+        for &(row, column) in &cells {
+            assert!(level.is_walkable(row, column));
+            assert!(!occupied.contains(&(row, column)));
+        }
+    }
+
+    #[test]
+    fn selected_cells_respect_the_safe_distance_when_the_map_allows_it() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_cell = (4, 6);
+
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+
+        let distances = DistanceField::from_level(&level, player_cell);
+
+        let cells = select_spawn_cells(&level, player_position, 0.0, 48, &occupied, 3, false, 1);
+
+        assert!(!cells.is_empty());
+
+        for &(row, column) in &cells {
+            let distance = distances
+                .distance_at(row, column)
+                .expect("celda elegida debe ser alcanzable");
+
+            assert!(distance >= SAFE_RESPAWN_DISTANCE_CELLS);
+        }
+    }
+
+    #[test]
+    fn never_returns_more_cells_than_requested() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_position = Vector2::new(4.5 * 48.0, 4.5 * 48.0);
+
+        let cells = select_spawn_cells(&level, player_position, 0.0, 48, &occupied, 3, false, 7);
+
+        assert!(cells.len() <= 3);
+    }
+
+    #[test]
+    fn cluster_mode_never_exceeds_the_requested_count() {
+        let level = test_level();
+
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_position = Vector2::new(4.5 * 48.0, 4.5 * 48.0);
+
+        let cells = select_spawn_cells(&level, player_position, 0.0, 48, &occupied, 12, true, 42);
+
+        assert!(cells.len() <= 12);
+
+        let unique: HashSet<(usize, usize)> = cells.iter().copied().collect();
+        assert_eq!(unique.len(), cells.len());
+    }
+
+    // --- Munición ---
+
+    #[test]
+    fn no_extra_pickups_when_ammo_is_already_sufficient() {
+        // 4 Dealers * 2 disparos * 1.5 margen = 12 disparos; 30 balas
+        // accesibles ya alcanzan de sobra.
+        assert_eq!(extra_ammo_pickups_needed(4, 30), 0);
+    }
+
+    #[test]
+    fn extra_pickups_scale_with_the_ammo_deficit() {
+        // 46 Dealers * 2 * 1.5 = 138 disparos con margen; con solo 24
+        // balas accesibles, el déficit es 114 -> ceil(114/6) = 19,
+        // recortado al tope de 6.
+        assert_eq!(extra_ammo_pickups_needed(46, 24), 6);
+    }
+
+    #[test]
+    fn extra_pickups_are_capped_even_for_enormous_deficits() {
+        assert!(extra_ammo_pickups_needed(1000, 0) <= 6);
+    }
+}

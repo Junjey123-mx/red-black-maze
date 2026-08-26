@@ -179,6 +179,65 @@ impl LevelManager {
         self.procedural.as_ref().map(|generated| generated.seed)
     }
 
+    /// Semilla determinista para el sistema de Hands (Dealer Hands,
+    /// sección 17) del nivel ACTUALMENTE activo.
+    ///
+    /// Para "The Dealer's True Maze" es la semilla real de la
+    /// generación vigente (`0` como último recurso defensivo si por
+    /// algún motivo aún no se generó nada — nunca debería ocurrir en
+    /// la práctica, `App` siempre genera antes de construir la
+    /// sesión). Para los tres niveles estáticos no existe una "semilla
+    /// de nivel" real — se deriva un valor FIJO y determinista por
+    /// índice de catálogo (nunca aleatorio), suficiente para que las
+    /// Hands adicionales de esos niveles también sean reproducibles
+    /// en pruebas sin necesitar el concepto de semilla de generación
+    /// que solo tiene sentido para el nivel procedural.
+    pub(crate) fn current_hand_seed(&self) -> u64 {
+        if self.current_is_procedural() {
+            self.current_procedural_seed().unwrap_or(0)
+        } else {
+            // Constante arbitraria pero FIJA por índice: determinista,
+            // nunca dependiente del reloj ni de ninguna otra fuente
+            // no reproducible.
+            0xD00D_0000_0000_0000_u64 ^ (self.current as u64)
+        }
+    }
+
+    /// Tope de Dealers vivos simultáneos del nivel ACTUALMENTE activo
+    /// (sección 11 de "Dealer Hands"): decidido según tamaño real del
+    /// mapa y cantidad inicial de cada uno de los cuatro niveles,
+    /// nunca superior a `hand::GLOBAL_HARD_DEALER_CAP` (52).
+    ///
+    /// Valores elegidos (documentados también en la auditoría de la
+    /// tarea):
+    /// - Crimson Entrance (53 celdas transitables, 2 Dealers
+    ///   iniciales): cap 16 -> progresión 2, 4, 8, 16(cap).
+    /// - Black Club (47 celdas transitables, 3 iniciales): cap 12 ->
+    ///   progresión 3, 6, 12(cap).
+    /// - House of Cards (111 celdas transitables, 4 iniciales): cap
+    ///   32 -> progresión 4, 8, 16, 32(cap).
+    /// - The Dealer's True Maze (~222 celdas transitables, ~23
+    ///   iniciales, varía por seed): cap 50 -> progresión ~23, ~46,
+    ///   50(cap) — el cap más alto del catálogo, pedido
+    ///   explícitamente, y seguro bajo el límite global de 52.
+    pub(crate) fn current_dealer_cap(&self) -> usize {
+        const CRIMSON_ENTRANCE_DEALER_CAP: usize = 16;
+        const BLACK_CLUB_DEALER_CAP: usize = 12;
+        const HOUSE_OF_CARDS_DEALER_CAP: usize = 32;
+        const PROCEDURAL_DEALER_CAP: usize = 50;
+
+        if self.current_is_procedural() {
+            return PROCEDURAL_DEALER_CAP;
+        }
+
+        match self.current {
+            0 => CRIMSON_ENTRANCE_DEALER_CAP,
+            1 => BLACK_CLUB_DEALER_CAP,
+            2 => HOUSE_OF_CARDS_DEALER_CAP,
+            _ => PROCEDURAL_DEALER_CAP,
+        }
+    }
+
     /// Carga explícitamente el nivel indicado por índice.
     ///
     /// `current` solo se actualiza después de una carga exitosa.
@@ -490,5 +549,77 @@ mod tests {
 
         // Ya no hay nivel siguiente: el procedural es el último.
         assert!(!manager.has_next());
+    }
+
+    // --- Dealer Hands: caps por nivel y semilla determinista ---
+
+    /// Mismo valor que `game::hand::GLOBAL_HARD_DEALER_CAP` — no se
+    /// importa desde aquí para no introducir una dependencia
+    /// `world -> game` (dirección incorrecta); en su lugar,
+    /// `game::hand` documenta el mismo número y esta prueba lo repite
+    /// como literal.
+    const GLOBAL_HARD_DEALER_CAP: usize = 52;
+
+    #[test]
+    fn no_level_dealer_cap_exceeds_the_global_hard_cap() {
+        let mut manager = LevelManager::new();
+
+        for index in 0..manager.level_count() {
+            manager.load(index).expect("cada índice debe cargar");
+
+            assert!(manager.current_dealer_cap() <= GLOBAL_HARD_DEALER_CAP);
+        }
+    }
+
+    #[test]
+    fn each_static_level_has_its_documented_dealer_cap() {
+        let mut manager = LevelManager::new();
+
+        manager.load(0).expect("Crimson Entrance debe cargar");
+        assert_eq!(manager.current_dealer_cap(), 16);
+
+        manager.load(1).expect("Black Club debe cargar");
+        assert_eq!(manager.current_dealer_cap(), 12);
+
+        manager.load(2).expect("House of Cards debe cargar");
+        assert_eq!(manager.current_dealer_cap(), 32);
+    }
+
+    #[test]
+    fn the_procedural_level_has_the_highest_cap_of_the_catalog() {
+        let mut manager = LevelManager::new();
+
+        manager.load(3).expect("el nivel procedural debe generar");
+
+        assert_eq!(manager.current_dealer_cap(), 50);
+    }
+
+    #[test]
+    fn hand_seed_is_deterministic_and_static_levels_get_distinct_fixed_seeds() {
+        let mut manager = LevelManager::new();
+
+        manager.load(0).expect("índice 0 debe cargar");
+        let seed_a_first = manager.current_hand_seed();
+
+        manager.load(1).expect("índice 1 debe cargar");
+        let seed_b = manager.current_hand_seed();
+
+        manager.load(0).expect("índice 0 debe cargar de nuevo");
+        let seed_a_second = manager.current_hand_seed();
+
+        assert_eq!(seed_a_first, seed_a_second);
+        assert_ne!(seed_a_first, seed_b);
+    }
+
+    #[test]
+    fn procedural_hand_seed_matches_the_generated_level_seed() {
+        let mut manager = LevelManager::new();
+
+        manager.load(3).expect("el nivel procedural debe generar");
+
+        assert_eq!(
+            manager.current_hand_seed(),
+            manager.current_procedural_seed().unwrap()
+        );
     }
 }
