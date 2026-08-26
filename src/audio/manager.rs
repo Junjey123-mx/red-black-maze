@@ -119,12 +119,23 @@ pub(crate) enum SoundEffect {
     /// máximo una vez por cuadro, sin importar cuántos ataques se
     /// agregaron en el total.
     PlayerHit,
+
+    /// Recolección EXITOSA de un `AmmoPickup`: solo se dispara cuando
+    /// `GameSession::collect_nearby_ammo_pickups` reporta que un
+    /// pickup en particular acaba de desactivarse este cuadro
+    /// (munición realmente añadida a la reserva) — nunca por
+    /// simplemente estar cerca de uno todavía activo. Funciona igual
+    /// para pickups originales del nivel, pickups generados por
+    /// Dealer Hands, y los procedurales de The Dealer's True Maze:
+    /// los tres terminan en el mismo `Vec<AmmoPickup>` y pasan por la
+    /// misma comprobación.
+    AmmoPickup,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 12] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 13] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -137,6 +148,7 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 12] = [
     SoundEffect::Victory,
     SoundEffect::Reload,
     SoundEffect::PlayerHit,
+    SoundEffect::AmmoPickup,
 ];
 
 /// Única ubicación del catálogo ruta<->efecto. Ningún otro módulo
@@ -155,6 +167,7 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::Victory => "assets/audio/sfx/victory.wav",
         SoundEffect::Reload => "assets/audio/sfx/reload.wav",
         SoundEffect::PlayerHit => "assets/audio/sfx/player_hit.wav",
+        SoundEffect::AmmoPickup => "assets/audio/sfx/ammo_pickup.wav",
     }
 }
 
@@ -608,8 +621,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_twelve_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 12);
+    fn catalog_contains_exactly_thirteen_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 13);
     }
 
     #[test]
@@ -655,6 +668,10 @@ mod tests {
         assert_eq!(
             sfx_path(SoundEffect::PlayerHit),
             "assets/audio/sfx/player_hit.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::AmmoPickup),
+            "assets/audio/sfx/ammo_pickup.wav"
         );
     }
 

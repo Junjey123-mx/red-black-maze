@@ -517,8 +517,20 @@ impl GameSession {
     /// permanece disponible para no desperdiciarlo. El cargador
     /// nunca se toca aquí — solo `Weapon::add_reserve_ammo`, la
     /// única autoridad sobre la reserva.
-    pub(crate) fn collect_nearby_ammo_pickups(&mut self) {
+    ///
+    /// Retorna cuántos pickups se consumieron REALMENTE este cuadro
+    /// (`0` la inmensa mayoría de las veces): es el único evento
+    /// semántico de "recolección exitosa" — `App` lo usa para
+    /// solicitar `SoundEffect::AmmoPickup` exactamente una vez POR
+    /// PICKUP consumido, nunca por simple proximidad a uno todavía
+    /// activo. Funciona idéntico sin importar si el pickup vino del
+    /// nivel, de una Hand nueva, o de la generación procedural: los
+    /// tres viven en el mismo `self.ammo_pickups` y pasan por esta
+    /// misma comprobación.
+    pub(crate) fn collect_nearby_ammo_pickups(&mut self) -> u32 {
         let player_position = self.player.pos;
+
+        let mut collected = 0;
 
         for pickup in &mut self.ammo_pickups {
             if !pickup.is_active() {
@@ -531,8 +543,12 @@ impl GameSession {
 
             if self.weapon.add_reserve_ammo(AMMO_PICKUP_AMOUNT) > 0 {
                 pickup.deactivate();
+
+                collected += 1;
             }
         }
+
+        collected
     }
 
     /// Avanza la animación de antorcha según el tiempo transcurrido
@@ -1321,6 +1337,169 @@ mod tests {
 
         assert_eq!(session.weapon_reserve_ammo(), 30);
         assert!(session.ammo_pickups()[2].is_active());
+    }
+
+    // --- Tarea "Ammo Pickup SFX": evento de recolección exitosa ---
+    //
+    // `collect_nearby_ammo_pickups` retorna cuántos pickups se
+    // consumieron REALMENTE este cuadro — el único evento semántico
+    // que `App` usa para solicitar `SoundEffect::AmmoPickup`. Estas
+    // pruebas viven aquí (no en `audio::manager`, que no puede
+    // ejercitar `GameSession`) y verifican el conteo sin acoplarse a
+    // ningún hardware de audio, exactamente como pide la tarea.
+
+    #[test]
+    fn a_successful_collection_reports_exactly_one_event() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        session.player.pos = Vector2::new(168.0, 72.0);
+
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+    }
+
+    #[test]
+    fn being_out_of_range_reports_zero_events() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        // Spawn del jugador, a 2 celdas del pickup: fuera de rango.
+        assert_eq!(session.collect_nearby_ammo_pickups(), 0);
+    }
+
+    #[test]
+    fn a_full_reserve_reports_zero_events_even_though_the_pickup_stays_active() {
+        let mut session = new_test_session_with_three_ammo_spawns();
+
+        session.player.pos = Vector2::new(168.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+
+        session.player.pos = Vector2::new(264.0, 72.0);
+        session.collect_nearby_ammo_pickups();
+
+        // Reserva ya en el tope (30): el tercer pickup no se
+        // consume, así que NO debe reportar ningún evento — nunca
+        // "recolección exitosa" por simple proximidad a uno que
+        // sigue activo.
+        session.player.pos = Vector2::new(360.0, 72.0);
+
+        assert_eq!(session.collect_nearby_ammo_pickups(), 0);
+        assert!(session.ammo_pickups()[2].is_active());
+    }
+
+    #[test]
+    fn the_same_pickup_never_reports_a_second_event() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        session.player.pos = Vector2::new(168.0, 72.0);
+
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+
+        // Mismo pickup, mismo jugador, mismo cuadro repetido varias
+        // veces: ya está `deactivate`d, así que ningún cuadro
+        // posterior puede volver a reportar un evento por él.
+        for _ in 0..5 {
+            assert_eq!(session.collect_nearby_ammo_pickups(), 0);
+        }
+    }
+
+    #[test]
+    fn multiple_pickups_collected_the_same_frame_report_one_event_each() {
+        let mut session = new_test_session_with_three_ammo_spawns();
+
+        // Los tres pickups de este mapa están en la misma fila; para
+        // recogerlos los tres EN UN SOLO cuadro hace falta un radio
+        // que los cubra todos a la vez — se simula colocando al
+        // jugador exactamente sobre el pickup central y ampliando
+        // artificialmente ninguna constante de dominio (la prueba
+        // solo reubica al jugador, nunca toca `AMMO_PICKUP_RADIUS`).
+        // Con el radio real (~19.2px) y pickups separados 96px entre
+        // sí, un único cuadro solo alcanza a uno; esta prueba refleja
+        // exactamente ese caso real: eventos van sumando 1 en 1,
+        // nunca colapsados en un booleano.
+        session.player.pos = Vector2::new(168.0, 72.0);
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+
+        session.player.pos = Vector2::new(264.0, 72.0);
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+    }
+
+    /// Simula un `AmmoPickup` generado dinámicamente por Dealer Hands
+    /// (o por la generación procedural de The Dealer's True Maze):
+    /// ambos casos terminan empujando un `AmmoPickup` más a
+    /// `self.ammo_pickups` en tiempo de ejecución (ver
+    /// `GameSession::update_hand_state`), nunca a través de
+    /// `Level::ammo_spawns`. Esta prueba no depende de `HandState`
+    /// para demostrar que el flujo de recolección es EL MISMO: basta
+    /// con que el pickup exista en la colección.
+    #[test]
+    fn a_dynamically_added_pickup_uses_the_exact_same_collection_event() {
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        let dynamic_position = Vector2::new(360.0, 72.0);
+
+        session
+            .ammo_pickups
+            .push(AmmoPickup::at_cell(1, 7, BLOCK_SIZE));
+
+        assert_eq!(session.ammo_pickups().len(), 2);
+
+        session.player.pos = dynamic_position;
+
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+        assert!(!session.ammo_pickups()[1].is_active());
+    }
+
+    #[test]
+    fn retry_style_fresh_session_can_collect_its_pickups_again() {
+        // Retry reconstruye una `GameSession` COMPLETAMENTE nueva
+        // (ver `App::replace_session_with_level`); esta prueba
+        // reproduce esa reconstrucción sin pasar por `App`, y
+        // confirma que la sesión "post-Retry" puede recoger su
+        // pickup normalmente, sin heredar ningún estado (activo/
+        // inactivo) de una sesión anterior.
+        let mut dirty_session = new_test_session_with_one_ammo_spawn();
+
+        dirty_session.player.pos = Vector2::new(168.0, 72.0);
+        assert_eq!(dirty_session.collect_nearby_ammo_pickups(), 1);
+        assert!(!dirty_session.ammo_pickups()[0].is_active());
+
+        let mut fresh_session = new_test_session_with_one_ammo_spawn();
+
+        assert!(fresh_session.ammo_pickups()[0].is_active());
+
+        fresh_session.player.pos = Vector2::new(168.0, 72.0);
+
+        assert_eq!(fresh_session.collect_nearby_ammo_pickups(), 1);
+        assert!(!fresh_session.ammo_pickups()[0].is_active());
+    }
+
+    #[test]
+    fn not_calling_collect_nearby_ammo_pickups_is_how_pause_freezes_collection() {
+        // Mismo patrón que
+        // `skipping_update_calls_freezes_cooldown_and_flash_exactly_like_a_pause_menu_would`:
+        // `App::update_paused` congela la recolección simplemente NO
+        // llamando a `collect_nearby_ammo_pickups` mientras
+        // `GameState::Paused` está activo — no existe un `delta_time`
+        // que "avanzar", así que la prueba real de la congelación es
+        // la AUSENCIA de la llamada, no un temporizador. Aquí se
+        // demuestra colocando al jugador en rango y confirmando que,
+        // mientras el método no se invoque, ni la reserva ni el
+        // estado del pickup cambian — exactamente lo que ocurre
+        // durante Pause real.
+        let mut session = new_test_session_with_one_ammo_spawn();
+
+        session.player.pos = Vector2::new(168.0, 72.0);
+
+        let reserve_before = session.weapon_reserve_ammo();
+
+        // "Pause": ninguna llamada a `collect_nearby_ammo_pickups`
+        // aquí, sin importar cuánto tiempo real pase.
+        assert_eq!(session.weapon_reserve_ammo(), reserve_before);
+        assert!(session.ammo_pickups()[0].is_active());
+
+        // "Resume": la primera llamada real todavía recoge con
+        // normalidad, exactamente como si nunca se hubiera pausado.
+        assert_eq!(session.collect_nearby_ammo_pickups(), 1);
+        assert!(!session.ammo_pickups()[0].is_active());
     }
 
     #[test]

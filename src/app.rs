@@ -395,8 +395,18 @@ impl<'aud> App<'aud> {
          * ningún caso especial nuevo. `collect_nearby_ammo_pickups`
          * es la única autoridad sobre qué pickup se consume y cuánta
          * reserva se añade; `App` no repite esa lógica.
+         *
+         * Tarea "Ammo Pickup SFX": el conteo retornado es el ÚNICO
+         * evento semántico de "recolección exitosa" — se solicita
+         * `SoundEffect::AmmoPickup` exactamente una vez POR PICKUP
+         * consumido este cuadro (nunca por simple proximidad a uno
+         * todavía activo, ni una segunda vez por el mismo pickup, que
+         * `AmmoPickup::deactivate` ya deja inactivo de forma
+         * permanente para esta sesión).
          */
-        self.session.collect_nearby_ammo_pickups();
+        for _ in 0..self.session.collect_nearby_ammo_pickups() {
+            self.audio.play_sound(SoundEffect::AmmoPickup);
+        }
 
         /*
          * Avanza la máquina de estados visual del arma ANTES de
