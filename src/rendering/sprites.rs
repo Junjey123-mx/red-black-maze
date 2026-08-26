@@ -322,12 +322,11 @@ pub(crate) fn render_world_sprites(
 
     /*
      * Health Pickup: mismo pipeline que el pickup de munición
-     * (proyección/orden/oclusión), con una diferencia deliberada —
-     * `health_pickup_texture` NUNCA se resuelve por tema (sección 8):
-     * el corazón conserva siempre su único color rojo/crimson en los
-     * tres temas visuales.
+     * (proyección/orden/oclusión/variante temática) — el corazón
+     * adopta la identidad cromática del `LevelTheme` activo
+     * exactamente igual que cualquier otro sprite temático.
      */
-    if let Some(texture) = textures.health_pickup_texture() {
+    if let Some(texture) = textures.themed_health_pickup_texture(theme) {
         for pickup in health_pickups {
             if !pickup.is_active() {
                 continue;

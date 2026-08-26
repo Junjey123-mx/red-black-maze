@@ -164,13 +164,12 @@ const AMMO_PICKUP_TEXTURE_KEY: &str = "sprite-ammo-pickup";
 const AMMO_PICKUP_TEXTURE_PATH: &str = "assets/textures/sprites/ammo_pickup.png";
 
 /// Clave y ruta congeladas de la textura del pickup de vida (Health
-/// Pickup). A diferencia del resto de sprites temáticos, este asset
-/// NUNCA genera variantes por `LevelTheme` (sección 8: "el corazón
-/// NO debe cambiar de color según el LevelTheme") — un único color
-/// rojo/crimson conserva su identidad de "vida" reconocible en los
-/// tres temas visuales, así que `TextureManager` lo carga una vez y
-/// lo sirve siempre igual, sin pasar por
-/// `generate_themed_variants`.
+/// Pickup). Único asset base, igual que el resto de sprites temáticos
+/// (pared/arma/Dealer/antorchas/meta/pickup de munición): las tres
+/// variantes se generan a partir de este único PNG mediante el mismo
+/// pipeline (`generate_themed_variants`), para que el corazón adopte
+/// la identidad cromática del nivel activo exactamente igual que
+/// cualquier otro elemento temático del juego.
 const HEALTH_PICKUP_TEXTURE_KEY: &str = "sprite-health-pickup";
 const HEALTH_PICKUP_TEXTURE_PATH: &str = "assets/textures/sprites/health_pickup.png";
 
@@ -383,21 +382,22 @@ impl TextureManager {
     }
 
     /// Carga, una única vez, la textura del pickup de vida (Health
-    /// Pickup).
+    /// Pickup), junto con sus tres variantes temáticas.
     ///
-    /// A diferencia de `load_ammo_pickup_texture`, deliberadamente
-    /// NO llama a `generate_themed_variants`: el corazón conserva
-    /// siempre su único color rojo/crimson, sin importar el
-    /// `LevelTheme` activo (sección 8).
+    /// Reutiliza la API genérica `load` existente — mismo patrón
+    /// exacto que `load_ammo_pickup_texture`.
     pub(crate) fn load_health_pickup_texture(&mut self) -> Result<(), TextureError> {
-        self.load(HEALTH_PICKUP_TEXTURE_KEY, HEALTH_PICKUP_TEXTURE_PATH)
+        self.load(HEALTH_PICKUP_TEXTURE_KEY, HEALTH_PICKUP_TEXTURE_PATH)?;
+
+        self.generate_themed_variants(HEALTH_PICKUP_TEXTURE_KEY);
+
+        Ok(())
     }
 
-    /// Textura ya cargada del pickup de vida — la MISMA para los tres
-    /// temas, nunca una variante por `LevelTheme` (ver
-    /// `load_health_pickup_texture`).
-    pub(crate) fn health_pickup_texture(&self) -> Option<&TextureAsset> {
-        self.get(HEALTH_PICKUP_TEXTURE_KEY)
+    /// Variante temática ya cargada del pickup de vida para `theme`,
+    /// si está disponible.
+    pub(crate) fn themed_health_pickup_texture(&self, theme: LevelTheme) -> Option<&TextureAsset> {
+        self.get(&Self::themed_key(HEALTH_PICKUP_TEXTURE_KEY, theme))
     }
 
     /// Carga, una única vez, los cuatro cuadros de animación de la
@@ -1047,70 +1047,159 @@ mod tests {
         assert!(saw_transparent);
     }
 
-    // --- Health Pickup: textura del corazón, sin variantes por tema. ---
+    // --- Health Pickup: textura del corazón, con variantes por tema. ---
 
     #[test]
-    fn loading_health_pickup_texture_makes_it_available() {
+    fn loading_health_pickup_texture_generates_a_lookup_hit_for_every_theme() {
         let mut manager = TextureManager::new();
 
         manager
             .load_health_pickup_texture()
             .expect("la textura del pickup de vida del proyecto debe cargar");
 
-        assert!(manager.health_pickup_texture().is_some());
-    }
-
-    #[test]
-    fn health_pickup_texture_never_generates_themed_variants() {
-        let mut manager = TextureManager::new();
-
-        manager
-            .load_health_pickup_texture()
-            .expect("la textura del pickup de vida del proyecto debe cargar");
-
-        // Sección 8: el corazón NUNCA cambia de color por
-        // `LevelTheme` — a diferencia de `load_ammo_pickup_texture`,
-        // `load_health_pickup_texture` no genera ninguna clave
-        // temática (`themed_key`) para este asset.
         for theme in TextureManager::THEMES {
             assert!(
-                manager
-                    .get(&TextureManager::themed_key(
-                        HEALTH_PICKUP_TEXTURE_KEY,
-                        theme
-                    ))
-                    .is_none()
+                manager.themed_health_pickup_texture(theme).is_some(),
+                "falta la variante temática {theme:?} del pickup de vida"
             );
         }
     }
 
     #[test]
-    fn health_pickup_texture_is_crimson_red_and_not_transparent_everywhere() {
+    fn health_pickup_variant_maps_the_canonical_red_to_the_exact_reference_orange() {
         let mut manager = TextureManager::new();
 
         manager
             .load_health_pickup_texture()
             .expect("la textura del pickup de vida del proyecto debe cargar");
 
-        let texture = manager
-            .health_pickup_texture()
-            .expect("la textura del pickup de vida debe estar cargada");
+        let base = manager
+            .get(HEALTH_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
 
-        let mut saw_opaque_red_pixel = false;
+        let variant = manager
+            .themed_health_pickup_texture(LevelTheme::BlackClub)
+            .expect("la variante Black Club debe existir");
 
-        for y in 0..texture.height() {
-            for x in 0..texture.width() {
-                if let Some(color) = texture.pixel_at(x, y) {
-                    if color.a > 0 && color.r > color.g && color.r > color.b {
-                        saw_opaque_red_pixel = true;
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xFF, 0x7A, 0x00, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(
+            checked_a_canonical_red_pixel,
+            "health_pickup.png debe usar el rojo canónico bright de LEGACY_ACCENT_TABLE"
+        );
+    }
+
+    #[test]
+    fn health_pickup_variant_maps_the_canonical_red_to_the_exact_reference_violet() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_health_pickup_texture()
+            .expect("la textura del pickup de vida del proyecto debe cargar");
+
+        let base = manager
+            .get(HEALTH_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
+
+        let variant = manager
+            .themed_health_pickup_texture(LevelTheme::HouseOfCards)
+            .expect("la variante House of Cards debe existir");
+
+        let mut checked_a_canonical_red_pixel = false;
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                if base.pixel_at(x, y) == Some(Color::new(210, 31, 43, 255)) {
+                    checked_a_canonical_red_pixel = true;
+
+                    assert_eq!(
+                        variant.pixel_at(x, y),
+                        Some(Color::new(0xC1, 0x3C, 0xFF, 255))
+                    );
+                }
+            }
+        }
+
+        assert!(checked_a_canonical_red_pixel);
+    }
+
+    #[test]
+    fn health_pickup_crimson_variant_matches_the_base_pixel_for_pixel() {
+        let mut manager = TextureManager::new();
+
+        manager
+            .load_health_pickup_texture()
+            .expect("la textura del pickup de vida del proyecto debe cargar");
+
+        let base = manager
+            .get(HEALTH_PICKUP_TEXTURE_KEY)
+            .expect("base debe existir");
+
+        let variant = manager
+            .themed_health_pickup_texture(LevelTheme::CrimsonEntrance)
+            .expect("la variante Crimson Entrance debe existir");
+
+        for y in 0..base.height() {
+            for x in 0..base.width() {
+                assert_eq!(base.pixel_at(x, y), variant.pixel_at(x, y));
+            }
+        }
+    }
+
+    #[test]
+    fn health_pickup_outline_and_highlight_are_preserved_across_themes() {
+        let base_image = Image::load_image(HEALTH_PICKUP_TEXTURE_PATH)
+            .expect("el asset del pickup de vida del proyecto debe cargar");
+
+        let mut saw_highlight = false;
+
+        let mut saw_transparent = false;
+
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            let palette = palette_for_theme(theme);
+
+            let remapped = remap_image_accent(&base_image, &palette);
+
+            for y in 0..base_image.height() {
+                for x in 0..base_image.width() {
+                    let original = base_image.get_color(x, y);
+
+                    if original == Color::new(214, 208, 196, 255) {
+                        saw_highlight = true;
+
+                        assert_eq!(remapped.get_color(x, y), original);
+                    }
+
+                    if original.a == 0 {
+                        saw_transparent = true;
+
+                        assert_eq!(remapped.get_color(x, y).a, 0);
                     }
                 }
             }
         }
 
         assert!(
-            saw_opaque_red_pixel,
-            "health_pickup.png debe contener píxeles rojos/crimson opacos"
+            saw_highlight,
+            "health_pickup.png debe contener el brillo marfil neutro del proyecto"
         );
+        assert!(saw_transparent);
     }
 }
