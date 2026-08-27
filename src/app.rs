@@ -1562,6 +1562,7 @@ impl<'aud> App<'aud> {
                     BLOCK_SIZE,
                     self.session.torch_frame_index(),
                     self.session.entities(),
+                    self.session.king_summon_animation_scale(),
                     self.session.ammo_pickups(),
                     self.session.health_pickups(),
                     self.session.royal_flush_pickup(),

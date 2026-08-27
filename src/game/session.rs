@@ -42,6 +42,7 @@ pub(crate) enum ViewMode {
 pub(crate) enum KingEncounterPhase {
     Fighting,
     Summoning,
+    #[allow(dead_code)]
     Fleeing,
 }
 
@@ -762,6 +763,28 @@ impl GameSession {
     #[allow(dead_code)]
     pub(crate) fn king_summon_time_remaining(&self) -> f32 {
         self.king_encounter.summon_timer
+    }
+
+    /// Factor de escala del billboard de The King para la animación de
+    /// invocación (Bloque 4, Commit 37). `1.0` fuera de `Summoning`;
+    /// durante ella, un pulso retro determinista derivado ÚNICAMENTE
+    /// del tiempo transcurrido de la fase — cuantizado en escalones
+    /// para que se lea como un efecto de píxel, no como una
+    /// interpolación suave. La MISMA animación en los cuatro umbrales
+    /// (800/600/400/200), porque solo depende de `summon_timer`.
+    pub(crate) fn king_summon_animation_scale(&self) -> f32 {
+        if self.king_encounter.phase != KingEncounterPhase::Summoning {
+            return 1.0;
+        }
+
+        let elapsed = (KING_SUMMON_DURATION - self.king_encounter.summon_timer).max(0.0);
+
+        // 8 escalones por segundo, pulso triangular 0..1..0 dentro de
+        // cada medio segundo, amplitud máxima +30 % de tamaño.
+        let steps = (elapsed * 8.0).floor() as i32;
+        let triangle = (steps % 8 - 4).abs() as f32 / 4.0;
+
+        1.0 + 0.30 * triangle
     }
 
     /// Cantidad de Dealers VIVOS ahora mismo — nunca
@@ -6336,6 +6359,53 @@ e             #
         run.update_king_encounter(f32::NAN);
         assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
         assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
+    }
+
+    // --- Bloque 4, Commit 37: animación de invocación. ---
+
+    #[test]
+    fn the_king_billboard_only_pulses_while_summoning() {
+        let (mut run, _king) = horde_at_the_king(4);
+        assert_eq!(run.king_summon_animation_scale(), 1.0);
+
+        let (mut run, _king) = king_at_summon(0);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+
+        // Determinista respecto al tiempo de fase y siempre >= 1.0,
+        // acotado.
+        let mut saw_pulse = false;
+        let mut elapsed = 0.0;
+        while elapsed < KING_SUMMON_DURATION {
+            let a = run.king_summon_animation_scale();
+            let b = run.king_summon_animation_scale();
+            assert_eq!(a, b, "misma fase -> mismo valor");
+            assert!((1.0..=1.35).contains(&a));
+            if a > 1.0 {
+                saw_pulse = true;
+            }
+            run.update_king_encounter(0.05);
+            elapsed += 0.05;
+        }
+        assert!(saw_pulse, "el billboard debe latir durante la invocación");
+
+        // Terminada la invocación vuelve a 1.0.
+        run.update_king_encounter(KING_SUMMON_DURATION);
+        assert_eq!(run.king_summon_animation_scale(), 1.0);
+    }
+
+    #[test]
+    fn the_summon_animation_is_the_same_at_every_threshold() {
+        // Muestreado al mismo instante de fase, el pulso es idéntico
+        // en 800/600/400/200 (solo depende de `summon_timer`).
+        let sample = |idx: usize| {
+            let (mut run, _king) = king_at_summon(idx);
+            run.update_king_encounter(0.30);
+            run.king_summon_animation_scale()
+        };
+        let base = sample(0);
+        assert_eq!(sample(1), base);
+        assert_eq!(sample(2), base);
+        assert_eq!(sample(3), base);
     }
 
     // --- Bloque 4, Commit 36: invulnerabilidad durante Summoning. ---

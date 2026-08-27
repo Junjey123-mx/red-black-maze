@@ -4,7 +4,9 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{AmmoPickup, Entity, HealthPickup, Level, LevelTheme, RoyalFlushPickup};
+use crate::world::{
+    AmmoPickup, Entity, EntitySprite, HealthPickup, Level, LevelTheme, RoyalFlushPickup,
+};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -256,6 +258,7 @@ pub(crate) fn render_world_sprites(
     block_size: usize,
     torch_frame_index: usize,
     entities: &[Entity],
+    king_summon_scale: f32,
     ammo_pickups: &[AmmoPickup],
     health_pickups: &[HealthPickup],
     royal_flush_pickup: Option<&RoyalFlushPickup>,
@@ -306,10 +309,25 @@ pub(crate) fn render_world_sprites(
         if let Some(texture) =
             textures.themed_entity_texture(entity.sprite(), entity.state(), theme)
         {
+            /*
+             * Bloque 4, Commit 37: durante la invocación de The King
+             * su billboard late (`king_summon_scale`, determinista a
+             * partir del temporizador de `Summoning` en `GameSession`;
+             * `1.0` en cualquier otro momento y para el resto de
+             * entidades). Mismo pipeline de proyección/oclusión/orden;
+             * solo cambia el `world_size` — sin un renderer propio del
+             * jefe.
+             */
+            let world_size = if entity.sprite() == EntitySprite::King {
+                block_size as f32 * king_summon_scale
+            } else {
+                block_size as f32
+            };
+
             items.push(BillboardItem {
                 world_position: entity.position(),
                 texture,
-                world_size: block_size as f32,
+                world_size,
             });
         }
     }
