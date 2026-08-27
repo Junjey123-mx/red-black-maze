@@ -35,6 +35,36 @@ pub(crate) enum WeaponTier {
     RoyalFlush,
 }
 
+/// Daño que un disparo aceptado del arma Standard inflige a un enemigo
+/// (Bloque 2, Commit 13). Con `world::entity::DEALER_MAX_HEALTH = 100`
+/// un Dealer sigue muriendo tras exactamente dos golpes Standard,
+/// exactamente como antes de este bloque.
+const STANDARD_WEAPON_DAMAGE: i32 = 50;
+
+/// Daño que un disparo aceptado de The Royal Flush inflige a un
+/// enemigo (Bloque 2). El doble del Standard: un Dealer de 100 de
+/// vida muere de un solo disparo, y el futuro The King
+/// (`HP = 1000`, Bloque 3) necesitará 10 impactos Royal Flush frente
+/// a los 20 del Standard — sin ninguna condición especial por tipo de
+/// enemigo, solo salud del enemigo contra daño del arma.
+const ROYAL_FLUSH_WEAPON_DAMAGE: i32 = 100;
+
+impl WeaponTier {
+    /// Daño por disparo aceptado del tier activo.
+    ///
+    /// Valor de dominio reutilizable: el hitscan (Bloque 2, Commit 17)
+    /// consulta esto en vez de asumir "un impacto = una muerte". No
+    /// conoce qué enemigo recibe el golpe — la resolución vive en
+    /// `world::Entity::apply_damage` (salud) contra este número
+    /// (daño).
+    pub(crate) const fn damage(self) -> i32 {
+        match self {
+            WeaponTier::Standard => STANDARD_WEAPON_DAMAGE,
+            WeaponTier::RoyalFlush => ROYAL_FLUSH_WEAPON_DAMAGE,
+        }
+    }
+}
+
 /// Duración del estado visual de disparo.
 const FIRE_DURATION: f32 = 0.05;
 
@@ -463,6 +493,26 @@ mod tests {
         let rebuilt = Weapon::new();
 
         assert_eq!(rebuilt.tier(), WeaponTier::Standard);
+    }
+
+    // --- Bloque 2, Commit 13: daño por tier. ---
+
+    #[test]
+    fn standard_tier_deals_fifty_damage() {
+        assert_eq!(WeaponTier::Standard.damage(), 50);
+    }
+
+    #[test]
+    fn royal_flush_tier_deals_one_hundred_damage() {
+        assert_eq!(WeaponTier::RoyalFlush.damage(), 100);
+    }
+
+    #[test]
+    fn royal_flush_deals_exactly_double_the_standard_damage() {
+        assert_eq!(
+            WeaponTier::RoyalFlush.damage(),
+            WeaponTier::Standard.damage() * 2
+        );
     }
 
     #[test]

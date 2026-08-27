@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use raylib::prelude::Vector2;
 
-use crate::player::{Player, Weapon, WeaponState};
+use crate::player::{Player, Weapon, WeaponState, WeaponTier};
 use crate::world::{
     AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, Entity, EntityDamageOutcome, EntityState,
     EntityStateTransition, HealthPickup, HordeHandConfig, Level,
@@ -18,10 +18,17 @@ pub(crate) enum ViewMode {
     World3D,
 }
 
-/// Daño aplicado a un Dealer por cada disparo aceptado que lo
-/// impacta. Con `DEALER_MAX_HEALTH = 100` (definido en
-/// `world::entity`), un Dealer muere tras exactamente dos golpes.
-const DEALER_DAMAGE_PER_HIT: i32 = 50;
+/// Daño aplicado a un enemigo por cada disparo aceptado del arma
+/// Standard. Con `DEALER_MAX_HEALTH = 100` (definido en
+/// `world::entity`), un Dealer muere tras exactamente dos golpes
+/// Standard — comportamiento idéntico al de antes del Bloque 2.
+///
+/// Bloque 2, Commit 13: el valor deja de ser un literal suelto y pasa
+/// a derivar de `WeaponTier::Standard.damage()`, la fuente única y
+/// reutilizable del daño por tier. `damage_entity` sigue usando este
+/// valor (siempre Standard) hasta el Commit 17, que lo cambia por el
+/// daño del tier ACTIVO.
+const DEALER_DAMAGE_PER_HIT: i32 = WeaponTier::Standard.damage();
 
 /// Munición de reserva que otorga cada `AmmoPickup` recogido
 /// (Tarea 44). Nunca se aplica directamente al cargador — siempre
