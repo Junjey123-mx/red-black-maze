@@ -6651,6 +6651,53 @@ e             #
         assert_eq!(third, first);
     }
 
+    // --- Bloque 4, Commit 48: vulnerabilidad durante la persecución final. ---
+
+    #[test]
+    fn from_two_hundred_the_fleeing_king_dies_in_four_standard_hits() {
+        let (mut run, king) = king_fleeing_big();
+        assert_eq!(run.king_health(), Some((200, 1000)));
+        assert_eq!(run.weapon_tier(), WeaponTier::Standard);
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit); // 150
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit); // 100
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit); // 50
+        assert!(run.king_alive(), "3 impactos no bastan");
+        assert_eq!(run.king_health(), Some((50, 1000)));
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed); // 0
+        assert!(!run.king_alive());
+    }
+
+    #[test]
+    fn from_two_hundred_the_fleeing_king_dies_in_two_royal_flush_hits() {
+        let (mut run, king) = king_fleeing_big();
+        run.weapon.set_tier(WeaponTier::RoyalFlush);
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit); // 100
+        assert!(run.king_alive(), "1 impacto Royal no basta");
+        assert_eq!(run.king_health(), Some((100, 1000)));
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed); // 0
+        assert!(!run.king_alive());
+    }
+
+    #[test]
+    fn the_final_summon_animation_does_not_extend_invulnerability_into_the_chase() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 3);
+
+        // Durante la animación de 200: invulnerable.
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+        assert_eq!(run.king_health(), Some((200, 1000)));
+
+        // Termina -> Fleeing -> vulnerable en el acto.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert_eq!(run.king_health(), Some((150, 1000)));
+    }
+
     // --- Bloque 4, Commit 47: sin ataque del King durante la huida. ---
 
     #[test]
