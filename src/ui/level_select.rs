@@ -1,5 +1,6 @@
 use raylib::prelude::Color;
 
+use crate::game::GameMode;
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::palette_for_theme;
 use crate::ui::{GameOfLife, GameOfLifeRenderConfig, Hitbox};
@@ -32,10 +33,38 @@ const SELECTED_TEXT_COLOR: Color = Color::new(235, 230, 215, 255);
 const UNSELECTED_PANEL_COLOR: Color = Color::new(14, 12, 14, 255);
 const UNSELECTED_TEXT_COLOR: Color = Color::new(150, 144, 132, 255);
 
+/// Borde de la caja de modo SELECCIONADA. A diferencia de las filas
+/// de nivel (que toman el acento de su propio `LevelTheme`), las
+/// cajas `PORTAL`/`HORDE` no tienen un tema asociado, así que usan el
+/// mismo acento de "selección" ya establecido por Pausa/Victoria/
+/// Derrota/Bienvenida (`Color::new(210, 40, 50, 255)`) — el mismo
+/// literal, no un color nuevo.
+const MODE_SELECTED_BORDER_COLOR: Color = Color::new(210, 40, 50, 255);
+
 const TITLE_TEXT: &str = "SELECT LEVEL";
 const TITLE_SCALE: i32 = 4;
 const TITLE_TOP_MARGIN: i32 = 32;
 const TITLE_TO_ROWS_GAP: i32 = 28;
+
+/// Título de la sección de modo de juego, debajo del catálogo de
+/// niveles. Reutiliza la MISMA fuente/escala de fila (`ROW_SCALE`) en
+/// vez de introducir una escala de título nueva.
+const MODE_TITLE_TEXT: &str = "GAME MODE";
+
+/// Separación entre el fondo de la última fila de nivel y el título
+/// `GAME MODE`, y entre ese título y las dos cajas de modo.
+const MODE_SECTION_GAP: i32 = 24;
+
+/// Ancho fijo del catálogo de niveles reservado para el máximo
+/// conocido de filas (Tarea 48: 4, incluyendo el nivel procedural).
+/// El layout de modo se ancla DEBAJO de la última de esas filas, sin
+/// depender del número real de niveles del catálogo en tiempo de
+/// ejecución — igual que `compute_layout` ya hace para las filas de
+/// nivel.
+const KNOWN_LEVEL_ROW_COUNT: i32 = 4;
+
+/// Separación horizontal entre las dos cajas `PORTAL`/`HORDE`.
+const MODE_BOX_GAP: i32 = 24;
 
 /// Etiquetas romanas de presentación. Pertenecen a esta pantalla,
 /// NO a `LevelManager`: son puramente visuales.
@@ -84,6 +113,14 @@ fn glyph_rows(character: char) -> [u8; 7] {
         'F' => [
             0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
+
+        // 'G'/'P' añadidos para "GAME MODE"/"PORTAL": mismo bitmap
+        // 5x7 ya usado por `rendering::hud::letter_glyph_rows`
+        // ('G') y `welcome.rs` ('P') — misma familia visual, sin
+        // compartir implementación entre módulos.
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
         'H' => [
             0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
         ],
@@ -104,6 +141,9 @@ fn glyph_rows(character: char) -> [u8; 7] {
         ],
         'O' => [
             0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
         'R' => [
             0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
@@ -245,6 +285,17 @@ struct LevelSelectLayout {
     rows_top: i32,
     row_spacing: i32,
     roman_column_width: i32,
+
+    /// Posición X del título `GAME MODE`, centrado sobre las dos
+    /// cajas de modo (no sobre todo el framebuffer, para que quede
+    /// alineado con ellas en vez de con el título `SELECT LEVEL`).
+    mode_title_x: i32,
+    mode_title_y: i32,
+    mode_row_y: i32,
+    mode_box_width: i32,
+    mode_box_height: i32,
+    portal_box_x: i32,
+    horde_box_x: i32,
 }
 
 impl LevelSelectLayout {
@@ -273,6 +324,35 @@ fn compute_layout(framebuffer_width: i32, framebuffer_height: i32) -> LevelSelec
 
     let rows_top = title_y + GLYPH_HEIGHT * TITLE_SCALE + TITLE_TO_ROWS_GAP;
 
+    /*
+     * La sección de modo se ancla debajo de la ÚLTIMA fila de nivel
+     * conocida (`KNOWN_LEVEL_ROW_COUNT`), no del número real de
+     * niveles del catálogo activo: el catálogo actual siempre reporta
+     * 4 (`LevelManager::level_count`), pero este cálculo no depende
+     * de esa lectura en tiempo de ejecución, igual que el resto de
+     * `compute_layout`.
+     */
+    let last_level_row_bottom =
+        rows_top + KNOWN_LEVEL_ROW_COUNT * row_height + (KNOWN_LEVEL_ROW_COUNT - 1) * ROW_SPACING;
+
+    let mode_title_width = text_width(MODE_TITLE_TEXT, ROW_SCALE);
+
+    let mode_box_width = (row_width - MODE_BOX_GAP) / 2;
+
+    let mode_box_height = row_height;
+
+    let mode_section_x = centered_x(framebuffer_width, row_width);
+
+    let mode_title_x = mode_section_x + centered_x(row_width, mode_title_width);
+
+    let mode_title_y = last_level_row_bottom + MODE_SECTION_GAP;
+
+    let mode_row_y = mode_title_y + GLYPH_HEIGHT * ROW_SCALE + MODE_SECTION_GAP;
+
+    let portal_box_x = mode_section_x;
+
+    let horde_box_x = mode_section_x + mode_box_width + MODE_BOX_GAP;
+
     LevelSelectLayout {
         title_x,
         title_y,
@@ -282,6 +362,13 @@ fn compute_layout(framebuffer_width: i32, framebuffer_height: i32) -> LevelSelec
         rows_top,
         row_spacing: ROW_SPACING,
         roman_column_width,
+        mode_title_x,
+        mode_title_y,
+        mode_row_y,
+        mode_box_width,
+        mode_box_height,
+        portal_box_x,
+        horde_box_x,
     }
 }
 
@@ -351,14 +438,16 @@ fn deterministic_seed_cells(grid_width: usize, grid_height: usize) -> Vec<(usize
 /// nivel elegido y de decidir la transición de estado.
 pub(crate) struct LevelSelectScreen {
     selected_index: usize,
+    selected_mode: GameMode,
     game_of_life: GameOfLife,
 }
 
 impl LevelSelectScreen {
     /// Construye la pantalla para un framebuffer de
     /// `framebuffer_width x framebuffer_height`, sembrando su Juego
-    /// de la Vida de fondo de forma determinista y comenzando la
-    /// selección en el índice `0`.
+    /// de la Vida de fondo de forma determinista, comenzando la
+    /// selección de nivel en el índice `0` y el modo de juego en
+    /// `GameMode::default()` (Portal, el juego tradicional).
     pub(crate) fn new(framebuffer_width: i32, framebuffer_height: i32) -> Self {
         let grid_width = grid_dimension(framebuffer_width, CELL_SIZE);
 
@@ -370,6 +459,7 @@ impl LevelSelectScreen {
 
         Self {
             selected_index: 0,
+            selected_mode: GameMode::default(),
             game_of_life,
         }
     }
@@ -447,6 +537,68 @@ impl LevelSelectScreen {
 
             if hitbox.contains(mouse_x, mouse_y) {
                 return Some(index);
+            }
+        }
+
+        None
+    }
+
+    /// Modo de juego actualmente seleccionado.
+    pub(crate) fn selected_mode(&self) -> GameMode {
+        self.selected_mode
+    }
+
+    /// Mueve la selección de modo al anterior. Con solo dos
+    /// variantes (`GameMode::toggled`), "anterior" y "siguiente" son
+    /// la misma alternancia — mismos dos métodos que
+    /// `select_previous`/`select_next` mantienen por simetría de
+    /// convención de navegación, no porque el comportamiento difiera.
+    pub(crate) fn select_mode_previous(&mut self) {
+        self.selected_mode = self.selected_mode.toggled();
+    }
+
+    /// Mueve la selección de modo al siguiente.
+    pub(crate) fn select_mode_next(&mut self) {
+        self.selected_mode = self.selected_mode.toggled();
+    }
+
+    /// Fija el modo directamente a `mode`, sin pasar por
+    /// `toggled()`. Usado exclusivamente por el hover/clic de mouse
+    /// sobre las cajas `PORTAL`/`HORDE`; el teclado sigue usando
+    /// `select_mode_previous`/`select_mode_next`. Misma fuente de
+    /// verdad (`self.selected_mode`) para ambos canales de entrada.
+    pub(crate) fn set_mode(&mut self, mode: GameMode) {
+        self.selected_mode = mode;
+    }
+
+    /// Modo, si lo hay, cuya caja contiene `(mouse_x, mouse_y)`
+    /// (coordenadas lógicas del framebuffer).
+    ///
+    /// Recalcula el MISMO `compute_layout` que `render` usa para
+    /// dibujar ambas cajas, para que la hitbox siempre coincida con
+    /// la posición visual actual.
+    pub(crate) fn hit_test_mode(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+    ) -> Option<GameMode> {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        for (box_x, mode) in [
+            (layout.portal_box_x, GameMode::Portal),
+            (layout.horde_box_x, GameMode::Horde),
+        ] {
+            let hitbox = Hitbox {
+                x0: box_x,
+                y0: layout.mode_row_y,
+                x1: box_x + layout.mode_box_width,
+                y1: layout.mode_row_y + layout.mode_box_height,
+            };
+
+            if hitbox.contains(mouse_x, mouse_y) {
+                return Some(mode);
             }
         }
 
@@ -580,6 +732,69 @@ impl LevelSelectScreen {
                 &name_uppercase,
                 layout.row_x + ROW_PADDING + layout.roman_column_width,
                 text_y,
+                ROW_SCALE,
+                text_color,
+            );
+        }
+
+        draw_text(
+            framebuffer,
+            MODE_TITLE_TEXT,
+            layout.mode_title_x,
+            layout.mode_title_y,
+            ROW_SCALE,
+            TITLE_COLOR,
+        );
+
+        for (box_x, mode, label) in [
+            (
+                layout.portal_box_x,
+                GameMode::Portal,
+                GameMode::Portal.label(),
+            ),
+            (layout.horde_box_x, GameMode::Horde, GameMode::Horde.label()),
+        ] {
+            let selected = mode == self.selected_mode;
+
+            let (panel_color, border_color, text_color) = if selected {
+                (
+                    SELECTED_PANEL_COLOR,
+                    MODE_SELECTED_BORDER_COLOR,
+                    SELECTED_TEXT_COLOR,
+                )
+            } else {
+                (
+                    UNSELECTED_PANEL_COLOR,
+                    UNSELECTED_PANEL_COLOR,
+                    UNSELECTED_TEXT_COLOR,
+                )
+            };
+
+            fill_rect(
+                framebuffer,
+                box_x,
+                layout.mode_row_y,
+                box_x + layout.mode_box_width,
+                layout.mode_row_y + layout.mode_box_height,
+                border_color,
+            );
+
+            fill_rect(
+                framebuffer,
+                box_x + ROW_BORDER_THICKNESS,
+                layout.mode_row_y + ROW_BORDER_THICKNESS,
+                box_x + layout.mode_box_width - ROW_BORDER_THICKNESS,
+                layout.mode_row_y + layout.mode_box_height - ROW_BORDER_THICKNESS,
+                panel_color,
+            );
+
+            let label_width = text_width(label, ROW_SCALE);
+
+            draw_text(
+                framebuffer,
+                label,
+                box_x + centered_x(layout.mode_box_width, label_width),
+                layout.mode_row_y + ROW_PADDING,
                 ROW_SCALE,
                 text_color,
             );
@@ -718,6 +933,94 @@ mod tests {
         screen.set_selected_index(2);
 
         assert_eq!(screen.selected_index(), 2);
+    }
+
+    #[test]
+    fn initial_mode_is_portal() {
+        let screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        assert_eq!(screen.selected_mode(), GameMode::Portal);
+    }
+
+    #[test]
+    fn mode_navigation_toggles_between_the_two_modes() {
+        let mut screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        screen.select_mode_next();
+        assert_eq!(screen.selected_mode(), GameMode::Horde);
+
+        screen.select_mode_next();
+        assert_eq!(screen.selected_mode(), GameMode::Portal);
+
+        screen.select_mode_previous();
+        assert_eq!(screen.selected_mode(), GameMode::Horde);
+    }
+
+    #[test]
+    fn set_mode_overrides_the_current_selection_directly() {
+        let mut screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        screen.set_mode(GameMode::Horde);
+
+        assert_eq!(screen.selected_mode(), GameMode::Horde);
+    }
+
+    #[test]
+    fn hit_test_mode_matches_each_box_and_none_outside() {
+        let screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_y = layout.mode_row_y + layout.mode_box_height / 2;
+
+        let portal_center_x = layout.portal_box_x + layout.mode_box_width / 2;
+        let horde_center_x = layout.horde_box_x + layout.mode_box_width / 2;
+
+        assert_eq!(
+            screen.hit_test_mode(REFERENCE_WIDTH, REFERENCE_HEIGHT, portal_center_x, center_y),
+            Some(GameMode::Portal)
+        );
+
+        assert_eq!(
+            screen.hit_test_mode(REFERENCE_WIDTH, REFERENCE_HEIGHT, horde_center_x, center_y),
+            Some(GameMode::Horde)
+        );
+
+        assert_eq!(
+            screen.hit_test_mode(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn mode_boxes_do_not_overlap_and_stay_inside_the_framebuffer() {
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        assert!(layout.portal_box_x >= 0);
+        assert!(layout.horde_box_x + layout.mode_box_width <= REFERENCE_WIDTH);
+        assert!(layout.portal_box_x + layout.mode_box_width <= layout.horde_box_x);
+
+        assert!(layout.mode_row_y >= 0);
+        assert!(layout.mode_row_y + layout.mode_box_height <= REFERENCE_HEIGHT);
+    }
+
+    #[test]
+    fn mode_section_does_not_overlap_the_level_rows() {
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let last_level_row_bottom = layout.row_y(3) + layout.row_height;
+
+        assert!(last_level_row_bottom <= layout.mode_title_y);
+    }
+
+    #[test]
+    fn mode_title_fits_within_reference_framebuffer() {
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let title_width = text_width(MODE_TITLE_TEXT, ROW_SCALE);
+
+        assert!(layout.mode_title_x >= 0);
+        assert!(layout.mode_title_x + title_width <= REFERENCE_WIDTH);
     }
 
     #[test]

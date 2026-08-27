@@ -285,6 +285,37 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Izquierda/Derecha alternan el modo de juego (`GameMode`),
+         * un eje de navegación completamente independiente de
+         * Arriba/Abajo (nivel): ninguna de las dos teclas se usaba
+         * dentro de este menú antes de esta tarea, así que no hay
+         * conflicto que resolver con un "modo de foco" — ambos ejes
+         * están siempre activos a la vez.
+         */
+        if window.is_key_pressed(KeyboardKey::KEY_LEFT) || window.is_key_pressed(KeyboardKey::KEY_A)
+        {
+            let mode_before = self.level_select.selected_mode();
+
+            self.level_select.select_mode_previous();
+
+            if self.level_select.selected_mode() != mode_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_RIGHT)
+            || window.is_key_pressed(KeyboardKey::KEY_D)
+        {
+            let mode_before = self.level_select.selected_mode();
+
+            self.level_select.select_mode_next();
+
+            if self.level_select.selected_mode() != mode_before {
+                self.audio.play_sound(SoundEffect::MenuMove);
+            }
+        }
+
+        /*
          * Mouse: mismo patrón exacto que `update_paused`/
          * `update_victory`/`update_defeat` — hover mueve la selección
          * (`set_selected_index`, la MISMA fuente de verdad que el
@@ -316,6 +347,33 @@ impl<'aud> App<'aud> {
         if let Some(index) = hovered_index {
             if (mouse_moved || left_clicked) && index != self.level_select.selected_index() {
                 self.level_select.set_selected_index(index);
+
+                if !left_clicked {
+                    self.audio.play_sound(SoundEffect::MenuMove);
+                }
+            }
+        }
+
+        /*
+         * Mismo patrón para las cajas `PORTAL`/`HORDE`: hover/clic
+         * escriben la MISMA `selected_mode` que ←/→ ya escriben por
+         * teclado (`set_mode`, nunca un campo paralelo). A diferencia
+         * de una fila de nivel, un clic aquí SOLO cambia el modo —
+         * nunca lanza la partida: confirmar sigue siendo
+         * exclusivamente Enter o el clic sobre una fila de nivel
+         * (abajo), reutilizando `start_selected_level` sin duplicar
+         * esa transición.
+         */
+        let hovered_mode = self.level_select.hit_test_mode(
+            FRAMEBUFFER_WIDTH,
+            FRAMEBUFFER_HEIGHT,
+            mouse_x,
+            mouse_y,
+        );
+
+        if let Some(mode) = hovered_mode {
+            if (mouse_moved || left_clicked) && mode != self.level_select.selected_mode() {
+                self.level_select.set_mode(mode);
 
                 if !left_clicked {
                     self.audio.play_sound(SoundEffect::MenuMove);

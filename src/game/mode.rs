@@ -12,18 +12,12 @@
 /// sistema — eso llega en un commit posterior. Por ahora solo existe
 /// como concepto de dominio, preparado para que la selección de nivel
 /// y la sesión puedan adoptarlo sin cambiar su forma otra vez.
-/// `#[allow(dead_code)]`: este commit únicamente introduce el tipo —
-/// todavía no lo consume ninguna pantalla ni `GameSession`. El
-/// siguiente commit (selección de modo en Level Select) elimina esta
-/// anotación al empezar a usarlo de verdad.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GameMode {
     Portal,
     Horde,
 }
 
-#[allow(dead_code)]
 impl GameMode {
     /// El otro modo. Con solo dos variantes, "anterior" y "siguiente"
     /// son la misma alternancia — mismo patrón ya establecido por
