@@ -75,33 +75,34 @@ fn cell_center(row: usize, column: usize, block_size: usize) -> Vector2 {
     )
 }
 
-/// Tono "pan de oro" hacia el que se tiñe el billboard de The King
-/// mientras es invulnerable (Bloque 4/5): un dorado cálido y saturado.
-const GILD_GOLD: Color = Color::new(255, 205, 70, 255);
+/// Componentes del dorado a máximo brillo hacia el que se tiñe el
+/// billboard de The King mientras es invulnerable (Bloque 4/5). Cada
+/// píxel opaco del sprite pasa a ser ESTE oro, atenuado solo por el
+/// sombreado propio del sprite — nunca conserva su tono original: el
+/// jugador debe ver a The King "full dorado" de un vistazo.
+const GILD_R: f32 = 255.0;
+const GILD_G: f32 = 198.0;
+const GILD_B: f32 = 58.0;
 
-/// Cuánto se acerca cada píxel del sprite al dorado cuando está
-/// "chapado" (0.0 = sin cambio, 1.0 = dorado puro escalado por
-/// luminancia). `0.85` deja la silueta y el sombreado del sprite
-/// perfectamente legibles pero inequívocamente dorados.
-const GILD_AMOUNT: f32 = 0.85;
+/// Piso de brillo del chapado: incluso el píxel más oscuro del sprite
+/// queda a este % del oro pleno, para que la silueta entera se lea
+/// como oro y no como un dorado casi negro en las zonas de sombra.
+const GILD_MIN_SHADE: f32 = 0.5;
 
-/// Tiñe `color` hacia `GILD_GOLD` conservando su luminancia original
-/// (las zonas oscuras quedan oro oscuro, las claras oro brillante):
-/// aspecto de estatua chapada en oro, no un tapón plano de color. El
-/// canal alfa no se toca.
+/// Convierte `color` en ORO macizo: descarta su tono, conserva solo su
+/// luminancia (para el sombreado interno) y su canal alfa (para la
+/// silueta). Resultado: The King se ve completamente dorado mientras
+/// es invulnerable, sin importar de qué color sea su textura base.
 fn gild(color: Color) -> Color {
     let luminance =
         (0.299 * color.r as f32 + 0.587 * color.g as f32 + 0.114 * color.b as f32) / 255.0;
 
-    let mix = |base: u8, gold: u8| -> u8 {
-        let gilded = (gold as f32 * luminance).clamp(0.0, 255.0);
-        (base as f32 * (1.0 - GILD_AMOUNT) + gilded * GILD_AMOUNT).clamp(0.0, 255.0) as u8
-    };
+    let shade = GILD_MIN_SHADE + (1.0 - GILD_MIN_SHADE) * luminance.clamp(0.0, 1.0);
 
     Color::new(
-        mix(color.r, GILD_GOLD.r),
-        mix(color.g, GILD_GOLD.g),
-        mix(color.b, GILD_GOLD.b),
+        (GILD_R * shade).round().clamp(0.0, 255.0) as u8,
+        (GILD_G * shade).round().clamp(0.0, 255.0) as u8,
+        (GILD_B * shade).round().clamp(0.0, 255.0) as u8,
         color.a,
     )
 }
@@ -491,18 +492,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gild_pushes_a_pixel_toward_gold_and_keeps_its_alpha() {
-        // Gris medio -> dorado: más rojo que verde, más verde que azul,
-        // alfa intacto.
-        let gilded = gild(Color::new(128, 128, 128, 200));
+    fn gild_turns_any_pixel_into_gold_and_keeps_its_alpha() {
+        // Da igual el color de origen (aquí un azul): sale ORO — más
+        // rojo que verde, más verde que azul — y el alfa intacto.
+        let gilded = gild(Color::new(30, 60, 200, 200));
         assert!(gilded.r > gilded.g, "el oro tiene más rojo que verde");
         assert!(gilded.g > gilded.b, "el oro tiene más verde que azul");
         assert_eq!(gilded.a, 200, "el canal alfa no se toca");
     }
 
     #[test]
-    fn gild_preserves_relative_brightness() {
-        // Un píxel oscuro sigue siendo oro oscuro; uno claro, oro claro.
+    fn gild_preserves_relative_brightness_for_internal_shading() {
         let dark = gild(Color::new(20, 20, 20, 255));
         let bright = gild(Color::new(240, 240, 240, 255));
         assert!(bright.r > dark.r);
@@ -510,8 +510,13 @@ mod tests {
     }
 
     #[test]
-    fn a_fully_black_pixel_gilds_to_near_black() {
+    fn even_a_fully_black_pixel_gilds_to_clearly_visible_gold() {
+        // "Full dorado": nada del sprite queda casi negro.
         let gilded = gild(Color::new(0, 0, 0, 255));
-        assert!(gilded.r < 20 && gilded.g < 20 && gilded.b < 20);
+        assert!(
+            gilded.r >= 120,
+            "el rojo del oro más oscuro sigue siendo alto"
+        );
+        assert!(gilded.r > gilded.b, "sigue siendo oro, no gris");
     }
 }
