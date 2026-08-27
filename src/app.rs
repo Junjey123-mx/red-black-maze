@@ -685,13 +685,28 @@ impl<'aud> App<'aud> {
          * `update_playing`. `level_cap`/`use_clusters` son identidad
          * del NIVEL (LevelManager), no de la sesión — `GameSession`
          * los recibe como parámetros y no conoce `LevelTheme`.
+         *
+         * Restauración de Portal Mode: este es el ÚNICO punto de
+         * entrada de TODA la progresión de Dealer Hands
+         * (countdown/mensaje/repoblación — `HandState::tick` es lo
+         * único que puede sacar la fase de `Active`, y solo se
+         * evalúa desde aquí). Con `GameMode::Portal` activo,
+         * simplemente NO se invoca: la fase queda congelada en
+         * `Active` para siempre, `hand_hud_message()` nunca deja de
+         * reportar `None` (sin "THE HOUSE IS RELOADING..."/"NEXT HAND
+         * IN..."), y ninguna Hand nueva llega a spawnear — un Dealer
+         * muerto en Portal Mode permanece muerto, sin que
+         * `render_playing`/el HUD necesiten ninguna comprobación de
+         * modo adicional por su cuenta.
          */
-        self.session.update_hand_state(
-            window.get_frame_time(),
-            BLOCK_SIZE,
-            self.level_manager.current_dealer_cap(),
-            self.level_manager.current_is_procedural(),
-        );
+        if self.session.mode() == GameMode::Horde {
+            self.session.update_hand_state(
+                window.get_frame_time(),
+                BLOCK_SIZE,
+                self.level_manager.current_dealer_cap(),
+                self.level_manager.current_is_procedural(),
+            );
+        }
 
         /*
          * Tarea 46.B: resolución terminal ÚNICA de este cuadro, ahora
