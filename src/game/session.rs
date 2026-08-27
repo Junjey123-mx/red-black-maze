@@ -105,6 +105,15 @@ struct KingEncounter {
     /// `KingHit`. Se recalcula en cada `damage_entity`.
     last_hit_broke_phase: bool,
 
+    /// `true` si el ÚLTIMO disparo resuelto contra The King fue
+    /// RECHAZADO por completo por su estado protegido (invocación en
+    /// curso, o gate: The King clavado en un umbral con su cohorte
+    /// todavía viva). `App` lo lee justo después de `damage_entity`
+    /// para reproducir un "clonc" de deflexión y así explicarle al
+    /// jugador por qué no le está haciendo daño. Se recalcula en cada
+    /// `damage_entity`.
+    last_hit_deflected: bool,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -140,6 +149,7 @@ impl KingEncounter {
             phase: KingEncounterPhase::Fighting,
             thresholds_consumed: 0,
             last_hit_broke_phase: false,
+            last_hit_deflected: false,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -947,6 +957,42 @@ impl GameSession {
         self.king_encounter.phase == KingEncounterPhase::Summoning
     }
 
+    /// `true` mientras The King NO puede recibir daño: durante la
+    /// animación de invocación y durante el "gate" (clavado en un
+    /// umbral porque su cohorte anterior sigue viva). Es exactamente
+    /// `pending_threshold.is_some()` — desde que un disparo rompe un
+    /// umbral hasta que la invocación de ese umbral termina.
+    ///
+    /// Rendering lo usa para teñir de DORADO el billboard del jefe
+    /// (feedback claro de "ahora no le hace nada") y `App` para el
+    /// aviso de HUD. Al morir el último Dealer de la cohorte, la
+    /// invocación arranca de inmediato y el King sigue dorado durante
+    /// toda ella; al acabar la animación vuelve a `Fighting`,
+    /// `pending_threshold` se limpia y recupera su color normal.
+    pub(crate) fn king_is_invulnerable(&self) -> bool {
+        self.king_encounter.pending_threshold.is_some()
+    }
+
+    /// `true` cuando The King está invulnerable PERO no por estar
+    /// invocando, sino por el gate: sigue en `Fighting`, clavado en el
+    /// umbral, esperando a que el jugador limpie su cohorte. `App`
+    /// muestra en este caso el aviso "THE KING IS SHIELDED / CLEAR HIS
+    /// DEALERS FIRST" (durante la invocación ya se muestra el aviso de
+    /// "CALLS HIS HAND").
+    pub(crate) fn king_is_shield_gated(&self) -> bool {
+        self.king_encounter.phase == KingEncounterPhase::Fighting
+            && self.king_encounter.pending_threshold.is_some()
+    }
+
+    /// Consume el evento "el último disparo contra The King rebotó por
+    /// su estado protegido". `App` lo lee una vez tras `damage_entity`
+    /// para reproducir un SFX de deflexión.
+    pub(crate) fn take_king_hit_deflected(&mut self) -> bool {
+        let deflected = self.king_encounter.last_hit_deflected;
+        self.king_encounter.last_hit_deflected = false;
+        deflected
+    }
+
     /// Consume el evento "The King acaba de entrar en `Summoning`"
     /// (Bloque 5, Commit 52): retorna `true` EXACTAMENTE una vez por
     /// cada transición autoritativa a la fase de invocación y lo
@@ -1617,6 +1663,7 @@ impl GameSession {
         let damage = self.weapon.tier().damage();
 
         self.king_encounter.last_hit_broke_phase = false;
+        self.king_encounter.last_hit_deflected = false;
 
         let is_living_king = self
             .entities
@@ -1657,6 +1704,7 @@ impl GameSession {
          * artificial: simplemente no se aplica daño.
          */
         if self.king_encounter.phase == KingEncounterPhase::Summoning {
+            self.king_encounter.last_hit_deflected = true;
             return EntityDamageOutcome::None;
         }
 
@@ -1677,6 +1725,7 @@ impl GameSession {
             let floor = KING_PHASE_THRESHOLDS[pending];
 
             if health <= floor {
+                self.king_encounter.last_hit_deflected = true;
                 return EntityDamageOutcome::None;
             }
 
@@ -7378,6 +7427,102 @@ e             #
         // descarga rápida saltándose fases.
         assert!(run.king_alive());
         assert!(run.king_thresholds_consumed() <= 2);
+    }
+
+    // --- Feedback de invulnerabilidad de The King (dorado + avisos). ---
+
+    #[test]
+    fn the_king_is_marked_invulnerable_during_summoning_and_the_gate_but_not_while_fighting() {
+        // Fighting normal (1000..800): vulnerable, sin gate.
+        let (mut run, king) = horde_at_the_king(4);
+        assert!(!run.king_is_invulnerable());
+        assert!(!run.king_is_shield_gated());
+        run.damage_entity(king);
+        assert!(!run.king_is_invulnerable());
+
+        // Rompe 800 -> Summoning: invulnerable, pero NO por gate.
+        let (mut run, _king) = king_at_summon(0);
+        assert!(run.king_is_summoning());
+        assert!(run.king_is_invulnerable());
+        assert!(!run.king_is_shield_gated());
+
+        // Termina la invocación -> Fighting de nuevo: vulnerable.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert!(!run.king_is_invulnerable());
+        assert!(!run.king_is_shield_gated());
+    }
+
+    #[test]
+    fn the_king_turns_gold_gated_at_a_threshold_and_normal_again_after_the_summon() {
+        let (mut run, king) = king_after_first_cohort();
+
+        // Baja clavado hasta 600 con la cohorte de 800 aún viva: gate.
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+        assert!(run.king_is_shield_gated(), "clavado en 600 -> dorado");
+        assert!(run.king_is_invulnerable());
+        assert!(!run.king_is_summoning());
+
+        // Limpia la cohorte: arranca la invocación de 600. SIGUE dorado
+        // (ahora por invocación, no por gate).
+        let cohort: Vec<usize> = run
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.summon_cohort() == Some(0))
+            .map(|(i, _)| i)
+            .collect();
+        for i in cohort {
+            run.damage_entity(i);
+            run.damage_entity(i);
+        }
+        run.update_king_encounter(0.0, BLOCK_SIZE);
+        assert!(run.king_is_summoning());
+        assert!(run.king_is_invulnerable());
+        assert!(!run.king_is_shield_gated());
+
+        // Acaba la invocación -> vuelve a color normal.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert!(!run.king_is_invulnerable());
+        assert!(!run.king_is_shield_gated());
+    }
+
+    #[test]
+    fn a_deflected_king_shot_is_reported_once_and_a_real_hit_is_not() {
+        let (mut run, king) = king_after_first_cohort();
+
+        // Baja a 600 (real) — el impacto que aterriza NO es deflexión.
+        for _ in 0..29 {
+            run.damage_entity(king);
+        }
+        // El último tramo hasta 600.
+        while run.king_health().map(|(h, _)| h).unwrap_or(0) > 600 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+            assert!(!run.take_king_hit_deflected());
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+
+        // Ahora clavado: cada disparo rebota, y se reporta UNA vez.
+        for _ in 0..5 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+            assert!(run.take_king_hit_deflected());
+            assert!(!run.take_king_hit_deflected(), "el evento se consume");
+        }
+    }
+
+    #[test]
+    fn portal_mode_never_reports_king_invulnerability() {
+        let mut portal = new_test_session_with_one_dealer();
+        for _ in 0..200 {
+            portal.damage_entity(0);
+            portal.update_entities(0.1, BLOCK_SIZE);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+            assert!(!portal.king_is_invulnerable());
+            assert!(!portal.king_is_shield_gated());
+            assert!(!portal.take_king_hit_deflected());
+        }
     }
 
     // --- Bloque 4, Commit 41: segunda invocación de 5 Dealers (600). ---

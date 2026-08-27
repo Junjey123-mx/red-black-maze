@@ -881,6 +881,8 @@ mod tests {
             "5 DEALERS JOIN THE HAND",
             "THE KING CALLS HIS FINAL HAND!",
             "10 DEALERS JOIN THE HAND",
+            "THE KING IS SHIELDED",
+            "CLEAR HIS DEALERS FIRST",
         ];
 
         for line in lines {
@@ -904,6 +906,8 @@ mod tests {
             "5 DEALERS JOIN THE HAND",
             "THE KING CALLS HIS FINAL HAND!",
             "10 DEALERS JOIN THE HAND",
+            "THE KING IS SHIELDED",
+            "CLEAR HIS DEALERS FIRST",
         ] {
             let width = hand_message_width(line, KING_SUMMON_WARNING_SCALE);
             assert!(width > 0);

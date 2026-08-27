@@ -1007,6 +1007,16 @@ impl<'aud> App<'aud> {
                                 king_impact_sound(outcome, self.session.last_hit_broke_king_phase())
                             {
                                 self.audio.play_sound(sfx);
+                            } else if self.session.take_king_hit_deflected() {
+                                /*
+                                 * El disparo rebotó en el King dorado
+                                 * (invocando o clavado en un umbral).
+                                 * Se reutiliza el "clonc" de impacto
+                                 * contra pared como deflexión — así el
+                                 * jugador OYE que no le está haciendo
+                                 * daño, en vez de silencio confuso.
+                                 */
+                                self.audio.play_sound(SoundEffect::WallHit);
                             }
                         } else {
                             match outcome {
@@ -1675,6 +1685,7 @@ impl<'aud> App<'aud> {
                     self.session.torch_frame_index(),
                     self.session.entities(),
                     self.session.king_summon_animation_scale(),
+                    self.session.king_is_invulnerable(),
                     self.session.ammo_pickups(),
                     self.session.health_pickups(),
                     self.session.royal_flush_pickup(),
@@ -1810,6 +1821,18 @@ impl<'aud> App<'aud> {
                 king_summon_warning_lines(self.session.king_active_summon_index())
             {
                 render_king_summon_warning(framebuffer, line_one, line_two);
+            } else if self.session.king_is_shield_gated() {
+                /*
+                 * Gate entre cohortes: The King está clavado en un
+                 * umbral y NO recibe daño hasta que el jugador limpie
+                 * su cohorte. Se le explica con el mismo aviso de HUD
+                 * (además del billboard dorado del jefe).
+                 */
+                render_king_summon_warning(
+                    framebuffer,
+                    "THE KING IS SHIELDED",
+                    "CLEAR HIS DEALERS FIRST",
+                );
             }
         }
 
