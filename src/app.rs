@@ -1,5 +1,6 @@
 use crate::audio::{
-    AudioManager, MusicTrack, SoundEffect, music_track_for_theme, weapon_fire_sound,
+    AudioManager, MusicTrack, SoundEffect, enemy_death_sound, enemy_hit_sound,
+    music_track_for_theme, weapon_fire_sound,
 };
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameMode, GameSession, GameState, HandHudMessage, ViewMode};
@@ -20,7 +21,7 @@ use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
     VictoryScreen, WelcomeScreen,
 };
-use crate::world::{EntityDamageOutcome, EntityState, Level, LevelManager};
+use crate::world::{EnemyKind, EntityDamageOutcome, EntityState, Level, LevelManager};
 use raylib::prelude::*;
 
 /// Umbral de desplazamiento (al cuadrado, en píxeles^2) por encima
@@ -699,6 +700,17 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Bloque 3, Commit 26: si el ataque que conectó este cuadro
+         * fue de The King, suena su SFX de ataque propio — una sola
+         * vez por ataque aceptado (cooldown 1.5 s), nunca por cuadro.
+         * `PlayerHit` de arriba sigue sonando igual: el jugador
+         * recibió daño real.
+         */
+        if self.session.king_attacked_this_frame() {
+            self.audio.play_sound(SoundEffect::KingAttack);
+        }
+
+        /*
          * Dealer Hands: countdown de "The House is reloading" y
          * spawn de la siguiente Hand cuando corresponda. Llamado
          * exclusivamente aquí, dentro de `update_playing` (mismo
@@ -730,14 +742,18 @@ impl<'aud> App<'aud> {
 
         if self.session.mode() == GameMode::Horde {
             /*
-             * Bloque 1, Commit 10: `update_hand_state` retorna
-             * `Option<HandOutcome>` — el punto de extensión donde un
-             * bloque futuro podrá enganchar supplies/Royal Flush sin
-             * reabrir `GameSession`. Todavía no existe ningún
-             * consumidor para ese valor aquí (ninguna de esas
-             * features pertenece a este bloque), así que se descarta
-             * explícitamente en vez de dejarlo implícito.
+             * `update_hand_state` avanza el countdown de intermisión,
+             * spawnea la siguiente Hand de Dealers cuando corresponde
+             * y, en la Final Hand, coloca a The King (Bloque 3, Commit
+             * 24).
+             *
+             * Bloque 3, Commit 26: `SoundEffect::KingSpawn` suena
+             * EXACTAMENTE en el cuadro en que `king_spawned` pasa de
+             * `false` a `true` — se compara el valor de antes y el de
+             * después de esta llamada.
              */
+            let king_was_spawned = self.session.king_spawned();
+
             let _hand_transition = self.session.update_hand_state(
                 window.get_frame_time(),
                 BLOCK_SIZE,
@@ -745,6 +761,10 @@ impl<'aud> App<'aud> {
                 self.level_manager.current_is_procedural(),
                 final_hand_number,
             );
+
+            if !king_was_spawned && self.session.king_spawned() {
+                self.audio.play_sound(SoundEffect::KingSpawn);
+            }
         }
 
         /*
@@ -904,17 +924,33 @@ impl<'aud> App<'aud> {
              * `EnemyHit` (no letal) o `EnemyDeath` (letal) sin
              * inferirlo del `EntityState` resultante. Un golpe letal
              * nunca también reproduce `EnemyHit`.
+             *
+             * Bloque 3, Commit 26: si la entidad golpeada es The King,
+             * el feedback sonoro usa sus SFX propios (`KingHit`/
+             * `KingDeath`) en vez de los del Dealer. `KingDeath` suena
+             * exactamente una vez: `apply_damage` ignora todo daño
+             * posterior a `Dead`, así que nunca vuelve a producirse un
+             * `Killed` para el mismo King.
              */
             match shot_result {
                 HitscanHit::Target { target_index, .. } => {
                     if let Some(&entity_index) = target_entity_indices.get(target_index) {
-                        match self.session.damage_entity(entity_index) {
+                        let outcome = self.session.damage_entity(entity_index);
+
+                        let kind = self
+                            .session
+                            .entities()
+                            .get(entity_index)
+                            .map(|entity| entity.kind())
+                            .unwrap_or(EnemyKind::Dealer);
+
+                        match outcome {
                             EntityDamageOutcome::Hit => {
-                                self.audio.play_sound(SoundEffect::EnemyHit);
+                                self.audio.play_sound(enemy_hit_sound(kind));
                             }
 
                             EntityDamageOutcome::Killed => {
-                                self.audio.play_sound(SoundEffect::EnemyDeath);
+                                self.audio.play_sound(enemy_death_sound(kind));
                             }
 
                             EntityDamageOutcome::None => {}

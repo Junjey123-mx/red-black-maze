@@ -196,6 +196,12 @@ pub(crate) struct GameSession {
     /// así que arranca en `false` sin reset explícito.
     king_spawned: bool,
 
+    /// `true` si un ataque de The King fue ACEPTADO en la última
+    /// llamada a `process_dealer_attacks` (Bloque 3, Commit 26). Se
+    /// recalcula cada cuadro; `App` lo lee para reproducir
+    /// `SoundEffect::KingAttack` una sola vez por ataque efectivo.
+    king_attacked_this_frame: bool,
+
     /// Sistema de "Dealer Hands": HAND I/II/III..., cadáveres aparte
     /// (esos viven en `Entity`/`entities`, ver `update_entities`).
     /// Pertenece a la sesión — nunca a `AudioManager`/rendering — y
@@ -379,6 +385,7 @@ impl GameSession {
             royal_flush_pickup: None,
             royal_flush_spawned: false,
             king_spawned: false,
+            king_attacked_this_frame: false,
             mode,
         };
 
@@ -581,6 +588,13 @@ impl GameSession {
     #[allow(dead_code)]
     pub(crate) fn king_spawned(&self) -> bool {
         self.king_spawned
+    }
+
+    /// `true` si un ataque de The King fue aceptado en la última
+    /// llamada a `process_dealer_attacks` (Bloque 3, Commit 26). `App`
+    /// lo lee para reproducir `SoundEffect::KingAttack`.
+    pub(crate) fn king_attacked_this_frame(&self) -> bool {
+        self.king_attacked_this_frame
     }
 
     /// `true` mientras haya un King VIVO en el mundo (nunca cuenta un
@@ -1126,12 +1140,18 @@ impl GameSession {
 
         let mut total_damage = 0;
 
+        self.king_attacked_this_frame = false;
+
         for entity in &mut self.entities {
             if entity.is_dead() {
                 continue;
             }
 
             if entity.attempt_attack(player_position, delta_time, block_size) {
+                if entity.kind() == EnemyKind::King {
+                    self.king_attacked_this_frame = true;
+                }
+
                 /*
                  * Bloque 3, Commit 23: el daño de un ataque aceptado
                  * lo decide el tipo de enemigo. The King golpea por
@@ -1790,6 +1810,36 @@ mod tests {
         let mut dealer_session = new_test_session_with_one_dealer();
         move_player_near_dealer_and_alert(&mut dealer_session, 0, 20.0);
         assert_eq!(dealer_session.process_dealer_attacks(0.016, BLOCK_SIZE), 10);
+    }
+
+    #[test]
+    fn king_attacked_this_frame_flags_only_a_kings_accepted_attack() {
+        // King en rango: el flag se enciende exactamente en el cuadro
+        // del ataque aceptado.
+        let mut king_run = new_test_session_with_one_dealer();
+        let cell = king_run.entities()[0].position();
+        king_run.entities.clear();
+        king_run.entities.push(Entity::king_at_cell(
+            cell.y as usize / BLOCK_SIZE,
+            cell.x as usize / BLOCK_SIZE,
+            BLOCK_SIZE,
+        ));
+        move_player_near_dealer_and_alert(&mut king_run, 0, 20.0);
+
+        assert!(!king_run.king_attacked_this_frame());
+        assert_eq!(king_run.process_dealer_attacks(0.016, BLOCK_SIZE), 20);
+        assert!(king_run.king_attacked_this_frame());
+
+        // Cuadro siguiente sin ataque aceptado (cooldown): el flag se
+        // apaga.
+        assert_eq!(king_run.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+        assert!(!king_run.king_attacked_this_frame());
+
+        // Un Dealer normal atacando NUNCA enciende el flag del King.
+        let mut dealer_run = new_test_session_with_one_dealer();
+        move_player_near_dealer_and_alert(&mut dealer_run, 0, 20.0);
+        assert_eq!(dealer_run.process_dealer_attacks(0.016, BLOCK_SIZE), 10);
+        assert!(!dealer_run.king_attacked_this_frame());
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::Path;
 use raylib::prelude::*;
 
 use crate::player::WeaponTier;
-use crate::world::LevelTheme;
+use crate::world::{EnemyKind, LevelTheme};
 
 /// Identidad tipada de una de las cuatro pistas de música de fondo
 /// (Tarea 46.5). `App` selecciona la pista activa por este valor
@@ -157,12 +157,35 @@ pub(crate) enum SoundEffect {
     /// misma cadencia — solo suena más grave y contundente. El arma
     /// Standard sigue usando `Shoot` sin cambios.
     RoyalWeaponFire,
+
+    /// The King entra en la Final Hand (Bloque 3, Commit 26): se
+    /// dispara EXACTAMENTE una vez, en el cuadro en que
+    /// `GameSession::king_spawned` pasa de `false` a `true`.
+    KingSpawn,
+
+    /// Un disparo del jugador impacta a The King sin matarlo (Bloque
+    /// 3, Commit 26): `EntityDamageOutcome::Hit` sobre la entidad
+    /// King. Reemplaza a `EnemyHit` para el jefe — el jugador debe oír
+    /// que SÍ le está haciendo daño a las 20 (o 10) balas.
+    KingHit,
+
+    /// The King conecta un ataque contra el jugador (Bloque 3, Commit
+    /// 26): un ataque de King ACEPTADO este cuadro por
+    /// `GameSession::process_dealer_attacks`. Nunca por cuadro, solo
+    /// al aceptarse (cooldown 1.5 s).
+    KingAttack,
+
+    /// The King muere (Bloque 3, Commit 26): `EntityDamageOutcome::Killed`
+    /// sobre la entidad King. Reemplaza a `EnemyDeath` para el jefe y
+    /// suena EXACTAMENTE una vez (`apply_damage` ignora todo daño
+    /// posterior a un `Dead`).
+    KingDeath,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 16] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 20] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -179,6 +202,10 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 16] = [
     SoundEffect::HealthPickup,
     SoundEffect::RoyalFlushPickup,
     SoundEffect::RoyalWeaponFire,
+    SoundEffect::KingSpawn,
+    SoundEffect::KingHit,
+    SoundEffect::KingAttack,
+    SoundEffect::KingDeath,
 ];
 
 /// SFX de disparo aceptado correspondiente al `WeaponTier` activo
@@ -189,6 +216,25 @@ pub(crate) fn weapon_fire_sound(tier: WeaponTier) -> SoundEffect {
     match tier {
         WeaponTier::Standard => SoundEffect::Shoot,
         WeaponTier::RoyalFlush => SoundEffect::RoyalWeaponFire,
+    }
+}
+
+/// SFX de un impacto NO letal según el tipo de enemigo golpeado
+/// (Bloque 3, Commit 26). The King usa su propio `KingHit`; un Dealer
+/// conserva `EnemyHit` sin cambios.
+pub(crate) fn enemy_hit_sound(kind: EnemyKind) -> SoundEffect {
+    match kind {
+        EnemyKind::Dealer => SoundEffect::EnemyHit,
+        EnemyKind::King => SoundEffect::KingHit,
+    }
+}
+
+/// SFX de un impacto LETAL según el tipo de enemigo (Bloque 3, Commit
+/// 26). The King usa `KingDeath`; un Dealer conserva `EnemyDeath`.
+pub(crate) fn enemy_death_sound(kind: EnemyKind) -> SoundEffect {
+    match kind {
+        EnemyKind::Dealer => SoundEffect::EnemyDeath,
+        EnemyKind::King => SoundEffect::KingDeath,
     }
 }
 
@@ -212,6 +258,10 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::HealthPickup => "assets/audio/sfx/health_pickup.wav",
         SoundEffect::RoyalFlushPickup => "assets/audio/sfx/royal_flush_pickup.wav",
         SoundEffect::RoyalWeaponFire => "assets/audio/sfx/royal_weapon_fire.wav",
+        SoundEffect::KingSpawn => "assets/audio/sfx/king_spawn.wav",
+        SoundEffect::KingHit => "assets/audio/sfx/king_hit.wav",
+        SoundEffect::KingAttack => "assets/audio/sfx/king_attack.wav",
+        SoundEffect::KingDeath => "assets/audio/sfx/king_death.wav",
     }
 }
 
@@ -665,8 +715,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_sixteen_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 16);
+    fn catalog_contains_exactly_twenty_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 20);
     }
 
     #[test]
@@ -729,6 +779,22 @@ mod tests {
             sfx_path(SoundEffect::RoyalWeaponFire),
             "assets/audio/sfx/royal_weapon_fire.wav"
         );
+        assert_eq!(
+            sfx_path(SoundEffect::KingSpawn),
+            "assets/audio/sfx/king_spawn.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::KingHit),
+            "assets/audio/sfx/king_hit.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::KingAttack),
+            "assets/audio/sfx/king_attack.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::KingDeath),
+            "assets/audio/sfx/king_death.wav"
+        );
     }
 
     // --- Bloque 2, Commit 18: selección de SFX de disparo por tier. ---
@@ -751,6 +817,31 @@ mod tests {
         assert_ne!(
             weapon_fire_sound(WeaponTier::Standard),
             weapon_fire_sound(WeaponTier::RoyalFlush)
+        );
+    }
+
+    // --- Bloque 3, Commit 26: SFX de combate por tipo de enemigo. ---
+
+    #[test]
+    fn dealer_combat_sounds_are_unchanged() {
+        assert_eq!(enemy_hit_sound(EnemyKind::Dealer), SoundEffect::EnemyHit);
+        assert_eq!(
+            enemy_death_sound(EnemyKind::Dealer),
+            SoundEffect::EnemyDeath
+        );
+    }
+
+    #[test]
+    fn the_king_uses_its_own_hit_and_death_sounds() {
+        assert_eq!(enemy_hit_sound(EnemyKind::King), SoundEffect::KingHit);
+        assert_eq!(enemy_death_sound(EnemyKind::King), SoundEffect::KingDeath);
+        assert_ne!(
+            enemy_hit_sound(EnemyKind::King),
+            enemy_hit_sound(EnemyKind::Dealer)
+        );
+        assert_ne!(
+            enemy_death_sound(EnemyKind::King),
+            enemy_death_sound(EnemyKind::Dealer)
         );
     }
 
