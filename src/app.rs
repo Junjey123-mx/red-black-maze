@@ -15,7 +15,8 @@ use crate::rendering::map_2d::{
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
     render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress, render_hud,
-    render_king_health_bar, render_minimap, render_weapon, render_world_sprites,
+    render_king_health_bar, render_king_summon_warning, render_minimap, render_weapon,
+    render_world_sprites,
 };
 use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
@@ -1491,6 +1492,19 @@ impl<'aud> App<'aud> {
         }
     }
 
+    /// Textos del aviso de invocación de The King para el cuadro
+    /// actual, o `None` si el encuentro no está invocando (Bloque 5,
+    /// Commit 54). Los tres primeros umbrales (800/600/400) anuncian
+    /// 5 Dealers; el último (200) recibe su propio texto en el Commit
+    /// 55. `king_active_summon_index` ya es `None` fuera de `Summoning`
+    /// y en Portal Mode, así que este método hereda ese aislamiento.
+    fn king_summon_warning_lines(&self) -> Option<(&'static str, &'static str)> {
+        match self.session.king_active_summon_index() {
+            Some(0..=2) => Some(("THE KING CALLS HIS HAND!", "5 DEALERS JOIN THE HAND")),
+            _ => None,
+        }
+    }
+
     fn render_playing(&self, framebuffer: &mut Framebuffer) {
         /*
          * Horde Mode (sección 5): la meta nunca se dibuja, en
@@ -1702,6 +1716,18 @@ impl<'aud> App<'aud> {
         if matches!(self.state, GameState::Playing | GameState::Paused) {
             if let Some(message) = hand_message_text(self.session.hand_hud_message()) {
                 render_hand_message(framebuffer, &message);
+            }
+
+            /*
+             * Bloque 5, Commit 54: aviso de invocación de The King,
+             * visible EXACTAMENTE mientras el encuentro está en la
+             * fase `Summoning` (`king_summon_warning_lines` -> `None`
+             * en cualquier otro momento y en Portal Mode). No es un
+             * modal: se pinta sobre la escena ya renderizada y el
+             * jugador sigue moviéndose durante la animación.
+             */
+            if let Some((line_one, line_two)) = self.king_summon_warning_lines() {
+                render_king_summon_warning(framebuffer, line_one, line_two);
             }
         }
 

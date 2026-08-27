@@ -412,6 +412,23 @@ fn letter_glyph_rows(character: char) -> [u8; 7] {
         ],
         '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
 
+        // 'C'/'F'/'J'/'!' añadidos para los avisos de invocación de
+        // The King (Bloque 5, Commits 54/55: "THE KING CALLS HIS
+        // HAND!", "5 DEALERS JOIN THE HAND") — mismo bitmap 5x7 que
+        // el resto de esta fuente mínima local.
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100,
+        ],
+        '!' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
+        ],
+
         // El espacio, y cualquier carácter no soportado por esta
         // fuente mínima, se dibuja en blanco en vez de entrar en
         // pánico o intentar una fuente completa.
@@ -512,6 +529,66 @@ pub(crate) fn render_hand_message(framebuffer: &mut Framebuffer, text: &str) {
         HAND_MESSAGE_SCALE,
         HAND_MESSAGE_COLOR,
     );
+}
+
+/// Escala del aviso de invocación de The King (Bloque 5, Commit 54):
+/// menor que `HAND_MESSAGE_SCALE` para que sus dos líneas quepan
+/// centradas y se lean como un aviso persistente, no como el banner
+/// puntual de Hand.
+const KING_SUMMON_WARNING_SCALE: i32 = 2;
+
+/// Ancla vertical de la primera línea del aviso de invocación:
+/// bastante por debajo de la barra de vida de The King (arriba-centro)
+/// y por encima del arma/HUD, sin tapar ninguno.
+const KING_SUMMON_WARNING_TOP: i32 = 118;
+
+/// Separación vertical entre las dos líneas del aviso.
+const KING_SUMMON_WARNING_LINE_GAP: i32 = 6;
+
+/// Alto lógico de un glifo de esta fuente (`letter_glyph_rows`
+/// devuelve 7 filas).
+const KING_SUMMON_WARNING_LINE_HEIGHT: i32 = 7;
+
+/// Dibuja el aviso de invocación de The King: dos líneas centradas
+/// horizontalmente, ancladas en el tercio superior de la pantalla.
+///
+/// Presentación pura: `App` decide CUÁNDO mostrarlo (mientras el
+/// encuentro está en `Summoning`) y con QUÉ textos ("5 DEALERS..." o
+/// "10 DEALERS..."). Reutiliza la misma fuente/estilo VGA que
+/// `render_hand_message`; no es un modal y no bloquea nada — solo
+/// pinta glifos sobre la escena ya renderizada.
+pub(crate) fn render_king_summon_warning(
+    framebuffer: &mut Framebuffer,
+    line_one: &str,
+    line_two: &str,
+) {
+    let framebuffer_width = framebuffer.width();
+
+    if framebuffer_width <= 0 {
+        return;
+    }
+
+    let line_step = (KING_SUMMON_WARNING_LINE_HEIGHT + KING_SUMMON_WARNING_LINE_GAP)
+        * KING_SUMMON_WARNING_SCALE;
+
+    for (index, text) in [line_one, line_two].into_iter().enumerate() {
+        if text.is_empty() {
+            continue;
+        }
+
+        let content_width = hand_message_width(text, KING_SUMMON_WARNING_SCALE);
+        let cursor_x = (framebuffer_width - content_width) / 2;
+        let origin_y = KING_SUMMON_WARNING_TOP + index as i32 * line_step;
+
+        draw_mixed_text(
+            framebuffer,
+            text,
+            cursor_x,
+            origin_y,
+            KING_SUMMON_WARNING_SCALE,
+            HAND_MESSAGE_COLOR,
+        );
+    }
 }
 
 // --- HUD de progreso de Horde (Bloque 1, Commit 09) ---
@@ -793,5 +870,64 @@ mod tests {
         assert!((fraction(500, 1000) - 0.5).abs() < 1e-6);
         assert!((fraction(0, 1000) - 0.0).abs() < 1e-6);
         assert!((fraction(-20, 1000) - 0.0).abs() < 1e-6);
+    }
+
+    // --- Bloque 5, Commits 54/55: avisos de invocación de The King. ---
+
+    #[test]
+    fn every_king_summon_warning_letter_resolves_to_a_glyph() {
+        let lines = [
+            "THE KING CALLS HIS HAND!",
+            "5 DEALERS JOIN THE HAND",
+            "THE KING CALLS HIS FINAL HAND!",
+            "10 DEALERS JOIN THE HAND",
+        ];
+
+        for line in lines {
+            for character in line.chars() {
+                if character == ' ' || character.is_ascii_digit() {
+                    continue;
+                }
+                assert_ne!(
+                    letter_glyph_rows(character),
+                    [0u8; 7],
+                    "falta el glifo para '{character}' en \"{line}\""
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn king_summon_warning_lines_are_measurable_and_fit_the_framebuffer() {
+        for line in [
+            "THE KING CALLS HIS HAND!",
+            "5 DEALERS JOIN THE HAND",
+            "THE KING CALLS HIS FINAL HAND!",
+            "10 DEALERS JOIN THE HAND",
+        ] {
+            let width = hand_message_width(line, KING_SUMMON_WARNING_SCALE);
+            assert!(width > 0);
+            assert!(
+                width <= crate::config::FRAMEBUFFER_WIDTH,
+                "\"{line}\" no cabe centrado"
+            );
+        }
+    }
+
+    #[test]
+    fn king_summon_warning_stays_clear_of_the_boss_health_bar_and_the_hud() {
+        // La barra de vida ocupa la franja superior; el aviso arranca
+        // por debajo de ella y sus dos líneas terminan bien por encima
+        // del HUD de vida/munición (anclado abajo).
+        let bar_bottom =
+            KING_BAR_TOP_MARGIN + 7 * KING_BAR_LABEL_SCALE + KING_BAR_LABEL_GAP + KING_BAR_HEIGHT;
+        assert!(KING_SUMMON_WARNING_TOP > bar_bottom);
+
+        let line_step = (KING_SUMMON_WARNING_LINE_HEIGHT + KING_SUMMON_WARNING_LINE_GAP)
+            * KING_SUMMON_WARNING_SCALE;
+        let warning_bottom = KING_SUMMON_WARNING_TOP
+            + line_step
+            + KING_SUMMON_WARNING_LINE_HEIGHT * KING_SUMMON_WARNING_SCALE;
+        assert!(warning_bottom < crate::config::FRAMEBUFFER_HEIGHT - BOTTOM_MARGIN);
     }
 }

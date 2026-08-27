@@ -885,6 +885,19 @@ impl GameSession {
         self.king_encounter.summon_timer
     }
 
+    /// Índice en `KING_PHASE_THRESHOLDS` (0..=3) de la invocación
+    /// ACTUALMENTE en curso, o `None` si el encuentro no está en la
+    /// fase `Summoning` (Bloque 5, Commit 54). `App` lo usa para
+    /// elegir el aviso de HUD correcto — los tres primeros índices
+    /// muestran "5 DEALERS", el último "10 DEALERS" (Commit 55).
+    pub(crate) fn king_active_summon_index(&self) -> Option<usize> {
+        if self.king_encounter.phase == KingEncounterPhase::Summoning {
+            self.king_encounter.pending_threshold
+        } else {
+            None
+        }
+    }
+
     /// Factor de escala del billboard de The King para la animación de
     /// invocación (Bloque 4, Commit 37). `1.0` fuera de `Summoning`;
     /// durante ella, un pulso retro determinista derivado ÚNICAMENTE
