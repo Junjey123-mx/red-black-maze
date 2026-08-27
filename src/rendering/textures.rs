@@ -784,6 +784,44 @@ mod tests {
             )
             .unwrap();
         assert!(fire.path.contains("royal_weapon_fire"));
+
+        let recoil = manager
+            .themed_weapon_texture(
+                WeaponState::Recoil,
+                LevelTheme::HouseOfCards,
+                WeaponTier::RoyalFlush,
+            )
+            .unwrap();
+        assert!(recoil.path.contains("royal_weapon_recoil"));
+    }
+
+    #[test]
+    fn every_royal_flush_weapon_state_resolves_to_a_distinct_idle_fire_recoil_sprite() {
+        let mut manager = TextureManager::new();
+        manager
+            .load_royal_weapon_textures()
+            .expect("The Royal Flush debe cargar");
+
+        let theme = LevelTheme::CrimsonEntrance;
+        let idle = manager
+            .themed_weapon_texture(WeaponState::Idle, theme, WeaponTier::RoyalFlush)
+            .unwrap()
+            .path
+            .clone();
+        let fire = manager
+            .themed_weapon_texture(WeaponState::Fire, theme, WeaponTier::RoyalFlush)
+            .unwrap()
+            .path
+            .clone();
+        let recoil = manager
+            .themed_weapon_texture(WeaponState::Recoil, theme, WeaponTier::RoyalFlush)
+            .unwrap()
+            .path
+            .clone();
+
+        assert_ne!(idle, fire);
+        assert_ne!(fire, recoil);
+        assert_ne!(idle, recoil);
     }
 
     #[test]

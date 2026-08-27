@@ -4934,6 +4934,70 @@ e             #
         assert!(!run.royal_flush_pickup().unwrap().is_active());
     }
 
+    // --- Bloque 2, Commit 20: progresión completa de The Royal Flush,
+    // en un único recorrido de extremo a extremo. ---
+
+    #[test]
+    fn full_royal_flush_progression_from_spawn_to_retry() {
+        // Nivel estilo Crimson: penúltima Hand = 3, Final Hand = 4.
+        let mut run = new_horde_session_with_final_hand(4);
+
+        // 1. Arranca sin la mejora y con arma Standard.
+        assert!(run.royal_flush_pickup().is_none());
+        assert_eq!(run.weapon_tier(), WeaponTier::Standard);
+
+        // 2. Avanza hasta la penúltima Hand: la mejora aparece UNA vez.
+        for _ in 0..600 {
+            if run.hand_number() == 3 {
+                break;
+            }
+            for index in 0..run.entities().len() {
+                run.damage_entity(index);
+                run.damage_entity(index);
+            }
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+        assert_eq!(run.hand_number(), 3);
+        let pickup_pos = run
+            .royal_flush_pickup()
+            .expect("aparece en la penúltima Hand")
+            .position();
+        assert!(run.royal_flush_pickup().unwrap().is_active());
+
+        // 3. Persiste mientras el jugador no la toca.
+        run.player.pos = Vector2::new(1.5 * BLOCK_SIZE as f32, 1.5 * BLOCK_SIZE as f32);
+        for _ in 0..120 {
+            assert!(!run.collect_nearby_royal_flush_pickup());
+        }
+        assert!(run.royal_flush_pickup().unwrap().is_active());
+
+        // 4. Recogerla asciende el arma y NO la reabastece.
+        let magazine_before = run.weapon_ammo();
+        run.player.pos = pickup_pos;
+        assert!(run.collect_nearby_royal_flush_pickup());
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+        assert_eq!(run.weapon_ammo(), magazine_before);
+
+        // 5. El disparo hace one-shot a un Dealer VIVO por el mismo
+        // camino de daño (los índices previos son cadáveres de Hands
+        // anteriores).
+        if let Some(alive_index) = run.entities().iter().position(|e| !e.is_dead()) {
+            assert_eq!(run.damage_entity(alive_index), EntityDamageOutcome::Killed);
+        }
+
+        // 6. Llega a la Final Hand sin un segundo spawn.
+        assert!(drive_horde_to_final_hand(&mut run, 4));
+        assert!(run.royal_flush_spawned());
+        assert!(!run.royal_flush_pickup().unwrap().is_active());
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        // 7. Retry: todo vuelve a Standard, sin pickup.
+        let fresh = rebuilt_like_retry(&run, 4);
+        assert_eq!(fresh.weapon_tier(), WeaponTier::Standard);
+        assert!(fresh.royal_flush_pickup().is_none());
+        assert!(!fresh.royal_flush_spawned());
+    }
+
     #[test]
     fn not_calling_update_hand_state_freezes_the_intermission_countdown() {
         // Mismo mecanismo exacto que ya prueban las suites de pausa
