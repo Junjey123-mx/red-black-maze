@@ -1564,11 +1564,33 @@ impl GameSession {
             damage
         };
 
-        match self.entities.get_mut(entity_index) {
+        let outcome = match self.entities.get_mut(entity_index) {
             Some(entity) => entity.apply_damage(applied_damage),
 
             None => EntityDamageOutcome::None,
+        };
+
+        /*
+         * Bloque 4, Commit 49: al morir The King, cualquier Dealer que
+         * ÉL invocó y siga en el mundo (vivo o cadáver) se retira
+         * limpiamente — el jugador no tiene que limpiar la cohorte
+         * final después del momento de victoria. Solo se tocan las
+         * entidades con marca de cohorte; los Dealers del mapa, sus
+         * cadáveres y el propio cadáver del King se conservan.
+         */
+        if outcome == EntityDamageOutcome::Killed {
+            self.despawn_summoned_dealers();
         }
+
+        outcome
+    }
+
+    /// Retira del mundo todos los Dealers invocados por The King
+    /// (`Entity::summon_cohort().is_some()`), sin afectar a ninguna
+    /// otra entidad. Bloque 4, Commit 49.
+    fn despawn_summoned_dealers(&mut self) {
+        self.entities
+            .retain(|entity| entity.summon_cohort().is_none());
     }
 
     /// Cuántos umbrales de fase de The King se han consumido en esta
@@ -6649,6 +6671,83 @@ e             #
         assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
         let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
         assert_eq!(third, first);
+    }
+
+    // --- Bloque 4, Commit 49: limpiar Dealers al morir el King. ---
+
+    #[test]
+    fn killing_the_fleeing_king_clears_its_summoned_dealers_and_completes_the_horde() {
+        let (mut run, king) = king_fleeing_big();
+        assert_eq!(run.living_summoned_cohort_count(3), 10);
+
+        // Añade un Dealer "ajeno" del mapa que NO debe desaparecer.
+        run.entities.push(Entity::dealer_at_cell(1, 1, BLOCK_SIZE));
+        let foreign_before = run
+            .entities()
+            .iter()
+            .filter(|e| e.kind() == EnemyKind::Dealer && e.summon_cohort().is_none())
+            .count();
+
+        // 4 impactos Standard rematan al jefe.
+        for _ in 0..3 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
+
+        // Los Dealers invocados se han ido; el King queda como cadáver;
+        // el Dealer ajeno sigue.
+        assert_eq!(run.living_summoned_cohort_count(3), 0);
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.summon_cohort().is_some())
+                .count(),
+            0,
+            "ni vivos ni cadáveres invocados"
+        );
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::Dealer && e.summon_cohort().is_none())
+                .count(),
+            foreign_before,
+            "los Dealers ajenos no se tocan"
+        );
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::King)
+                .count(),
+            1
+        );
+        assert!(run.horde_completed());
+    }
+
+    #[test]
+    fn a_king_killed_mid_fighting_also_clears_its_cohorts() {
+        // Aunque no es el flujo normal (el jefe debería morir en
+        // Fleeing), matar al King en cualquier fase limpia sus
+        // Dealers: la victoria no debe dejar minions sueltos.
+        let (mut run, king) = king_after_first_cohort();
+        assert_eq!(run.living_summoned_cohort_count(0), 5);
+
+        // Fuerza la muerte saltando el modelo de fases con daño
+        // directo repetido tras abrir cada gate.
+        for _ in 0..80 {
+            run.damage_entity(king);
+            clear_king_summon_gate(&mut run);
+            if !run.king_alive() {
+                break;
+            }
+        }
+        assert!(!run.king_alive());
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.summon_cohort().is_some())
+                .count(),
+            0
+        );
     }
 
     // --- Bloque 4, Commit 48: vulnerabilidad durante la persecución final. ---
