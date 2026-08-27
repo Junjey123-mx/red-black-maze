@@ -19,6 +19,51 @@ pub(crate) enum ViewMode {
     World3D,
 }
 
+/// Fase del ENCUENTRO contra The King (Bloque 4, Commit 31).
+///
+/// Es un concepto distinto de `world::EntityState` (`Idle`/`Alert`/
+/// `Hit`/`Dead`, ciclo de vida individual de CUALQUIER entidad): esto
+/// modela la progresión del jefe final como pelea por fases y vive en
+/// `GameSession` — la capa que controla el encuentro/Horde — nunca
+/// dentro de `Entity`, de un renderer ni del audio. The King sigue
+/// siendo una sola `Entity` con `EnemyKind::King` en el mismo
+/// pipeline de The Dealer; esta fase solo decide, alrededor de esa
+/// entidad, cuándo invoca, cuándo pelea y cuándo huye.
+///
+/// - `Fighting`: comportamiento normal de jefe (persigue, ataca, es
+///   vulnerable). Estado inicial y el que se recupera tras cada
+///   invocación de 800/600/400.
+/// - `Summoning`: ventana temporizada de invocación (Commit 35): el
+///   King queda inmóvil, no ataca y es invulnerable mientras dura.
+/// - `Fleeing`: fase final permanente tras la invocación de 200
+///   (Commit 45): el King deja de atacar y se aleja del jugador, pero
+///   sigue siendo vulnerable hasta morir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KingEncounterPhase {
+    Fighting,
+    Summoning,
+    Fleeing,
+}
+
+/// Estado del encuentro contra The King (Bloque 4). Agrupa la fase y
+/// —en commits posteriores— los umbrales ya consumidos, el
+/// temporizador de invocación y la cohorte activa, en vez de
+/// esparcir booleans sueltos por `GameSession`. Se reconstruye entero
+/// en `GameSession::new`, así que Retry/Main Menu/cambio de nivel/
+/// cambio de modo siempre arrancan en `Fighting` sin reparación
+/// manual.
+struct KingEncounter {
+    phase: KingEncounterPhase,
+}
+
+impl KingEncounter {
+    fn new() -> Self {
+        Self {
+            phase: KingEncounterPhase::Fighting,
+        }
+    }
+}
+
 /// Munición de reserva que otorga cada `AmmoPickup` recogido
 /// (Tarea 44). Nunca se aplica directamente al cargador — siempre
 /// vía `Weapon::add_reserve_ammo`, que ya respeta el tope.
@@ -204,6 +249,11 @@ pub(crate) struct GameSession {
     /// recalcula cada cuadro; `App` lo lee para reproducir
     /// `SoundEffect::KingAttack` una sola vez por ataque efectivo.
     king_attacked_this_frame: bool,
+
+    /// Estado del encuentro por fases contra The King (Bloque 4).
+    /// Arranca en `KingEncounterPhase::Fighting` y solo cambia durante
+    /// el combate del jefe en Horde Mode; Portal Mode nunca lo toca.
+    king_encounter: KingEncounter,
 
     /// Sistema de "Dealer Hands": HAND I/II/III..., cadáveres aparte
     /// (esos viven en `Entity`/`entities`, ver `update_entities`).
@@ -402,6 +452,7 @@ impl GameSession {
             royal_flush_spawned: false,
             king_spawned: false,
             king_attacked_this_frame: false,
+            king_encounter: KingEncounter::new(),
             mode,
         };
 
@@ -611,6 +662,13 @@ impl GameSession {
     /// lo lee para reproducir `SoundEffect::KingAttack`.
     pub(crate) fn king_attacked_this_frame(&self) -> bool {
         self.king_attacked_this_frame
+    }
+
+    /// Fase actual del encuentro contra The King (Bloque 4). `App` y
+    /// rendering la consultan; nunca la escriben. Fuera del combate
+    /// del jefe permanece en `KingEncounterPhase::Fighting`.
+    pub(crate) fn king_phase(&self) -> KingEncounterPhase {
+        self.king_encounter.phase
     }
 
     /// `true` mientras haya un King VIVO en el mundo (nunca cuenta un
@@ -5763,5 +5821,27 @@ e             #
 
         assert_eq!(session.hand_number(), hand_number_before);
         assert_eq!(session.hand_hud_message(), hud_message_before);
+    }
+
+    // --- Bloque 4, Commit 31: modelo de fases de The King. ---
+
+    #[test]
+    fn a_fresh_session_starts_in_the_king_fighting_phase() {
+        assert_eq!(
+            new_horde_session().king_phase(),
+            KingEncounterPhase::Fighting
+        );
+        assert_eq!(
+            new_test_session_with_one_dealer().king_phase(),
+            KingEncounterPhase::Fighting
+        );
+    }
+
+    #[test]
+    fn reaching_the_final_hand_leaves_the_king_in_the_fighting_phase() {
+        let (run, _king) = horde_at_the_king(4);
+
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        assert!(run.king_alive());
     }
 }
