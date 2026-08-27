@@ -6429,6 +6429,79 @@ e             #
         assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
     }
 
+    // --- Bloque 4, Commit 40: reanudar el combate tras la 1ª invocación. ---
+
+    #[test]
+    fn after_the_first_summon_the_king_is_vulnerable_pursues_and_attacks() {
+        let (mut run, king) = king_at_summon(0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+
+        // Vulnerable de nuevo.
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert_eq!(run.king_health(), Some((750, 1000)));
+
+        // Persigue: con el jugador en su celda de salida (lejos y
+        // alcanzable) el King se acerca cuadro a cuadro.
+        let before = run.entities()[king].position();
+        for _ in 0..30 {
+            run.update_entities(0.1, BLOCK_SIZE);
+        }
+        let after = run.entities()[king].position();
+        assert!(
+            (after.x - before.x).abs() + (after.y - before.y).abs() > 0.0,
+            "el King vuelve a perseguir"
+        );
+
+        // Ataca por 20 con cooldown 1.5 s.
+        run.player.pos = Vector2::new(
+            run.entities()[king].position().x + 18.0,
+            run.entities()[king].position().y,
+        );
+        run.update_entities(0.016, BLOCK_SIZE);
+
+        // El golpe de vulnerabilidad de arriba recargó el cooldown de
+        // ataque del King (1.5 s). Antes de que expire no golpea.
+        assert_eq!(run.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+        assert_eq!(run.process_dealer_attacks(0.9, BLOCK_SIZE), 0);
+
+        // Pasados > 1.5 s en total: golpea por 20, y respeta de nuevo
+        // el cooldown de 1.5 s.
+        assert_eq!(run.process_dealer_attacks(0.7, BLOCK_SIZE), 20);
+        assert!(run.king_attacked_this_frame());
+        assert_eq!(run.process_dealer_attacks(0.9, BLOCK_SIZE), 0);
+        assert_eq!(run.process_dealer_attacks(0.7, BLOCK_SIZE), 20);
+    }
+
+    #[test]
+    fn summoned_dealers_pursue_and_attack_the_player_normally() {
+        let (mut run, _king) = king_at_summon(0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+
+        let dealer_index = run
+            .entities()
+            .iter()
+            .position(|e| e.summon_cohort() == Some(0))
+            .expect("hay Dealers invocados");
+
+        run.player.pos = Vector2::new(
+            run.entities()[dealer_index].position().x + 18.0,
+            run.entities()[dealer_index].position().y,
+        );
+        run.update_entities(0.016, BLOCK_SIZE);
+        assert_eq!(run.entities()[dealer_index].state(), EntityState::Alert);
+        assert!(!run.king_attacked_this_frame());
+
+        // Daño normal de Dealer: múltiplo de 10 (nunca el 20 del King)
+        // y sujeto al cooldown ~0.9 s.
+        let first = run.process_dealer_attacks(0.016, BLOCK_SIZE);
+        assert!(first >= 10 && first % 10 == 0);
+        assert!(!run.king_attacked_this_frame(), "el King no está en rango");
+        assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
+        let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
+        assert_eq!(third, first);
+    }
+
     // --- Bloque 4, Commit 39: primera invocación de 5 Dealers. ---
 
     #[test]
