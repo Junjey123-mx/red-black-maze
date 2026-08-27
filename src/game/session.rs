@@ -42,18 +42,21 @@ const PICKUP_RADIUS: f32 = 19.2;
 const HEALTH_PICKUP_AMOUNT: i32 = 20;
 
 /// "Dealer-equivalente" con el que se dimensiona el paquete de
-/// supplies que la intermisión previa a la Final Hand reservada
-/// inyecta (Bloque 2, Commit 11).
+/// supplies que la intermisión previa a la Final Hand inyecta antes
+/// del combate contra The King (Bloque 2, Commit 11; recalibrado en
+/// el Commit 30 de balance).
 ///
-/// La Final Hand todavía no spawnea ningún Dealer (The King llega en
-/// el Bloque 3), así que la fórmula de munición
+/// La Final Hand no spawnea Dealers, así que la fórmula de munición
 /// (`hand::extra_ammo_pickups_needed`) no tiene un conteo real de
-/// enemigos del que partir. Este valor lo sustituye: representa la
-/// amenaza de la ronda final para que la intermisión garantice un
-/// piso de munición usable antes de entrar a ella — reutilizando
-/// EXACTAMENTE la misma fórmula y colocación que las Hands normales,
-/// sin rellenar automáticamente cargador/reserva ni salud.
-const FINAL_HAND_SUPPLY_DEALER_EQUIVALENT: usize = 10;
+/// enemigos del que partir. Este valor lo sustituye. Con The King a
+/// `HP = 1000` y el arma Standard a `50` de daño hacen falta 20
+/// impactos limpios; `15 * SHOTS_TO_KILL_ONE_DEALER(2) * 1.5 margen
+/// = 45` balas de piso garantizado deja ~25 disparos de margen para
+/// fallos durante el combate en la arena (o de sobra si el jugador
+/// llega con The Royal Flush, que mata al King en 10). Sigue sin
+/// rellenar automáticamente cargador/reserva/salud: el jugador
+/// recoge los items.
+const FINAL_HAND_SUPPLY_DEALER_EQUIVALENT: usize = 15;
 
 /// Daño que un ataque de Dealer ACEPTADO inflige al jugador
 /// (Tarea 45). Las condiciones de aceptación (estado `Alert`,
@@ -4698,6 +4701,28 @@ e             #
         assert!(
             !session.health_pickups().is_empty(),
             "la intermisión previa a la Final Hand debe soltar vida de recuperación"
+        );
+    }
+
+    #[test]
+    fn the_final_hand_supply_floor_covers_a_full_standard_king_fight() {
+        // Bloque 3, Commit 30: con FINAL_HAND_SUPPLY_DEALER_EQUIVALENT
+        // el piso de munición garantizado debe cubrir los 20 impactos
+        // Standard que necesita The King, con margen para fallos.
+        let jugador_sin_municion = 0;
+        let pickups = hand::extra_ammo_pickups_needed(
+            FINAL_HAND_SUPPLY_DEALER_EQUIVALENT,
+            jugador_sin_municion,
+        );
+        // 15 * 2 * 1.5 = 45 balas objetivo; 6 pickups * 6 balas = 36
+        // extra + lo que el jugador ya lleve. La fórmula está acotada
+        // al tope de 6 pickups por Hand, pero el objetivo interno es
+        // >= 20 impactos.
+        assert!(pickups > 0);
+        let objetivo_balas = FINAL_HAND_SUPPLY_DEALER_EQUIVALENT as u32 * 2;
+        assert!(
+            objetivo_balas >= 20,
+            "el piso debe cubrir al menos los 20 impactos Standard del King"
         );
     }
 

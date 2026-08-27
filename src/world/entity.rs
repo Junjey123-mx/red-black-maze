@@ -45,9 +45,9 @@ pub(crate) enum EnemyKind {
 impl EnemyKind {
     /// Distancia de alerta del tipo de enemigo, en celdas de mapa.
     ///
-    /// The King usa un radio mayor (Bloque 3, Commit 22): es un jefe
-    /// de arena, debe engancharse y venir a por el jugador desde más
-    /// lejos que un Dealer normal.
+    /// The King usa un radio enorme (Bloque 3): un jefe final persigue
+    /// al jugador de forma CONTINUA desde que aparece — nunca vuelve a
+    /// `Idle` por distancia.
     fn alert_distance_cells(self) -> f32 {
         match self {
             EnemyKind::Dealer => DEALER_ALERT_DISTANCE_CELLS,
@@ -166,9 +166,17 @@ const DEALER_PURSUIT_SPEED: f32 = 75.0;
 const KING_PURSUIT_SPEED: f32 = 85.0;
 
 /// Distancia de alerta de The King, en celdas de mapa (Bloque 3,
-/// Commit 22). Mayor que la del Dealer (4) — el jefe persigue desde
-/// el otro extremo de la arena.
-const KING_ALERT_DISTANCE_CELLS: f32 = 6.0;
+/// Commit 22; ajustada en el Commit 30 de balance).
+///
+/// Deliberadamente enorme: un jefe final NUNCA debe "perder el
+/// interés" y volver a `Idle` si el jugador se aleja unas celdas —
+/// eso rompería la tensión del combate, sobre todo en "The Dealer's
+/// True Maze", que es grande. En la práctica esto significa que The
+/// King persigue al jugador de forma continua desde el instante en
+/// que aparece hasta que uno de los dos muere. Sigue usando el mismo
+/// pathfinding, la misma colisión con paredes y la misma protección
+/// de "misma celda" que un Dealer.
+const KING_ALERT_DISTANCE_CELLS: f32 = 1_000.0;
 
 /// Distancia mínima, expresada en celdas de mapa, a la que el Dealer
 /// deja de avanzar hacia su siguiente punto de ruta. Evita que la
@@ -917,6 +925,22 @@ mod tests {
         king.update(player, 0.5, 48, Some(target));
         assert_eq!(king.position().x, after_dead.x);
         assert_eq!(king.position().y, after_dead.y);
+    }
+
+    #[test]
+    fn the_king_never_returns_to_idle_no_matter_how_far_the_player_runs() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        // Jugador a 40 celdas: un Dealer estaría en Idle desde hace
+        // mucho; el jefe sigue en Alert (persecución continua).
+        let far_player = Vector2::new(king.position().x + 40.0 * 48.0, king.position().y);
+        king.update(far_player, 0.1, 48, None);
+        assert_eq!(king.state(), EntityState::Alert);
+
+        // Un Dealer en la misma situación SÍ vuelve a Idle.
+        let mut dealer = Entity::dealer_at_cell(0, 0, 48);
+        dealer.update(far_player, 0.1, 48, None);
+        assert_eq!(dealer.state(), EntityState::Idle);
     }
 
     #[test]
