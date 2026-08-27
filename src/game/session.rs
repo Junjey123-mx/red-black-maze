@@ -273,6 +273,19 @@ impl GameSession {
     /// (se conserva a través de Pause y de las transiciones de Hand,
     /// que no reconstruyen la sesión), y Portal Mode nunca la hereda.
     ///
+    /// Bloque 3, Commit 27 — reset de Horde Mode completo: por el
+    /// MISMO mecanismo, TODO el estado del Bloque 3 se reinicia aquí
+    /// sin ninguna reparación manual: `HordeManager::new` (HAND I,
+    /// fase `Active`, sin countdown), `entities` reconstruido desde
+    /// los marcadores del nivel (sin ningún King, sin cadáveres),
+    /// `king_spawned: false`, `king_attacked_this_frame: false`, y la
+    /// barra de vida del jefe — que no tiene estado propio, deriva de
+    /// `king_health()` y por tanto queda oculta en cuanto no hay King.
+    /// Un King a medio matar (`health < 1000`), una Final Hand en
+    /// curso, un countdown de intermisión, `Victory` por Horde
+    /// completado y los datos procedurales NUNCA sobreviven a un
+    /// Retry/Main Menu/cambio de nivel/cambio de modo/Defeat/Victory.
+    ///
     /// `horde_hand_config`/`use_clusters` (Bloque 1, Commit 07) SOLO
     /// se usan cuando `mode == GameMode::Horde`: si el mapa trae menos
     /// Dealers que `horde_hand_config.first_hand_min..=first_hand_max`
@@ -5373,6 +5386,87 @@ e             #
         }
 
         assert_eq!(portal.king_health(), None);
+    }
+
+    // --- Bloque 3, Commit 27: reset completo de Horde Mode entre runs. ---
+
+    #[test]
+    fn a_rebuilt_run_carries_no_king_no_boss_bar_and_no_completion() {
+        let mut run = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut run, 4);
+
+        // Deja al King a medio matar y la Final Hand en curso.
+        let king = living_king_index(&run).unwrap();
+        for _ in 0..5 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((750, 1000)));
+        assert!(run.king_spawned());
+        assert!(!run.horde_completed());
+
+        // Retry / cambio de nivel / menú -> `GameSession::new` de nuevo.
+        let fresh = rebuilt_like_retry(&run, 4);
+
+        assert!(!fresh.king_spawned());
+        assert!(!fresh.king_alive());
+        assert_eq!(fresh.king_health(), None, "sin King -> barra oculta");
+        assert!(!fresh.king_attacked_this_frame());
+        assert!(!fresh.horde_completed());
+        assert_eq!(fresh.hand_number(), 1);
+        assert!(
+            fresh
+                .entities()
+                .iter()
+                .all(|e| e.kind() == EnemyKind::Dealer && !e.is_dead())
+        );
+    }
+
+    #[test]
+    fn a_defeated_king_does_not_leak_a_completed_horde_into_the_next_run() {
+        let mut run = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut run, 4);
+        let king = living_king_index(&run).unwrap();
+        for _ in 0..20 {
+            run.damage_entity(king);
+        }
+        assert!(run.horde_completed());
+        assert_eq!(run.weapon_tier(), WeaponTier::Standard);
+
+        // Nueva run: arranca sin victoria, sin King, arma Standard,
+        // sin Royal Flush (todo el estado del Bloque 2 y 3 junto).
+        let fresh = rebuilt_like_retry(&run, 4);
+        assert!(!fresh.horde_completed());
+        assert!(!fresh.king_spawned());
+        assert_eq!(fresh.weapon_tier(), WeaponTier::Standard);
+        assert!(fresh.royal_flush_pickup().is_none());
+        assert!(!fresh.royal_flush_spawned());
+    }
+
+    #[test]
+    fn switching_from_horde_to_portal_drops_all_boss_and_upgrade_state() {
+        let mut horde = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut horde, 4);
+        horde.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        // Cambio de modo -> nueva sesión Portal.
+        let file = TempLevelFile::write(map_with_one_dealer());
+        let level = Level::load(file.path_str()).expect("nivel válido");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let portal = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
+
+        assert!(!portal.king_spawned());
+        assert_eq!(portal.king_health(), None);
+        assert!(!portal.horde_completed());
+        assert!(portal.royal_flush_pickup().is_none());
+        assert_eq!(portal.weapon_tier(), WeaponTier::Standard);
     }
 
     #[test]
