@@ -975,10 +975,13 @@ impl GameSession {
 
         let elapsed = (KING_SUMMON_DURATION - self.king_encounter.summon_timer).max(0.0);
 
-        // 8 escalones por segundo, pulso triangular 0..1..0 dentro de
-        // cada medio segundo, amplitud máxima +30 % de tamaño.
+        // 8 escalones por segundo, pulso triangular que ARRANCA en el
+        // tamaño normal (Bloque 5, Commit 70: sin "pop-in" al empezar
+        // la animación), sube a +30 % y vuelve, repitiéndose cada
+        // medio segundo. Determinista respecto a `summon_timer`, misma
+        // animación en los cuatro umbrales.
         let steps = (elapsed * 8.0).floor() as i32;
-        let triangle = (steps % 8 - 4).abs() as f32 / 4.0;
+        let triangle = ((steps + 4).rem_euclid(8) - 4).abs() as f32 / 4.0;
 
         1.0 + 0.30 * triangle
     }
@@ -7419,6 +7422,25 @@ e             #
         assert_eq!(sample(1), base);
         assert_eq!(sample(2), base);
         assert_eq!(sample(3), base);
+    }
+
+    #[test]
+    fn the_summon_animation_starts_at_normal_size_without_a_pop_in() {
+        // Bloque 5, Commit 70: el primer instante de la invocación
+        // muestra el King a escala 1.0 (no un salto brusco a +30 %).
+        let (run, _king) = king_at_summon(0);
+        assert_eq!(run.king_summon_animation_scale(), 1.0);
+
+        // ...y en algún momento de la ventana sí crece.
+        let (mut run, _king) = king_at_summon(1);
+        let mut grew = false;
+        while run.king_is_summoning() {
+            if run.king_summon_animation_scale() > 1.0 {
+                grew = true;
+            }
+            run.update_king_encounter(0.05, BLOCK_SIZE);
+        }
+        assert!(grew);
     }
 
     // --- Bloque 4, Commit 36: invulnerabilidad durante Summoning. ---
