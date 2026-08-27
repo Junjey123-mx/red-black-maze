@@ -1045,6 +1045,24 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Bloque 5, Commit 66: el disparo que rompe un umbral acaba
+         * de resolverse ARRIBA (`damage_entity` -> `damage_king`), y
+         * con él la transición del estado musical del encuentro. Se
+         * sincroniza AQUÍ MISMO, en el mismo cuadro, para que el
+         * orden audible sea el correcto en la primera invocación:
+         *
+         *   EnemyDeath (ruptura de fase, ya sonó arriba)
+         *   -> stop_music  (esta llamada)
+         *   -> KingSummon  (justo debajo)
+         *
+         * En 600/400/200 esta llamada es un no-op sobre
+         * `final_battle.mp3`, así que el `KingSummon` se superpone a
+         * la música que sigue sonando sin cortes. Idempotente con la
+         * sincronización de más arriba del cuadro.
+         */
+        self.sync_boss_music();
+
+        /*
          * Bloque 5, Commit 52: `SoundEffect::KingSummon` suena
          * EXACTAMENTE una vez por cada transición autoritativa a
          * `Summoning` (800/600/400/200). El evento se origina en

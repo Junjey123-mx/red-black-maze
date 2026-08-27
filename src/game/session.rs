@@ -7676,6 +7676,57 @@ e             #
         let _ = a.take_king_summon_cue();
     }
 
+    // --- Bloque 5, Commit 66: sincronía timer/SFX/música. ---
+
+    #[test]
+    fn the_first_threshold_shot_flips_silence_cue_and_break_audio_together() {
+        // El MISMO `damage_entity` que rompe 800 deja, de forma
+        // atómica: fase `Summoning`, timer completo, cue de invocación
+        // pendiente, feedback de ruptura marcado y música en silencio.
+        // Todo desde una única fuente autoritativa -> nada puede
+        // desalinearse por cuadro.
+        let (mut run, king) = horde_at_the_king(4);
+        for _ in 0..3 {
+            run.damage_entity(king); // 1000 -> 850, sin efectos de fase
+        }
+        assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+        assert!(!run.king_is_summoning());
+
+        run.damage_entity(king); // 850 -> 800: rompe el umbral
+
+        assert!(run.last_hit_broke_king_phase());
+        assert!(run.king_is_summoning());
+        assert!((run.king_summon_time_remaining() - KING_SUMMON_DURATION).abs() < f32::EPSILON);
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+        assert!(run.take_king_summon_cue());
+    }
+
+    #[test]
+    fn later_thresholds_flip_the_cue_without_touching_music() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        let _ = run.take_king_summon_cue();
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        // Limpia la cohorte de 800 y baja a 600.
+        clear_king_summon_gate(&mut run);
+        let mut guard = 0;
+        while run.king_health().map(|(h, _)| h).unwrap_or(0) > 600 {
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 100);
+        }
+
+        assert!(run.king_is_summoning());
+        assert!(run.take_king_summon_cue(), "cue de la invocación de 600");
+        assert_eq!(
+            run.boss_music_state(),
+            BossMusicState::FinalBattle,
+            "600 no toca la música"
+        );
+    }
+
     // --- Bloque 5, Commit 60: aislamiento de la primera invocación. ---
 
     #[test]
