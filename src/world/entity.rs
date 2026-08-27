@@ -42,6 +42,33 @@ pub(crate) enum EnemyKind {
     King,
 }
 
+impl EnemyKind {
+    /// Distancia de alerta del tipo de enemigo, en celdas de mapa.
+    ///
+    /// The King usa un radio mayor (Bloque 3, Commit 22): es un jefe
+    /// de arena, debe engancharse y venir a por el jugador desde más
+    /// lejos que un Dealer normal.
+    fn alert_distance_cells(self) -> f32 {
+        match self {
+            EnemyKind::Dealer => DEALER_ALERT_DISTANCE_CELLS,
+            EnemyKind::King => KING_ALERT_DISTANCE_CELLS,
+        }
+    }
+
+    /// Velocidad de persecución del tipo de enemigo, en px/s.
+    ///
+    /// The King es ligeramente más rápido que un Dealer (Bloque 3,
+    /// Commit 22) para sentirse más persistente y amenazante, pero
+    /// sigue dentro del rango conservador que deja al jugador (150
+    /// px/s) capaz de maniobrar y distanciarse.
+    fn pursuit_speed(self) -> f32 {
+        match self {
+            EnemyKind::Dealer => DEALER_PURSUIT_SPEED,
+            EnemyKind::King => KING_PURSUIT_SPEED,
+        }
+    }
+}
+
 /// Transición real de `EntityState` observada durante una llamada a
 /// `Entity::update`. Deliberadamente ajena a audio/presentación: es
 /// dominio puro (QUÉ cambió), no CÓMO se comunica al jugador.
@@ -114,6 +141,17 @@ const DEALER_ALERT_DISTANCE_CELLS: f32 = 4.0;
 /// Dealer en persecución: la persecución crea presión, no una
 /// carrera que el jugador no pueda ganar.
 const DEALER_PURSUIT_SPEED: f32 = 75.0;
+
+/// Velocidad de persecución de The King, en px/s (Bloque 3, Commit
+/// 22). ~57% de la velocidad del jugador (150 px/s): más presión que
+/// un Dealer (50%), todavía dentro del rango que deja escapar/
+/// maniobrar.
+const KING_PURSUIT_SPEED: f32 = 85.0;
+
+/// Distancia de alerta de The King, en celdas de mapa (Bloque 3,
+/// Commit 22). Mayor que la del Dealer (4) — el jefe persigue desde
+/// el otro extremo de la arena.
+const KING_ALERT_DISTANCE_CELLS: f32 = 6.0;
 
 /// Distancia mínima, expresada en celdas de mapa, a la que el Dealer
 /// deja de avanzar hacia su siguiente punto de ruta. Evita que la
@@ -404,7 +442,7 @@ impl Entity {
             }
         }
 
-        let alert_distance = block_size as f32 * DEALER_ALERT_DISTANCE_CELLS;
+        let alert_distance = block_size as f32 * self.kind.alert_distance_cells();
 
         let dx = self.position.x - player_position.x;
 
@@ -432,7 +470,7 @@ impl Entity {
         }
     }
 
-    /// Avanza la posición hacia `target` a `DEALER_PURSUIT_SPEED`
+    /// Avanza la posición hacia `target` a `kind.pursuit_speed()`
     /// px/s, respetando `delta_time` (movimiento independiente del
     /// framerate, igual que `process_events` del jugador).
     ///
@@ -470,7 +508,7 @@ impl Entity {
             return;
         }
 
-        let step = DEALER_PURSUIT_SPEED * delta_time;
+        let step = self.kind.pursuit_speed() * delta_time;
 
         if step >= distance {
             self.position = target;
@@ -778,6 +816,101 @@ mod tests {
     fn adding_the_king_does_not_change_dealer_health() {
         assert_eq!(Entity::dealer_at_cell(0, 0, 48).health(), 100);
         assert_eq!(Entity::dealer_at_cell(0, 0, 48).kind(), EnemyKind::Dealer);
+    }
+
+    // --- Bloque 3, Commit 22: persecución de The King. ---
+
+    #[test]
+    fn king_alerts_from_farther_away_than_a_dealer_would() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+        let mut dealer = Entity::dealer_at_cell(0, 0, 48);
+
+        // 5 celdas: dentro del radio del King (6), fuera del Dealer (4).
+        let player = Vector2::new(king.position().x + 5.0 * 48.0, king.position().y);
+
+        king.update(player, 0.016, 48, None);
+        dealer.update(player, 0.016, 48, None);
+
+        assert_eq!(king.state(), EntityState::Alert);
+        assert_eq!(dealer.state(), EntityState::Idle);
+    }
+
+    #[test]
+    fn king_pursues_faster_than_a_dealer_over_the_same_step() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+        let mut dealer = Entity::dealer_at_cell(0, 0, 48);
+
+        let player = Vector2::new(king.position().x + 10.0, king.position().y);
+        king.update(player, 0.016, 48, None);
+        dealer.update(player, 0.016, 48, None);
+        assert_eq!(king.state(), EntityState::Alert);
+        assert_eq!(dealer.state(), EntityState::Alert);
+
+        let start = king.position();
+        let target = Vector2::new(start.x + 480.0, start.y);
+
+        king.update(player, 0.1, 48, Some(target));
+        dealer.update(player, 0.1, 48, Some(target));
+
+        let king_moved = king.position().x - start.x;
+        let dealer_moved = dealer.position().x - start.x;
+
+        assert!(king_moved > dealer_moved);
+        // 85 vs 75 px/s -> exactamente ese ratio a delta idéntico.
+        assert!((king_moved / dealer_moved - 85.0 / 75.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn king_still_snaps_to_its_target_without_overshooting() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        let player = Vector2::new(king.position().x + 10.0, king.position().y);
+        king.update(player, 0.016, 48, None);
+
+        let start = king.position();
+        // 3px de objetivo: por debajo del paso de este cuadro (8.5px a
+        // 85px/s en 0.1s), que lo sobrepasaría sin el recorte.
+        let target = Vector2::new(start.x + 3.0, start.y);
+
+        king.update(player, 0.1, 48, Some(target));
+
+        assert_eq!(king.position().x, target.x);
+        assert_eq!(king.position().y, target.y);
+    }
+
+    #[test]
+    fn dead_or_hit_king_never_moves_even_with_a_pursuit_target() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+        let player = Vector2::new(king.position().x + 10.0, king.position().y);
+        let target = Vector2::new(king.position().x + 48.0, king.position().y);
+
+        king.apply_damage(50); // -> Hit
+        let after_hit = king.position();
+        king.update(player, 0.016, 48, Some(target));
+        assert_eq!(king.position().x, after_hit.x);
+
+        for _ in 0..20 {
+            king.apply_damage(50);
+        }
+        assert!(king.is_dead());
+        let after_dead = king.position();
+        king.update(player, 0.5, 48, Some(target));
+        assert_eq!(king.position().x, after_dead.x);
+        assert_eq!(king.position().y, after_dead.y);
+    }
+
+    #[test]
+    fn dealer_pursuit_is_unchanged_by_the_king_parameters() {
+        let mut dealer = Entity::dealer_at_cell(0, 0, 48);
+        let player = Vector2::new(dealer.position().x + 10.0, dealer.position().y);
+        dealer.update(player, 0.016, 48, None);
+
+        let start = dealer.position();
+        let target = Vector2::new(start.x + 480.0, start.y);
+        dealer.update(player, 0.1, 48, Some(target));
+
+        // 75 px/s * 0.1 s = 7.5 px, exactamente como antes del Bloque 3.
+        assert!(((dealer.position().x - start.x) - 7.5).abs() < 1e-3);
     }
 
     // --- EntityDamageOutcome ---
