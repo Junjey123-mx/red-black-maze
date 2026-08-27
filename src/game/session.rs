@@ -6517,6 +6517,24 @@ e             #
         assert_eq!(run.king_thresholds_consumed(), 2);
     }
 
+    // --- Bloque 4, Commit 42: tercera invocación de 5 Dealers (400). ---
+
+    #[test]
+    fn the_four_hundred_threshold_summons_a_third_distinct_five_dealer_cohort() {
+        let (mut run, _king) = king_at_summon(2);
+        assert_eq!(run.king_health(), Some((400, 1000)));
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        assert_eq!(run.living_summoned_cohort_count(2), 5);
+        assert_eq!(run.king_thresholds_consumed(), 3);
+
+        // Cohortes separadas: 5 en cada índice, nunca fusionadas.
+        assert_eq!(run.living_summoned_cohort_count(0), 5);
+        assert_eq!(run.living_summoned_cohort_count(1), 5);
+        assert_eq!(run.living_summoned_cohort_count(3), 0);
+    }
+
     // --- Bloque 4, Commit 39: primera invocación de 5 Dealers. ---
 
     #[test]
