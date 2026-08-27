@@ -7638,6 +7638,44 @@ e             #
         assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
     }
 
+    // --- Bloque 5, Commit 64: reset del estado musical entre runs. ---
+
+    #[test]
+    fn a_rebuilt_run_resets_every_boss_music_and_summon_flag() {
+        // Deja una run bien avanzada: final battle activo, umbrales
+        // consumidos, cohortes vivas, cue potencialmente pendiente.
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, _king) = drive_king_to_summon(run, king, 1);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+        assert!(run.king_thresholds_consumed() >= 2);
+
+        // Retry / Main Menu / cambio de nivel / cambio de modo ->
+        // `GameSession::new` reconstruye TODO.
+        let fresh = rebuilt_like_retry(&run, 4);
+
+        assert_eq!(fresh.boss_music_state(), BossMusicState::LevelMusic);
+        assert_eq!(fresh.king_phase(), KingEncounterPhase::Fighting);
+        assert_eq!(fresh.king_thresholds_consumed(), 0);
+        assert!(!fresh.king_is_summoning());
+        assert_eq!(fresh.king_active_summon_index(), None);
+        let mut fresh = fresh;
+        assert!(!fresh.take_king_summon_cue());
+        assert_eq!(fresh.king_summon_animation_scale(), 1.0);
+    }
+
+    #[test]
+    fn a_brand_new_horde_run_can_take_the_first_music_transition_again() {
+        // El "primer summon" no es un evento global de una sola vez:
+        // cada run nueva vuelve a tenerlo disponible.
+        let (mut a, _k) = king_at_summon(0);
+        assert_eq!(a.boss_music_state(), BossMusicState::FirstSummonSilence);
+
+        let (mut b, _k) = king_at_summon(0);
+        assert_eq!(b.boss_music_state(), BossMusicState::FirstSummonSilence);
+        let _ = a.take_king_summon_cue();
+    }
+
     // --- Bloque 5, Commit 60: aislamiento de la primera invocación. ---
 
     #[test]
