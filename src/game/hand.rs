@@ -115,6 +115,7 @@ const HEALTH_TARGET_SEED_DISCRIMINATOR: u64 = 0x4EA1_7002;
 const HEALTH_SPAWN_SEED_DISCRIMINATOR: u64 = 0x4EA1_7003;
 const ROYAL_FLUSH_SEED_DISCRIMINATOR: u64 = 0x2_0FA7_0005;
 const KING_SEED_DISCRIMINATOR: u64 = 0x4_1_16_0006;
+const KING_SUMMON_SEED_DISCRIMINATOR: u64 = 0x4_1_16_0007;
 
 /// Deriva una semilla determinista a partir de `session_seed`, un
 /// `discriminator` fijo por sistema, y un `index` (número de Hand o
@@ -704,6 +705,21 @@ pub(crate) fn spawn_seed_for_royal_flush(session_seed: u64) -> u64 {
 /// vida ni The Royal Flush.
 pub(crate) fn spawn_seed_for_king(session_seed: u64) -> u64 {
     derive_resource_seed(session_seed, KING_SEED_DISCRIMINATOR, 0)
+}
+
+/// Semilla determinista de las celdas donde The King invoca su
+/// cohorte de Dealers en el umbral `threshold_index` (0..4 →
+/// 800/600/400/200 HP; Bloque 4, Commit 38). Discriminador propio y
+/// distinto por umbral, así que las cuatro invocaciones de una misma
+/// run reparten sus Dealers por sitios diferentes y nunca coinciden
+/// por casualidad con el layout de ninguna Hand, la munición, la
+/// vida, The Royal Flush ni la celda del propio King.
+pub(crate) fn spawn_seed_for_king_summon(session_seed: u64, threshold_index: usize) -> u64 {
+    derive_resource_seed(
+        session_seed,
+        KING_SUMMON_SEED_DISCRIMINATOR,
+        threshold_index as u64,
+    )
 }
 
 /// Semilla determinista de posiciones para los Health Pickups nuevos

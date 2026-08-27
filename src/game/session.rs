@@ -903,6 +903,48 @@ impl GameSession {
         occupied
     }
 
+    /// Selecciona hasta `count` celdas transitables distintas para los
+    /// Dealers que The King invoca en el umbral `threshold_index`
+    /// (Bloque 4, Commit 38), reutilizando exactamente la
+    /// infraestructura de selección de spawn de las Hands II+
+    /// (`hand::select_spawn_cells`): celdas transitables cercanas a los
+    /// caminos del jugador, a distancia navegable segura, priorizando
+    /// las que están fuera de su visión inmediata, y NUNCA la celda
+    /// del jugador, la del King, la de la meta, una pared, una celda
+    /// ya ocupada por otra entidad/pickup ni una posición duplicada
+    /// (todo eso ya lo excluye `occupied_world_cells` +
+    /// `select_spawn_cells`).
+    ///
+    /// Determinista para una misma sesión/seed y umbral
+    /// (`hand::spawn_seed_for_king_summon`). Nunca coloca a los
+    /// Dealers pegados al King por defecto: la distancia mínima se
+    /// mide desde el jugador, igual que cualquier otro spawn de Hand.
+    ///
+    /// No spawnea nada: solo elige celdas. El Commit 39 construye los
+    /// `Entity::dealer_at_cell` a partir de esta lista.
+    #[allow(dead_code)]
+    fn select_king_summon_cells(
+        &self,
+        count: usize,
+        threshold_index: usize,
+        block_size: usize,
+    ) -> Vec<(usize, usize)> {
+        let occupied = self.occupied_world_cells(block_size);
+
+        let seed = hand::spawn_seed_for_king_summon(self.hand_seed, threshold_index);
+
+        hand::select_spawn_cells(
+            &self.level,
+            self.player.pos,
+            self.player.a,
+            block_size,
+            &occupied,
+            count,
+            false,
+            seed,
+        )
+    }
+
     /// Avanza el sistema de Hands un cuadro: countdown de "The House
     /// is reloading", detección de Hand completada, y — en el
     /// instante exacto en que corresponde — spawnea la siguiente
@@ -6359,6 +6401,46 @@ e             #
         run.update_king_encounter(f32::NAN);
         assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
         assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
+    }
+
+    // --- Bloque 4, Commit 38: celdas de invocación seguras. ---
+
+    #[test]
+    fn king_summon_cells_are_safe_distinct_and_deterministic() {
+        let (run, king) = horde_at_the_king(4);
+
+        let player_cell = super::world_to_cell(run.player.pos, BLOCK_SIZE);
+        let king_cell = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+
+        let cells = run.select_king_summon_cells(5, 0, BLOCK_SIZE);
+        assert_eq!(cells.len(), 5, "el mapa de prueba admite las 5 celdas");
+
+        let mut seen = std::collections::HashSet::new();
+        for &(row, column) in &cells {
+            assert!(run.level.is_walkable(row, column), "transitable");
+            assert_ne!((row, column), player_cell, "nunca la celda del jugador");
+            assert_ne!((row, column), king_cell, "nunca la celda del King");
+            assert!(seen.insert((row, column)), "sin duplicados");
+
+            let field = DistanceField::from_level(&run.level, player_cell);
+            assert!(
+                field.distance_at(row, column).unwrap_or(0) >= 2,
+                "a distancia navegable, no pegado al jugador"
+            );
+        }
+
+        // Misma seed/umbral -> mismo resultado.
+        assert_eq!(run.select_king_summon_cells(5, 0, BLOCK_SIZE), cells);
+        // Umbral distinto -> reparto distinto (discriminador propio).
+        assert_ne!(run.select_king_summon_cells(5, 1, BLOCK_SIZE), cells);
+    }
+
+    #[test]
+    fn king_summon_cell_selection_places_nothing_by_itself() {
+        let (run, _king) = horde_at_the_king(4);
+        let before = run.entities().len();
+        let _ = run.select_king_summon_cells(10, 3, BLOCK_SIZE);
+        assert_eq!(run.entities().len(), before);
     }
 
     // --- Bloque 4, Commit 37: animación de invocación. ---
