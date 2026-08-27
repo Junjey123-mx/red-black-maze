@@ -179,12 +179,13 @@ const HEALTH_PICKUP_AMOUNT: i32 = 20;
 /// (`hand::extra_ammo_pickups_needed`) no tiene un conteo real de
 /// enemigos del que partir. Este valor lo sustituye. Con The King a
 /// `HP = 1000` y el arma Standard a `50` de daño hacen falta 20
-/// impactos limpios; `15 * SHOTS_TO_KILL_ONE_DEALER(2) * 1.5 margen
-/// = 45` balas de piso garantizado deja ~25 disparos de margen para
-/// fallos durante el combate en la arena (o de sobra si el jugador
-/// llega con The Royal Flush, que mata al King en 10). Sigue sin
-/// rellenar automáticamente cargador/reserva/salud: el jugador
-/// recoge los items.
+/// impactos limpios; `15 * SHOTS_TO_KILL_ONE_DEALER(2) * 1.5 margen`
+/// balas de base, ahora DOBLADAS por
+/// `hand::AMMO_PER_HAND_BUDGET_MULTIPLIER`, dejan holgura de sobra
+/// para el combate en la arena (o muchísima si el jugador llega con
+/// The Royal Flush, que mata al King en 10). Sigue sin rellenar
+/// automáticamente cargador/reserva/salud: el jugador recoge los
+/// items.
 const FINAL_HAND_SUPPLY_DEALER_EQUIVALENT: usize = 15;
 
 /// Daño que un ataque de Dealer ACEPTADO inflige al jugador
@@ -1413,14 +1414,20 @@ impl GameSession {
         if extra_pickups_needed > 0 {
             let pickup_seed = spawn_seed.wrapping_add(1);
 
-            let pickup_cells = hand::select_spawn_cells(
+            /*
+             * La munición de Hand se coloca CERCA del jugador y, a ser
+             * posible, en celdas que ya tiene delante
+             * (`select_accessible_ammo_cells`), en vez de empujarla
+             * lejos y fuera de vista como a los Dealers: el jugador se
+             * quejaba de tener que cruzar el mapa para recargar.
+             */
+            let pickup_cells = hand::select_accessible_ammo_cells(
                 &self.level,
                 self.player.pos,
                 self.player.a,
                 block_size,
                 occupied,
                 extra_pickups_needed,
-                false,
                 pickup_seed,
             );
 
@@ -3518,7 +3525,7 @@ mod tests {
     }
 
     #[test]
-    fn caso_a_softlock_condition_spawns_two_emergency_pickups() {
+    fn caso_a_softlock_condition_spawns_the_emergency_pickup_batch() {
         let mut session = new_test_session_for_emergency_ammo();
 
         assert_eq!(session.alive_dealer_count(), 1);
@@ -3528,14 +3535,14 @@ mod tests {
 
         let spawned = session.ensure_emergency_ammo(BLOCK_SIZE);
 
-        assert_eq!(spawned, 2);
+        assert_eq!(spawned, 4);
         assert_eq!(
             session
                 .ammo_pickups()
                 .iter()
                 .filter(|pickup| pickup.is_active())
                 .count(),
-            2
+            4
         );
     }
 
@@ -3640,7 +3647,7 @@ mod tests {
 
         drain_all_ammo(&mut session);
 
-        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 4);
 
         // Cuadro inmediatamente siguiente, condición sin cambios
         // salvo por los pickups recién creados (ya activos): no debe
@@ -3652,7 +3659,7 @@ mod tests {
                 .iter()
                 .filter(|pickup| pickup.is_active())
                 .count(),
-            2
+            4
         );
     }
 
@@ -3662,9 +3669,9 @@ mod tests {
 
         drain_all_ammo(&mut session);
 
-        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 4);
 
-        // Recoge los dos pickups de emergencia recién creados.
+        // Recoge todos los pickups de emergencia recién creados.
         for index in 0..session.ammo_pickups().len() {
             let position = session.ammo_pickups()[index].position();
             session.player.pos = position;
@@ -3681,7 +3688,7 @@ mod tests {
         // Gasta de nuevo toda la munición recién recogida.
         drain_all_ammo(&mut session);
 
-        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 4);
     }
 
     #[test]
@@ -3722,7 +3729,7 @@ mod tests {
         drain_all_ammo(&mut session);
 
         let spawned = session.ensure_emergency_ammo(BLOCK_SIZE);
-        assert_eq!(spawned, 2);
+        assert_eq!(spawned, 4);
 
         let dealer_cell = session.entities()[0].position();
         let health_cell = session.health_pickups()[0].position();
@@ -3761,7 +3768,7 @@ mod tests {
 
         // "Resume": la primera llamada real todavía genera con
         // normalidad.
-        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 2);
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 4);
     }
 
     #[test]
@@ -5427,14 +5434,24 @@ e             #
     }
 
     fn new_horde_session_with_final_hand(final_hand_number: usize) -> GameSession {
+        // Sala amplia y abierta: espacio de sobra para varias Hands +
+        // las cuatro cohortes de The King + la munición por Hand
+        // (ahora doblada) sin que la selección de celdas quede
+        // limitada por el tamaño del mapa de prueba.
         new_horde_session_on_map(
             "\
-###########
-#p        #
-#    e    #
-#         #
-#        g#
-###########
+######################
+#p                   #
+#                    #
+#                    #
+#                    #
+#         e          #
+#                    #
+#                    #
+#                    #
+#                    #
+#                   g#
+######################
 ",
             final_hand_number,
         )

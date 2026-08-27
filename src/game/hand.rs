@@ -67,20 +67,30 @@ const SHOTS_TO_KILL_ONE_DEALER: u32 = 2;
 const MISS_MARGIN_MULTIPLIER: f32 = 1.5;
 
 /// Munición de reserva otorgada por cada `AmmoPickup`
-/// (`game::session::AMMO_PICKUP_AMOUNT`), duplicado aquí por el mismo
+/// (`game::session::AMMO_PER_PICKUP`), duplicado aquí por el mismo
 /// motivo que las constantes anteriores.
 const AMMO_PER_PICKUP: u32 = 6;
 
+/// Multiplicador del presupuesto de munición POR HAND: el jugador
+/// reportaba que la munición era demasiado escasa, así que cada Hand
+/// nueva planifica el DOBLE de balas de las que la fórmula base
+/// (disparos necesarios × margen de fallo) pediría. Solo afecta a la
+/// munición inyectada entre Hands — nunca a la vida del enemigo, al
+/// daño del arma ni a la munición inicial del nivel.
+const AMMO_PER_HAND_BUDGET_MULTIPLIER: u32 = 2;
+
 /// Tope de pickups adicionales inyectados de una sola vez al iniciar
-/// una Hand, para no inundar el nivel de munición aunque el déficit
-/// calculado sea enorme.
-const MAX_EXTRA_PICKUPS_PER_HAND: usize = 6;
+/// una Hand. Duplicado (6 -> 12) junto con
+/// `AMMO_PER_HAND_BUDGET_MULTIPLIER` para que el presupuesto doblado
+/// no quede recortado por el tope.
+const MAX_EXTRA_PICKUPS_PER_HAND: usize = 12;
 
 /// Cantidad de `AmmoPickup` que crea el Emergency Ammo Respawn
-/// (anti-softlock) cada vez que se activa. Un número deliberadamente
-/// pequeño — esto NO es regeneración pasiva, solo una salida de
-/// emergencia.
-pub(crate) const EMERGENCY_AMMO_PICKUP_COUNT: usize = 2;
+/// (anti-softlock) cada vez que se activa. Duplicado (2 -> 4) para
+/// alinearse con el resto del suministro de munición por Hand: sigue
+/// sin ser regeneración pasiva, solo una salida de emergencia más
+/// holgada.
+pub(crate) const EMERGENCY_AMMO_PICKUP_COUNT: usize = 4;
 
 /// Banda de distancia navegable (pasos de `DistanceField`, nunca
 /// euclidiana) preferida para un `AmmoPickup` de emergencia respecto
@@ -89,7 +99,7 @@ pub(crate) const EMERGENCY_AMMO_PICKUP_COUNT: usize = 2;
 /// progresivamente si el mapa no ofrece suficientes candidatos en la
 /// banda estricta — nunca se bloquea el respawn por falta de celdas
 /// perfectamente ideales.
-const EMERGENCY_AMMO_DISTANCE_BANDS: [(u32, u32); 3] = [(3, 8), (1, 16), (1, u32::MAX)];
+const EMERGENCY_AMMO_DISTANCE_BANDS: [(u32, u32); 3] = [(1, 3), (1, 6), (1, u32::MAX)];
 
 /// Objetivo mínimo/máximo (inclusive) de Health Pickups activos que
 /// debe haber en el mapa al comenzar cada Hand posterior a HAND I
@@ -513,6 +523,97 @@ pub(crate) fn select_spawn_cells(
     }
 }
 
+/// Distancia navegable máxima (pasos de `DistanceField`) preferida
+/// para un `AmmoPickup` inyectado por el sistema de Hands, de la más
+/// cercana a la más laxa. A diferencia de `select_spawn_cells` — que
+/// EMPUJA a los Dealers lejos y fuera de vista — la munición debe
+/// quedar al alcance inmediato del jugador: pocas celdas de distancia
+/// y, dentro de eso, PRIORIZANDO las celdas que ya tiene delante.
+const ACCESSIBLE_AMMO_MAX_DISTANCE_FALLBACKS: [u32; 3] = [3, 6, u32::MAX];
+
+/// Recolecta hasta `count` celdas TRANSITABLES y no ocupadas para
+/// munición de Hand, priorizando cercanía y visibilidad respecto al
+/// jugador (lo contrario de `select_spawn_cells`): primero las celdas
+/// dentro de una banda navegable corta Y dentro del cono de visión
+/// aproximado, luego las cercanas fuera de vista, y solo si el mapa
+/// no da para más se relaja la distancia. Nunca la celda del jugador,
+/// nunca una pared, nunca una celda ya ocupada. Determinista para una
+/// misma `seed`.
+pub(crate) fn select_accessible_ammo_cells(
+    level: &Level,
+    player_position: Vector2,
+    player_facing: f32,
+    block_size: usize,
+    occupied: &HashSet<(usize, usize)>,
+    count: usize,
+    seed: u64,
+) -> Vec<(usize, usize)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut rng = Rng::new(seed);
+
+    let player_cell = world_to_cell(player_position, block_size);
+
+    let distances = DistanceField::from_level(level, player_cell);
+
+    let height = level.height();
+    let width = level.width();
+
+    for &max_distance in &ACCESSIBLE_AMMO_MAX_DISTANCE_FALLBACKS {
+        let mut visible = Vec::new();
+        let mut not_visible = Vec::new();
+
+        for row in 0..height {
+            for column in 0..width {
+                let cell = (row, column);
+
+                if !level.is_walkable(row, column) {
+                    continue;
+                }
+
+                if cell == player_cell || occupied.contains(&cell) {
+                    continue;
+                }
+
+                let Some(distance) = distances.distance_at(row, column) else {
+                    continue;
+                };
+
+                if distance == 0 || distance > max_distance {
+                    continue;
+                }
+
+                if is_immediately_visible(row, column, player_position, player_facing, block_size) {
+                    visible.push(cell);
+                } else {
+                    not_visible.push(cell);
+                }
+            }
+        }
+
+        let total_candidates = visible.len() + not_visible.len();
+
+        if total_candidates >= count || max_distance == u32::MAX {
+            visible.sort();
+            not_visible.sort();
+
+            rng.shuffle(&mut visible);
+            rng.shuffle(&mut not_visible);
+
+            // Munición a la vista PRIMERO; las cercanas fuera de vista
+            // solo completan lo que falte.
+            let mut ordered = visible;
+            ordered.extend(not_visible);
+
+            return ordered.into_iter().take(count).collect();
+        }
+    }
+
+    Vec::new()
+}
+
 /// Coloca hasta `count` posiciones agrupadas en pequeños racimos (1-2
 /// plagas de 4-6, un puñado de grupos de 2-3, el resto individuales),
 /// tomando los orígenes de racimo de `ordered_pool` (ya priorizado
@@ -646,14 +747,17 @@ pub(crate) fn spawn_seed_for_hand(session_seed: u64, hand_number: usize) -> u64 
 /// tiene `accessible_ammo` balas alcanzables (cargador + reserva +
 /// pickups activos × munición por pickup) — sección 19. Misma fórmula
 /// que `world::level_generator::ammo_pickup_budget`, pero relativa a
-/// la munición YA disponible en vez de partir de cero.
+/// la munición YA disponible en vez de partir de cero y con el
+/// presupuesto DOBLADO (`AMMO_PER_HAND_BUDGET_MULTIPLIER`): la
+/// munición por Hand resultaba demasiado escasa.
 pub(crate) fn extra_ammo_pickups_needed(
     new_hand_dealer_count: usize,
     accessible_ammo: u32,
 ) -> usize {
     let shots_needed = new_hand_dealer_count as u32 * SHOTS_TO_KILL_ONE_DEALER;
 
-    let shots_with_margin = (shots_needed as f32 * MISS_MARGIN_MULTIPLIER).ceil() as u32;
+    let shots_with_margin = ((shots_needed as f32 * MISS_MARGIN_MULTIPLIER).ceil() as u32)
+        * AMMO_PER_HAND_BUDGET_MULTIPLIER;
 
     let deficit = shots_with_margin.saturating_sub(accessible_ammo);
 
@@ -1263,22 +1367,102 @@ mod tests {
 
     #[test]
     fn no_extra_pickups_when_ammo_is_already_sufficient() {
-        // 4 Dealers * 2 disparos * 1.5 margen = 12 disparos; 30 balas
-        // accesibles ya alcanzan de sobra.
-        assert_eq!(extra_ammo_pickups_needed(4, 30), 0);
+        // 4 Dealers * 2 disparos * 1.5 margen = 12 disparos; DOBLADO
+        // (`AMMO_PER_HAND_BUDGET_MULTIPLIER`) = 24; 24 balas accesibles
+        // ya alcanzan justo, sin déficit.
+        assert_eq!(extra_ammo_pickups_needed(4, 24), 0);
     }
 
     #[test]
     fn extra_pickups_scale_with_the_ammo_deficit() {
-        // 46 Dealers * 2 * 1.5 = 138 disparos con margen; con solo 24
-        // balas accesibles, el déficit es 114 -> ceil(114/6) = 19,
-        // recortado al tope de 6.
-        assert_eq!(extra_ammo_pickups_needed(46, 24), 6);
+        // 8 Dealers * 2 * 1.5 = 24 disparos con margen; DOBLADO = 48.
+        // Con 24 balas accesibles el déficit es 24 -> ceil(24/6) = 4.
+        assert_eq!(extra_ammo_pickups_needed(8, 24), 4);
     }
 
     #[test]
     fn extra_pickups_are_capped_even_for_enormous_deficits() {
-        assert!(extra_ammo_pickups_needed(1000, 0) <= 6);
+        // El presupuesto por Hand está doblado pero el tope también
+        // (6 -> 12): nunca se inunda el mapa.
+        assert!(extra_ammo_pickups_needed(1000, 0) <= 12);
+        assert_eq!(extra_ammo_pickups_needed(1000, 0), 12);
+    }
+
+    #[test]
+    fn the_per_hand_ammo_budget_is_doubled() {
+        assert_eq!(AMMO_PER_HAND_BUDGET_MULTIPLIER, 2);
+
+        // 6 Dealers, 0 balas: base = ceil(6*2*1.5 / 6) = 3 pickups;
+        // doblado = 6.
+        assert_eq!(extra_ammo_pickups_needed(6, 0), 6);
+    }
+
+    #[test]
+    fn accessible_ammo_cells_land_close_to_the_player_and_prefer_the_forward_view() {
+        let level = test_level();
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_cell = (4, 6);
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+        // Mirando hacia +x (columnas crecientes).
+        let facing = 0.0;
+
+        let distances = DistanceField::from_level(&level, player_cell);
+
+        let cells =
+            select_accessible_ammo_cells(&level, player_position, facing, 48, &occupied, 3, 7);
+        assert_eq!(cells.len(), 3);
+
+        let mut any_visible = false;
+        for &(row, column) in &cells {
+            let distance = distances
+                .distance_at(row, column)
+                .expect("celda alcanzable");
+            // Cercana: nunca la celda del jugador, siempre a pocos pasos.
+            assert!(
+                (1..=6).contains(&distance),
+                "distancia {distance} demasiado lejos"
+            );
+            assert_ne!((row, column), player_cell);
+            if is_immediately_visible(row, column, player_position, facing, 48) {
+                any_visible = true;
+            }
+        }
+        // El mapa abierto siempre ofrece celdas dentro del cono: al
+        // menos una de las elegidas debe estar a la vista.
+        assert!(
+            any_visible,
+            "la munición debería aparecer a la vista del jugador"
+        );
+
+        // Determinista.
+        assert_eq!(
+            select_accessible_ammo_cells(&level, player_position, facing, 48, &occupied, 3, 7),
+            cells
+        );
+    }
+
+    #[test]
+    fn accessible_ammo_cells_never_reuse_an_occupied_cell() {
+        let level = test_level();
+        let player_cell = (3, 3);
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+
+        let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+        occupied.insert((3, 4));
+        occupied.insert((4, 3));
+
+        let cells = select_accessible_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 1);
+        for cell in &cells {
+            assert!(!occupied.contains(cell));
+            assert_ne!(*cell, player_cell);
+        }
     }
 
     // --- Emergency Ammo Respawn: selección de posiciones. ---
@@ -1307,8 +1491,10 @@ mod tests {
                 .distance_at(row, column)
                 .expect("celda elegida debe ser alcanzable");
 
+            // Banda estrecha y CERCANA (1..=3): la munición de
+            // emergencia debe quedar al alcance inmediato del jugador.
             assert!(
-                (3..=8).contains(&distance),
+                (1..=3).contains(&distance),
                 "distancia fuera de banda: {distance}"
             );
         }
