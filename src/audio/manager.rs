@@ -938,6 +938,42 @@ mod tests {
         assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
     }
 
+    // --- Bloque 5, Commit 69: lifecycle completo de final_battle. ---
+
+    #[test]
+    fn a_full_boss_music_lifecycle_never_leaves_two_tracks_selected() {
+        // Nivel -> silencio (primera invocación) -> final battle ->
+        // (pausa/reanuda) -> Victory. En cada paso hay como mucho UNA
+        // pista seleccionada.
+        let mut audio = AudioManager::new(None);
+        audio.set_music(MusicTrack::CrimsonEntrance);
+        assert_eq!(audio.current_track(), Some(MusicTrack::CrimsonEntrance));
+
+        audio.stop_music(); // ventana de silencio
+        assert_eq!(audio.current_track(), None);
+
+        audio.set_music(MusicTrack::FinalBattle); // tras la animación
+        assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+        audio.pause_music();
+        audio.play_music();
+        audio.set_music(MusicTrack::FinalBattle); // sync tras reanudar
+        assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+        audio.set_music(MusicTrack::Victory); // muerte del King
+        assert_eq!(audio.current_track(), Some(MusicTrack::Victory));
+    }
+
+    #[test]
+    fn a_new_run_after_final_battle_can_go_back_to_level_music() {
+        let mut audio = AudioManager::new(None);
+        audio.set_music(MusicTrack::FinalBattle);
+
+        // Retry / cambio de nivel: `App` selecciona la pista del nivel.
+        audio.set_music(MusicTrack::BlackClub);
+        assert_eq!(audio.current_track(), Some(MusicTrack::BlackClub));
+    }
+
     // --- Bloque 5, Commit 68: continuidad en 600/400/200. ---
 
     #[test]

@@ -8070,4 +8070,96 @@ e             #
         }
         assert!(broke);
     }
+
+    // --- Bloque 5, Commit 69: persecución final, reset y aislamiento. ---
+
+    #[test]
+    fn final_battle_music_stays_active_through_the_entire_flee_phase() {
+        let (mut run, king) = king_at_later_summon(3);
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+        }
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        // Caza al jefe en huida — 200 -> 0 — mientras 10 Dealers
+        // persiguen: la música nunca cambia hasta la muerte.
+        let mut guard = 0;
+        while run.king_alive() {
+            assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+            assert!(run.king_is_fleeing());
+            run.update_entities(0.1, BLOCK_SIZE);
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 50);
+        }
+
+        // Muerte del jefe -> Horde completado. El estado musical
+        // sigue siendo FinalBattle en la sesión; es `App` quien, al
+        // entrar a Victory, hace `set_music(Victory)` y lo detiene.
+        assert!(run.horde_completed());
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn king_death_clears_the_final_cohort_so_victory_needs_no_cleanup() {
+        let (mut run, king) = king_at_later_summon(3);
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+        }
+        assert_eq!(run.living_summoned_cohort_count(3), 10);
+
+        let mut guard = 0;
+        while run.king_alive() {
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 50);
+        }
+        assert!(run.horde_completed());
+        assert!(
+            run.entities().iter().all(|e| e.summon_cohort().is_none()),
+            "cohortes invocadas limpias tras la muerte del King"
+        );
+    }
+
+    #[test]
+    fn portal_mode_never_reaches_any_boss_music_state_or_summon_cue() {
+        let mut portal = new_test_session_with_one_dealer();
+        assert_eq!(portal.mode(), GameMode::Portal);
+
+        // `App` nunca llama a `update_hand_state` en Portal Mode, así
+        // que la Final Hand / The King jamás aparecen y el sistema de
+        // fases queda completamente inerte.
+        for _ in 0..500 {
+            for index in 0..portal.entities().len() {
+                portal.damage_entity(index);
+            }
+            portal.update_entities(0.1, BLOCK_SIZE);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+
+            assert_eq!(portal.boss_music_state(), BossMusicState::LevelMusic);
+            assert_eq!(portal.king_phase(), KingEncounterPhase::Fighting);
+            assert!(!portal.king_is_summoning());
+            assert_eq!(portal.king_active_summon_index(), None);
+            assert!(!portal.take_king_summon_cue());
+        }
+    }
+
+    #[test]
+    fn a_retry_after_the_flee_phase_returns_to_level_music_and_a_clean_encounter() {
+        let (mut run, _king) = king_at_later_summon(3);
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+        }
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        let mut fresh = rebuilt_like_retry(&run, 4);
+        assert_eq!(fresh.boss_music_state(), BossMusicState::LevelMusic);
+        assert_eq!(fresh.king_phase(), KingEncounterPhase::Fighting);
+        assert!(!fresh.king_is_fleeing());
+        assert_eq!(fresh.king_thresholds_consumed(), 0);
+        assert!(!fresh.take_king_summon_cue());
+    }
 }
