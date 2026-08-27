@@ -54,12 +54,25 @@ pub(crate) enum KingEncounterPhase {
 /// manual.
 struct KingEncounter {
     phase: KingEncounterPhase,
+
+    /// Cuántos umbrales de `KING_PHASE_THRESHOLDS` ya se han
+    /// consumido, en orden (0..=4). Cada corte de 200 HP se procesa
+    /// EXACTAMENTE una vez: la detección compara vida anterior contra
+    /// vida resultante (`old > threshold && new <= threshold`), nunca
+    /// igualdad exacta, y un disparo que cruzaría el umbral se recorta
+    /// para que la vida se detenga justo en él antes de continuar
+    /// (Bloque 4, Commit 33). Así ni un disparo rápido ni uno mejorado
+    /// (Royal Flush, 100 de daño) puede saltarse una fase ni volver a
+    /// activar un umbral ya consumido, y la progresión no depende del
+    /// frame rate.
+    thresholds_consumed: usize,
 }
 
 impl KingEncounter {
     fn new() -> Self {
         Self {
             phase: KingEncounterPhase::Fighting,
+            thresholds_consumed: 0,
         }
     }
 }
@@ -122,7 +135,6 @@ const KING_ATTACK_DAMAGE: i32 = 20;
 ///
 /// La escala conceptual antigua `1 / 2 / 20` queda descartada: estos
 /// son valores reales de HP contra `KING_MAX_HEALTH = 1000`.
-#[allow(dead_code)]
 const KING_PHASE_THRESHOLDS: [i32; 4] = [800, 600, 400, 200];
 
 /// Cantidad de Dealers que The King invoca en cada umbral
@@ -686,6 +698,7 @@ impl GameSession {
     /// Fase actual del encuentro contra The King (Bloque 4). `App` y
     /// rendering la consultan; nunca la escriben. Fuera del combate
     /// del jefe permanece en `KingEncounterPhase::Fighting`.
+    #[allow(dead_code)]
     pub(crate) fn king_phase(&self) -> KingEncounterPhase {
         self.king_encounter.phase
     }
@@ -1185,11 +1198,69 @@ impl GameSession {
     pub(crate) fn damage_entity(&mut self, entity_index: usize) -> EntityDamageOutcome {
         let damage = self.weapon.tier().damage();
 
+        let is_living_king = self
+            .entities
+            .get(entity_index)
+            .is_some_and(|entity| entity.kind() == EnemyKind::King && !entity.is_dead());
+
+        if is_living_king {
+            return self.damage_king(entity_index, damage);
+        }
+
         match self.entities.get_mut(entity_index) {
             Some(entity) => entity.apply_damage(damage),
 
             None => EntityDamageOutcome::None,
         }
+    }
+
+    /// Aplica un disparo aceptado a The King a través del modelo de
+    /// fases (Bloque 4). El mismo `Entity::apply_damage` del resto del
+    /// combate hace el trabajo real sobre la vida/estado; esta capa
+    /// solo decide, ANTES de aplicarlo, si el disparo cruza el
+    /// siguiente umbral de `KING_PHASE_THRESHOLDS` todavía sin
+    /// consumir y, en ese caso, recorta el daño para que la vida se
+    /// detenga EXACTAMENTE en el umbral y marca ese corte como
+    /// consumido una sola vez (Commit 33).
+    ///
+    /// La detección compara vida previa contra vida resultante
+    /// (`health > threshold && health - damage <= threshold`), nunca
+    /// una igualdad frágil, así que un disparo rápido o mejorado no
+    /// puede atravesar un umbral ni reactivar uno ya consumido.
+    fn damage_king(&mut self, entity_index: usize, damage: i32) -> EntityDamageOutcome {
+        let health = match self.entities.get(entity_index) {
+            Some(entity) => entity.health(),
+            None => return EntityDamageOutcome::None,
+        };
+
+        let consumed = self.king_encounter.thresholds_consumed;
+
+        let applied_damage = if consumed < KING_PHASE_THRESHOLDS.len() {
+            let threshold = KING_PHASE_THRESHOLDS[consumed];
+
+            if health > threshold && health - damage <= threshold {
+                self.king_encounter.thresholds_consumed += 1;
+
+                health - threshold
+            } else {
+                damage
+            }
+        } else {
+            damage
+        };
+
+        match self.entities.get_mut(entity_index) {
+            Some(entity) => entity.apply_damage(applied_damage),
+
+            None => EntityDamageOutcome::None,
+        }
+    }
+
+    /// Cuántos umbrales de fase de The King se han consumido en esta
+    /// run (0..=4). Introspección para las pruebas del Bloque 4.
+    #[allow(dead_code)]
+    pub(crate) fn king_thresholds_consumed(&self) -> usize {
+        self.king_encounter.thresholds_consumed
     }
 
     /// Resuelve los ataques de TODOS los Dealers para este cuadro
@@ -5888,5 +5959,81 @@ e             #
         assert_eq!(KING_MAX_HEALTH, 1000);
         assert_eq!(WeaponTier::Standard.damage(), 50);
         assert_eq!(WeaponTier::RoyalFlush.damage(), 100);
+    }
+
+    // --- Bloque 4, Commit 33: cada umbral se consume una sola vez. ---
+
+    #[test]
+    fn standard_fire_stops_the_king_exactly_on_each_threshold_once() {
+        let (mut run, king) = horde_at_the_king(4);
+
+        // 1000 -> 800: cuatro impactos Standard (50) llegan justo a
+        // 800 (1000, 950, 900, 850, 800) y consumen el primer umbral.
+        for _ in 0..4 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((800, 1000)));
+        assert_eq!(run.king_thresholds_consumed(), 1);
+
+        // El quinto impacto ya cruza por debajo de 800 sin volver a
+        // consumir el umbral.
+        run.damage_entity(king);
+        assert_eq!(run.king_health(), Some((750, 1000)));
+        assert_eq!(run.king_thresholds_consumed(), 1);
+
+        // Sigue disparando hasta el final: exactamente 4 umbrales, en
+        // 800/600/400/200, cada uno una sola vez.
+        let mut seen = vec![800];
+        while run.king_alive() {
+            let before = run.king_health().unwrap().0;
+            run.damage_entity(king);
+            let after = run.king_health().map(|(h, _)| h).unwrap_or(0);
+            for &t in &KING_PHASE_THRESHOLDS {
+                if before > t && after == t {
+                    seen.push(t);
+                }
+            }
+        }
+        assert_eq!(seen, vec![800, 600, 400, 200]);
+        assert_eq!(run.king_thresholds_consumed(), 4);
+    }
+
+    #[test]
+    fn an_upgraded_royal_flush_shot_cannot_skip_a_king_threshold() {
+        let (mut run, king) = horde_at_the_king(2);
+        run.player.pos = run.royal_flush_pickup().unwrap().position();
+        assert!(run.collect_nearby_royal_flush_pickup());
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        // 1000 -> 900 -> 800 (exacto, umbral consumido pese a que el
+        // daño de 100 "querría" llevarlo a 800 directo y el siguiente
+        // a 700).
+        run.damage_entity(king); // 900
+        run.damage_entity(king); // cruza 800 -> clamp a 800
+        assert_eq!(run.king_health(), Some((800, 1000)));
+        assert_eq!(run.king_thresholds_consumed(), 1);
+
+        // Desde 800: 700, luego cruza 600 -> clamp a 600.
+        run.damage_entity(king); // 700
+        run.damage_entity(king); // 600
+        assert_eq!(run.king_health(), Some((600, 1000)));
+        assert_eq!(run.king_thresholds_consumed(), 2);
+    }
+
+    #[test]
+    fn king_threshold_detection_does_not_depend_on_frame_rate() {
+        // Reaplicar daño en "cuadros" arbitrariamente pequeños o
+        // grandes no cambia el resultado: la detección es por cruce
+        // de vida, no por tiempo.
+        let (mut run, king) = horde_at_the_king(4);
+        for _ in 0..200 {
+            if !run.king_alive() {
+                break;
+            }
+            run.damage_entity(king);
+            run.update_entities(0.001, BLOCK_SIZE);
+        }
+        assert!(!run.king_alive());
+        assert_eq!(run.king_thresholds_consumed(), 4);
     }
 }
