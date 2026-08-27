@@ -9,7 +9,7 @@ use crate::world::{
 };
 
 use super::GameMode;
-use super::hand::{self, HandHudMessage, HandState};
+use super::hand::{self, HandHudMessage, HordeManager};
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -161,8 +161,8 @@ pub(crate) struct GameSession {
     /// Pertenece a la sesión — nunca a `AudioManager`/rendering — y
     /// se reconstruye enteramente en `GameSession::new`, así que
     /// Retry/cambio de nivel/New Game siempre arrancan en HAND I sin
-    /// heredar nada (ver doc de `HandState`).
-    hand_state: HandState,
+    /// heredar nada (ver doc de `HordeManager`).
+    horde: HordeManager,
 
     /// Semilla base para derivar, de forma determinista, la
     /// distribución de spawn de cada Hand adicional
@@ -240,7 +240,7 @@ impl GameSession {
             .map(|&(row, column)| HealthPickup::at_cell(row, column, block_size))
             .collect();
 
-        let hand_state = HandState::new(entities.len());
+        let horde = HordeManager::new(entities.len());
 
         Self {
             level,
@@ -251,7 +251,7 @@ impl GameSession {
             entities,
             ammo_pickups,
             health_pickups,
-            hand_state,
+            horde,
             hand_seed,
             emergency_ammo_spawn_count: 0,
             hit_flash: HitFlashState::new(),
@@ -430,13 +430,49 @@ impl GameSession {
 
     /// Número de Hand actualmente en curso (`1` = HAND I).
     pub(crate) fn hand_number(&self) -> usize {
-        self.hand_state.hand_number()
+        self.horde.hand_number()
     }
 
     /// Mensaje HUD del sistema de Hands para este cuadro, si hay
     /// alguno. Dominio puro — `rendering::hud` decide cómo dibujarlo.
     pub(crate) fn hand_hud_message(&self) -> HandHudMessage {
-        self.hand_state.hud_message()
+        self.horde.hud_message()
+    }
+
+    /// Celdas actualmente ocupadas por el jugador, la meta, cualquier
+    /// entidad (viva o cadáver) y cualquier pickup ACTIVO — el
+    /// conjunto de exclusión que tanto la aparición de una Hand nueva
+    /// (`update_hand_state`) como el Emergency Ammo Respawn
+    /// (`ensure_emergency_ammo`) necesitan para no colocar nada
+    /// encima de algo que ya está ahí.
+    ///
+    /// Extraído como único punto de este cálculo (antes duplicado
+    /// literalmente entre ambos métodos) al formalizar la progresión
+    /// de Horde: mismo resultado exacto que antes, sin cambiar qué
+    /// cuenta como "ocupado".
+    fn occupied_world_cells(&self, block_size: usize) -> HashSet<(usize, usize)> {
+        let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        occupied.insert(world_to_cell(self.player.pos, block_size));
+        occupied.insert(self.level.goal());
+
+        for entity in &self.entities {
+            occupied.insert(world_to_cell(entity.position(), block_size));
+        }
+
+        for pickup in &self.ammo_pickups {
+            if pickup.is_active() {
+                occupied.insert(world_to_cell(pickup.position(), block_size));
+            }
+        }
+
+        for pickup in &self.health_pickups {
+            if pickup.is_active() {
+                occupied.insert(world_to_cell(pickup.position(), block_size));
+            }
+        }
+
+        occupied
     }
 
     /// Avanza el sistema de Hands un cuadro: countdown de "The House
@@ -467,32 +503,13 @@ impl GameSession {
     ) {
         let alive_count = self.alive_dealer_count();
 
-        let Some(new_hand_count) = self.hand_state.tick(delta_time, alive_count, level_cap) else {
+        let Some(new_hand_count) = self.horde.tick(delta_time, alive_count, level_cap) else {
             return;
         };
 
-        let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+        let mut occupied = self.occupied_world_cells(block_size);
 
-        occupied.insert(world_to_cell(self.player.pos, block_size));
-        occupied.insert(self.level.goal());
-
-        for entity in &self.entities {
-            occupied.insert(world_to_cell(entity.position(), block_size));
-        }
-
-        for pickup in &self.ammo_pickups {
-            if pickup.is_active() {
-                occupied.insert(world_to_cell(pickup.position(), block_size));
-            }
-        }
-
-        for pickup in &self.health_pickups {
-            if pickup.is_active() {
-                occupied.insert(world_to_cell(pickup.position(), block_size));
-            }
-        }
-
-        let spawn_seed = hand::spawn_seed_for_hand(self.hand_seed, self.hand_state.hand_number());
+        let spawn_seed = hand::spawn_seed_for_hand(self.hand_seed, self.horde.hand_number());
 
         let spawn_cells = hand::select_spawn_cells(
             &self.level,
@@ -555,9 +572,9 @@ impl GameSession {
 
         /*
          * Health Respawn por Hand (sección 13): HAND I nunca llega
-         * aquí (esta rama solo se ejecuta cuando `HandState::tick`
+         * aquí (esta rama solo se ejecuta cuando `HordeManager::tick`
          * reporta que una Hand NUEVA acaba de comenzar, y
-         * `HandState::new` arranca directamente en HAND I sin pasar
+         * `HordeManager::new` arranca directamente en HAND I sin pasar
          * por `tick`), así que la configuración inicial del nivel
          * queda intacta por construcción — sin necesitar comprobar
          * `hand_number() > 1` explícitamente.
@@ -641,26 +658,7 @@ impl GameSession {
             return 0;
         }
 
-        let mut occupied: HashSet<(usize, usize)> = HashSet::new();
-
-        occupied.insert(world_to_cell(self.player.pos, block_size));
-        occupied.insert(self.level.goal());
-
-        for entity in &self.entities {
-            occupied.insert(world_to_cell(entity.position(), block_size));
-        }
-
-        for pickup in &self.ammo_pickups {
-            if pickup.is_active() {
-                occupied.insert(world_to_cell(pickup.position(), block_size));
-            }
-        }
-
-        for pickup in &self.health_pickups {
-            if pickup.is_active() {
-                occupied.insert(world_to_cell(pickup.position(), block_size));
-            }
-        }
+        let occupied = self.occupied_world_cells(block_size);
 
         let seed = hand::spawn_seed_for_emergency_ammo(
             self.hand_seed,
@@ -1774,7 +1772,7 @@ mod tests {
     /// ambos casos terminan empujando un `AmmoPickup` más a
     /// `self.ammo_pickups` en tiempo de ejecución (ver
     /// `GameSession::update_hand_state`), nunca a través de
-    /// `Level::ammo_spawns`. Esta prueba no depende de `HandState`
+    /// `Level::ammo_spawns`. Esta prueba no depende de `HordeManager`
     /// para demostrar que el flujo de recolección es EL MISMO: basta
     /// con que el pickup exista en la colección.
     #[test]

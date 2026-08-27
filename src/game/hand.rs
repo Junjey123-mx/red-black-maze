@@ -145,23 +145,31 @@ pub(crate) enum HandHudMessage {
     HandBanner(usize),
 }
 
-/// Estado completo del sistema de Hands para UNA `GameSession`.
+/// Administra la progresión de Horde ("Dealer Hands") para UNA
+/// `GameSession`: qué Hand está activa, si el jugador está en la
+/// intermisión de recarga, y el conteo de la última Hand spawneada
+/// (base para decidir la siguiente).
 ///
-/// Pertenece a la sesión/nivel (Tarea "Dealer Hands", sección 24),
-/// nunca a `AudioManager`/rendering/`App`. `GameSession::new` siempre
-/// arranca en `HAND I` (`hand_number: 1`, `phase: Active`) — Retry y
-/// cambio de nivel reconstruyen una `GameSession` enteramente nueva
-/// (mismo mecanismo ya establecido para vida/arma/pickups desde Tarea
-/// 30), así que este estado nunca sobrevive entre partidas sin que
-/// nadie tenga que resetearlo campo por campo.
-pub(crate) struct HandState {
+/// Pertenece a la sesión/nivel, nunca a `AudioManager`/rendering/
+/// `App`. `GameSession::new` siempre arranca en `HAND I`
+/// (`hand_number: 1`, `phase: Active`) — Retry y cambio de nivel
+/// reconstruyen una `GameSession` enteramente nueva (mismo mecanismo
+/// ya establecido para vida/arma/pickups), así que este estado nunca
+/// sobrevive entre partidas sin que nadie tenga que resetearlo campo
+/// por campo.
+///
+/// `GameSession::update_hand_state` sigue siendo quien decide QUÉ
+/// spawnear (posiciones, munición, vida) cuando `tick` reporta una
+/// Hand nueva — este tipo solo posee la máquina de estados de
+/// progresión en sí, sin tocar `Level`/`Entity`/pickups.
+pub(crate) struct HordeManager {
     hand_number: usize,
     previous_spawn_count: usize,
     phase: HandPhase,
     banner_remaining: f32,
 }
 
-impl HandState {
+impl HordeManager {
     /// Construye el estado inicial: HAND I, con `initial_dealer_count`
     /// Dealers ya colocados por el nivel (estático o procedural) —
     /// esta llamada NO spawnea nada, solo registra cuántos había para
@@ -704,13 +712,13 @@ mod tests {
 
     #[test]
     fn starts_at_hand_one_with_the_level_initial_count() {
-        let state = HandState::new(4);
+        let state = HordeManager::new(4);
 
         assert_eq!(state.hand_number(), 1);
         assert_eq!(state.phase(), HandPhase::Active);
     }
 
-    fn run_full_reload(state: &mut HandState, level_cap: usize) -> usize {
+    fn run_full_reload(state: &mut HordeManager, level_cap: usize) -> usize {
         // Último Dealer muere.
         assert_eq!(state.tick(0.016, 0, level_cap), None);
 
@@ -733,7 +741,7 @@ mod tests {
 
     #[test]
     fn hand_two_doubles_hand_one() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         let hand_two_count = run_full_reload(&mut state, 100);
 
@@ -743,7 +751,7 @@ mod tests {
 
     #[test]
     fn hand_three_doubles_hand_two() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         run_full_reload(&mut state, 100);
         let hand_three_count = run_full_reload(&mut state, 100);
@@ -754,7 +762,7 @@ mod tests {
 
     #[test]
     fn doubling_never_exceeds_the_level_cap() {
-        let mut state = HandState::new(23);
+        let mut state = HordeManager::new(23);
 
         let hand_two = run_full_reload(&mut state, 50);
         assert_eq!(hand_two, 46);
@@ -768,7 +776,7 @@ mod tests {
 
     #[test]
     fn cap_is_never_allowed_to_exceed_the_global_hard_cap_in_this_test_matrix() {
-        let mut state = HandState::new(23);
+        let mut state = HordeManager::new(23);
 
         for _ in 0..5 {
             let count = run_full_reload(&mut state, GLOBAL_HARD_DEALER_CAP);
@@ -779,7 +787,7 @@ mod tests {
 
     #[test]
     fn zero_initial_dealers_does_not_get_stuck_doubling_zero() {
-        let mut state = HandState::new(0);
+        let mut state = HordeManager::new(0);
 
         let hand_two = run_full_reload(&mut state, 10);
 
@@ -790,7 +798,7 @@ mod tests {
 
     #[test]
     fn active_with_dealers_alive_never_enters_reloading() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         for _ in 0..120 {
             assert_eq!(state.tick(0.016, 3, 100), None);
@@ -801,7 +809,7 @@ mod tests {
 
     #[test]
     fn last_dealer_death_immediately_starts_reloading() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         state.tick(0.016, 0, 100);
 
@@ -810,7 +818,7 @@ mod tests {
 
     #[test]
     fn invalid_delta_time_does_not_advance_the_phase() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         state.tick(0.016, 0, 100);
 
@@ -827,7 +835,7 @@ mod tests {
 
     #[test]
     fn hud_sequence_matches_the_documented_timeline() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         state.tick(0.016, 0, 100);
 
@@ -858,7 +866,7 @@ mod tests {
 
     #[test]
     fn banner_disappears_after_its_duration() {
-        let mut state = HandState::new(4);
+        let mut state = HordeManager::new(4);
 
         run_full_reload(&mut state, 100);
 
@@ -874,7 +882,7 @@ mod tests {
 
     #[test]
     fn no_message_while_actively_fighting_without_a_fresh_banner() {
-        let state = HandState::new(4);
+        let state = HordeManager::new(4);
 
         assert_eq!(state.hud_message(), HandHudMessage::None);
     }
