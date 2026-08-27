@@ -5587,6 +5587,135 @@ e             #
         assert!(fresh_horde.royal_flush_pickup().is_none());
     }
 
+    // --- Bloque 3, Commit 29: combate contra The King y flujo de
+    // Final Hand (matemática congelada). ---
+
+    /// Sesión Horde llevada hasta la Final Hand, devolviendo el índice
+    /// del King vivo. `final_hand_number = 4` (patrón Crimson).
+    fn horde_at_the_king(final_hand_number: usize) -> (GameSession, usize) {
+        let mut run = new_horde_session_with_final_hand(final_hand_number);
+        assert!(drive_horde_to_final_hand(&mut run, final_hand_number));
+        let king = living_king_index(&run).expect("el King debe estar vivo en la Final Hand");
+        (run, king)
+    }
+
+    #[test]
+    fn twenty_standard_hits_defeat_the_king_and_nineteen_do_not() {
+        let (mut run, king) = horde_at_the_king(4);
+        assert_eq!(run.weapon_tier(), WeaponTier::Standard);
+        assert_eq!(run.king_health(), Some((1000, 1000)));
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert_eq!(
+            run.king_health(),
+            Some((950, 1000)),
+            "1 impacto Standard -> 950"
+        );
+
+        for _ in 0..18 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        }
+        assert!(run.king_alive(), "19 impactos Standard: el King sigue vivo");
+        assert_eq!(run.king_health(), Some((50, 1000)));
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
+        assert!(!run.king_alive());
+    }
+
+    #[test]
+    fn ten_royal_flush_hits_defeat_the_king_and_nine_do_not() {
+        let (mut run, king) = horde_at_the_king(4);
+        run.weapon.set_tier(WeaponTier::RoyalFlush);
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert_eq!(
+            run.king_health(),
+            Some((900, 1000)),
+            "1 impacto Royal -> 900"
+        );
+
+        for _ in 0..8 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        }
+        assert!(run.king_alive(), "9 impactos Royal: el King sigue vivo");
+        assert_eq!(run.king_health(), Some((100, 1000)));
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
+        assert!(!run.king_alive());
+    }
+
+    #[test]
+    fn the_king_attack_costs_the_player_twenty_and_respects_its_cooldown() {
+        let (mut run, _king) = horde_at_the_king(4);
+
+        // Coloca al jugador pegado al King para que pueda golpear.
+        let king_pos = run
+            .entities()
+            .iter()
+            .find(|e| e.kind() == EnemyKind::King)
+            .unwrap()
+            .position();
+        run.player.pos = Vector2::new(king_pos.x + 20.0, king_pos.y);
+        run.update_entities(0.016, BLOCK_SIZE); // King -> Alert
+
+        assert_eq!(run.player_health(), 100);
+        assert_eq!(run.process_dealer_attacks(0.016, BLOCK_SIZE), 20);
+        assert_eq!(run.player_health(), 80);
+
+        // Antes de 1.5 s: ningún segundo ataque.
+        assert_eq!(run.process_dealer_attacks(0.9, BLOCK_SIZE), 0);
+        assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
+        assert_eq!(run.player_health(), 80);
+
+        // Pasado 1.5 s: vuelve a golpear.
+        assert_eq!(run.process_dealer_attacks(0.2, BLOCK_SIZE), 20);
+        assert_eq!(run.player_health(), 60);
+    }
+
+    #[test]
+    fn king_death_completes_the_final_hand_with_no_further_hand() {
+        let (mut run, king) = horde_at_the_king(4);
+        let hand_at_boss = run.hand_number();
+
+        for _ in 0..20 {
+            run.damage_entity(king);
+        }
+        assert!(run.horde_completed());
+
+        // Sigue "corriendo" muchos cuadros: ninguna Hand nueva, el
+        // conteo de Hand no crece más allá de la Final, y sigue
+        // completado.
+        for _ in 0..600 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+        assert!(run.horde_completed());
+        assert!(run.hand_number() >= hand_at_boss);
+        let kings = run
+            .entities()
+            .iter()
+            .filter(|e| e.kind() == EnemyKind::King)
+            .count();
+        assert_eq!(kings, 1, "nunca un segundo King");
+    }
+
+    #[test]
+    fn the_king_appears_as_the_final_hand_in_every_horde_level_shape() {
+        // Crimson/Black Club (final 4), House of Cards (final 5),
+        // True Maze (final 2): en los tres, la Final Hand es el King.
+        for final_hand in [2usize, 4, 5] {
+            let (run, _king) = horde_at_the_king(final_hand);
+            assert!(run.king_spawned(), "final_hand_number = {final_hand}");
+            assert!(run.king_alive());
+            let living_dealers = run
+                .entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::Dealer && !e.is_dead())
+                .count();
+            assert_eq!(living_dealers, 0, "ningún Dealer junto al King");
+        }
+    }
+
     #[test]
     fn not_calling_update_hand_state_freezes_the_intermission_countdown() {
         // Mismo mecanismo exacto que ya prueban las suites de pausa
