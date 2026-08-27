@@ -66,6 +66,13 @@ struct KingEncounter {
     /// activar un umbral ya consumido, y la progresión no depende del
     /// frame rate.
     thresholds_consumed: usize,
+
+    /// `true` si el ÚLTIMO disparo resuelto contra The King rompió uno
+    /// de los umbrales de 200 HP (Bloque 4, Commit 34). `App` lo lee
+    /// justo después de `damage_entity` para reproducir el sonido de
+    /// muerte de The Dealer como señal de ruptura de fase en lugar de
+    /// `KingHit`. Se recalcula en cada `damage_entity`.
+    last_hit_broke_phase: bool,
 }
 
 impl KingEncounter {
@@ -73,6 +80,7 @@ impl KingEncounter {
         Self {
             phase: KingEncounterPhase::Fighting,
             thresholds_consumed: 0,
+            last_hit_broke_phase: false,
         }
     }
 }
@@ -1198,6 +1206,8 @@ impl GameSession {
     pub(crate) fn damage_entity(&mut self, entity_index: usize) -> EntityDamageOutcome {
         let damage = self.weapon.tier().damage();
 
+        self.king_encounter.last_hit_broke_phase = false;
+
         let is_living_king = self
             .entities
             .get(entity_index)
@@ -1240,6 +1250,7 @@ impl GameSession {
 
             if health > threshold && health - damage <= threshold {
                 self.king_encounter.thresholds_consumed += 1;
+                self.king_encounter.last_hit_broke_phase = true;
 
                 health - threshold
             } else {
@@ -1261,6 +1272,15 @@ impl GameSession {
     #[allow(dead_code)]
     pub(crate) fn king_thresholds_consumed(&self) -> usize {
         self.king_encounter.thresholds_consumed
+    }
+
+    /// `true` si el último `damage_entity` resuelto contra The King
+    /// rompió uno de los umbrales de fase (800/600/400/200). `App` lo
+    /// usa para reproducir el sonido de muerte de The Dealer como
+    /// único feedback de ese impacto, en vez de `KingHit` (Bloque 4,
+    /// Commit 34).
+    pub(crate) fn last_hit_broke_king_phase(&self) -> bool {
+        self.king_encounter.last_hit_broke_phase
     }
 
     /// Resuelve los ataques de TODOS los Dealers para este cuadro
@@ -6018,6 +6038,38 @@ e             #
         run.damage_entity(king); // 600
         assert_eq!(run.king_health(), Some((600, 1000)));
         assert_eq!(run.king_thresholds_consumed(), 2);
+    }
+
+    // --- Bloque 4, Commit 34: audio de ruptura de fase. ---
+
+    #[test]
+    fn only_a_threshold_breaking_king_shot_flags_the_dealer_death_cue() {
+        let (mut run, king) = horde_at_the_king(4);
+
+        // 1000 -> 950 -> 900 -> 850: impactos normales, sin ruptura.
+        for _ in 0..3 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+            assert!(!run.last_hit_broke_king_phase());
+        }
+
+        // 850 -> 800: rompe el umbral. El resultado sigue siendo
+        // `Hit` (el King no muere), pero el flag de ruptura se
+        // enciende una sola vez para ESTE impacto.
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert!(run.last_hit_broke_king_phase());
+        assert_eq!(run.king_health(), Some((800, 1000)));
+
+        // Siguiente impacto normal: el flag vuelve a apagarse.
+        run.damage_entity(king);
+        assert!(!run.last_hit_broke_king_phase());
+    }
+
+    #[test]
+    fn damaging_a_normal_dealer_never_flags_a_king_phase_break() {
+        let mut session = new_test_session_with_one_dealer();
+
+        session.damage_entity(0);
+        assert!(!session.last_hit_broke_king_phase());
     }
 
     #[test]

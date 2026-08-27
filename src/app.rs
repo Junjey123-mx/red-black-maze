@@ -944,16 +944,31 @@ impl<'aud> App<'aud> {
                             .map(|entity| entity.kind())
                             .unwrap_or(EnemyKind::Dealer);
 
-                        match outcome {
-                            EntityDamageOutcome::Hit => {
-                                self.audio.play_sound(enemy_hit_sound(kind));
-                            }
+                        /*
+                         * Bloque 4, Commit 34: si este disparo rompió
+                         * uno de los umbrales de fase de The King
+                         * (800/600/400/200), el ÚNICO feedback de
+                         * impacto es el mismo sonido de muerte de The
+                         * Dealer (`SoundEffect::EnemyDeath`) — la señal
+                         * de que "cayó otro bloque de 200 HP" — nunca
+                         * también `KingHit` para ese mismo impacto. Un
+                         * impacto normal al King sigue en `KingHit`, y
+                         * su muerte real sigue en `KingDeath`.
+                         */
+                        if kind == EnemyKind::King && self.session.last_hit_broke_king_phase() {
+                            self.audio.play_sound(SoundEffect::EnemyDeath);
+                        } else {
+                            match outcome {
+                                EntityDamageOutcome::Hit => {
+                                    self.audio.play_sound(enemy_hit_sound(kind));
+                                }
 
-                            EntityDamageOutcome::Killed => {
-                                self.audio.play_sound(enemy_death_sound(kind));
-                            }
+                                EntityDamageOutcome::Killed => {
+                                    self.audio.play_sound(enemy_death_sound(kind));
+                                }
 
-                            EntityDamageOutcome::None => {}
+                                EntityDamageOutcome::None => {}
+                            }
                         }
                     }
                 }
