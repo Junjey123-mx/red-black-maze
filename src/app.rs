@@ -1524,7 +1524,17 @@ impl<'aud> App<'aud> {
             }
 
             BossMusicState::FinalBattle => {
-                // Commit 61 conecta el arranque de `final_battle.mp3`.
+                /*
+                 * Commit 61: al terminar la primera invocación,
+                 * `final_battle.mp3` arranca desde el principio (el
+                 * `stop_music` de la ventana de silencio dejó
+                 * `current_track` en `None`, así que `set_music` no
+                 * reanuda una posición vieja). En los cuadros
+                 * siguientes — 600/400/200, `Fleeing` — `set_music` es
+                 * un no-op porque la pista ya es la activa: la música
+                 * nunca se reinicia ni se corta (Commit 62).
+                 */
+                self.audio.set_music(MusicTrack::FinalBattle);
             }
         }
     }
