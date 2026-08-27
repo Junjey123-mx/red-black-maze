@@ -5,11 +5,11 @@ use raylib::prelude::Vector2;
 use crate::player::{Player, Weapon, WeaponState};
 use crate::world::{
     AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, Entity, EntityDamageOutcome, EntityState,
-    EntityStateTransition, HealthPickup, Level,
+    EntityStateTransition, HealthPickup, HordeHandConfig, Level,
 };
 
 use super::GameMode;
-use super::hand::{self, HandHudMessage, HordeManager};
+use super::hand::{self, HandHudMessage, HandOutcome, HordeManager};
 
 /// Modos de visualización disponibles.
 #[derive(Debug, Clone, Copy)]
@@ -204,41 +204,110 @@ impl GameSession {
     /// (`Weapon::new`); T44 no introduce persistencia de munición
     /// entre sesiones.
     ///
-    /// `hand_seed` siembra el sistema de Hands (sección 17): la
-    /// cantidad de Dealers de HAND I es simplemente la que el nivel
-    /// ya trae (`enemy_spawns().len()`), sin usar `hand_seed` en
-    /// absoluto — solo las Hands II+ derivan su distribución de esta
-    /// semilla, así que reconstruir la sesión (Retry, cambio de
-    /// nivel) con la MISMA semilla y la MISMA HAND I siempre produce
-    /// exactamente el mismo punto de partida.
+    /// `hand_seed` siembra el sistema de Hands (sección 17): en
+    /// Portal Mode la cantidad de Dealers de HAND I es simplemente la
+    /// que el nivel ya trae (`enemy_spawns().len()`), sin usar
+    /// `hand_seed` en absoluto — solo las Hands II+ derivan su
+    /// distribución de esta semilla, así que reconstruir la sesión
+    /// (Retry, cambio de nivel) con la MISMA semilla y la MISMA HAND I
+    /// siempre produce exactamente el mismo punto de partida.
     ///
     /// `mode` viaja con la sesión como su única fuente de verdad de
-    /// Portal/Horde (`GameSession::mode`); todavía no condiciona
-    /// ningún sistema de juego de este constructor.
+    /// Portal/Horde (`GameSession::mode`).
+    ///
+    /// `horde_hand_config`/`use_clusters` (Bloque 1, Commit 07) SOLO
+    /// se usan cuando `mode == GameMode::Horde`: si el mapa trae menos
+    /// Dealers que `horde_hand_config.first_hand_min..=first_hand_max`
+    /// (resuelto de forma determinista vía
+    /// `hand::first_hand_dealer_count`), se completan aquí mismo,
+    /// UNA sola vez, con la MISMA infraestructura de selección de
+    /// posiciones que ya usan las Hands II+ (`hand::select_spawn_cells`)
+    /// — nunca editando `Level`/los marcadores `e` del mapa. Portal
+    /// Mode ignora ambos parámetros por completo: su conteo inicial
+    /// de enemigos sigue siendo exactamente el que el mapa trae, sin
+    /// ningún cambio.
     pub(crate) fn new(
         level: Level,
         player: Player,
         block_size: usize,
         hand_seed: u64,
         mode: GameMode,
+        horde_hand_config: HordeHandConfig,
+        use_clusters: bool,
     ) -> Self {
-        let entities: Vec<Entity> = level
+        let mut entities: Vec<Entity> = level
             .enemy_spawns()
             .iter()
             .map(|&(row, column)| Entity::dealer_at_cell(row, column, block_size))
             .collect();
 
-        let ammo_pickups = level
+        let ammo_pickups: Vec<AmmoPickup> = level
             .ammo_spawns()
             .iter()
             .map(|&(row, column)| AmmoPickup::at_cell(row, column, block_size))
             .collect();
 
-        let health_pickups = level
+        let health_pickups: Vec<HealthPickup> = level
             .health_spawns()
             .iter()
             .map(|&(row, column)| HealthPickup::at_cell(row, column, block_size))
             .collect();
+
+        if mode == GameMode::Horde {
+            let first_hand_target = hand::first_hand_dealer_count(
+                hand_seed,
+                horde_hand_config.first_hand_min,
+                horde_hand_config.first_hand_max,
+            );
+
+            let deficit = first_hand_target.saturating_sub(entities.len());
+
+            if deficit > 0 {
+                let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+
+                occupied.insert(world_to_cell(player.pos, block_size));
+                occupied.insert(level.goal());
+
+                for entity in &entities {
+                    occupied.insert(world_to_cell(entity.position(), block_size));
+                }
+
+                for pickup in &ammo_pickups {
+                    if pickup.is_active() {
+                        occupied.insert(world_to_cell(pickup.position(), block_size));
+                    }
+                }
+
+                for pickup in &health_pickups {
+                    if pickup.is_active() {
+                        occupied.insert(world_to_cell(pickup.position(), block_size));
+                    }
+                }
+
+                // Misma "ranura" de semilla que usaría HAND I si
+                // pasara por `select_spawn_cells` (nunca lo hace en
+                // Portal Mode) — distinta de la de HAND II
+                // (`spawn_seed_for_hand(hand_seed, 2)`), así que este
+                // top-up nunca reutiliza por accidente el layout de
+                // ninguna Hand posterior.
+                let seed = hand::spawn_seed_for_hand(hand_seed, 1);
+
+                let extra_cells = hand::select_spawn_cells(
+                    &level,
+                    player.pos,
+                    player.a,
+                    block_size,
+                    &occupied,
+                    deficit,
+                    use_clusters,
+                    seed,
+                );
+
+                for (row, column) in extra_cells {
+                    entities.push(Entity::dealer_at_cell(row, column, block_size));
+                }
+            }
+        }
 
         let horde = HordeManager::new(entities.len());
 
@@ -493,18 +562,32 @@ impl GameSession {
     /// `level_cap` y `use_clusters` los decide `App`/`LevelManager`
     /// (identidad del nivel activo) — `GameSession` no conoce
     /// `LevelTheme` ni si el nivel es procedural, solo ejecuta con los
-    /// parámetros que se le dan.
+    /// parámetros que se le dan. `final_hand_number` (Bloque 1,
+    /// Commit 07) viene de `LevelManager::current_horde_hand_config`
+    /// por el mismo motivo exacto.
+    ///
+    /// Cuando `HordeManager::tick` reporta `HandOutcome::FinalHandReached`
+    /// (todavía sin The King, Bloque 3), este método retorna sin
+    /// spawnear ningún Dealer ni tocar munición/vida — el countdown y
+    /// el banner "HAND N" ya se resolvieron dentro de `tick` por igual
+    /// para ambos resultados.
     pub(crate) fn update_hand_state(
         &mut self,
         delta_time: f32,
         block_size: usize,
         level_cap: usize,
         use_clusters: bool,
+        final_hand_number: usize,
     ) {
         let alive_count = self.alive_dealer_count();
 
-        let Some(new_hand_count) = self.horde.tick(delta_time, alive_count, level_cap) else {
-            return;
+        let outcome = self
+            .horde
+            .tick(delta_time, alive_count, level_cap, final_hand_number);
+
+        let new_hand_count = match outcome {
+            Some(HandOutcome::Spawn { dealer_count }) => dealer_count,
+            Some(HandOutcome::FinalHandReached) | None => return,
         };
 
         let mut occupied = self.occupied_world_cells(block_size);
@@ -1079,6 +1162,20 @@ mod tests {
 
     const BLOCK_SIZE: usize = 48;
 
+    /// Configuración de Hand "neutra": `first_hand_min ==
+    /// first_hand_max == 0` nunca completa ningún Dealer adicional
+    /// (`GameSession::new` la ignora en Portal Mode de todas formas),
+    /// y `final_hand_number: 0` no importa mientras ningún test la
+    /// use con `GameMode::Horde` y espere doblado real. Reutilizada
+    /// por TODAS las sesiones de prueba de este módulo que no
+    /// ejercitan específicamente la progresión de Horde por nivel
+    /// (esas pruebas construyen su propio `HordeHandConfig`).
+    const NO_HORDE_CONFIG: HordeHandConfig = HordeHandConfig {
+        first_hand_min: 0,
+        first_hand_max: 0,
+        final_hand_number: 0,
+    };
+
     /// Mismo valor que `world::entity::CORPSE_DESPAWN_SECONDS`
     /// (`pub(crate)` solo dentro de `world`, no reexportado aquí):
     /// mismo patrón ya establecido en este módulo de pruebas para
@@ -1143,7 +1240,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Sesión de prueba con un único Dealer en (fila 2, columna 3).
@@ -1168,7 +1273,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Sesión de prueba con dos Dealers, en (fila 2, columna 3) y
@@ -1193,7 +1306,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Coloca al jugador a `offset` píxeles del Dealer en
@@ -1448,7 +1569,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     #[test]
@@ -1602,7 +1731,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Sesión de prueba con tres pickups de munición, todos
@@ -1623,7 +1760,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     // --- Tarea 44: pickups de munición. ---
@@ -1881,7 +2026,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Coloca al jugador exactamente sobre el Health Pickup de
@@ -1959,7 +2112,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         session.player.apply_damage(5);
         assert_eq!(session.player_health(), 95);
@@ -2099,7 +2260,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(session.health_pickups().len(), 0);
 
@@ -2108,7 +2277,7 @@ mod tests {
         assert_eq!(session.alive_dealer_count(), 0);
 
         for _ in 0..200 {
-            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false, usize::MAX);
 
             if session.hand_number() > 1 {
                 break;
@@ -2154,7 +2323,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        )
     }
 
     /// Dispara y recarga hasta agotar TODA la munición del jugador
@@ -2261,7 +2438,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         drain_all_ammo(&mut session);
 
@@ -2354,7 +2539,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         // Consume el único ammo pickup existente para poder llegar a
         // la condición de softlock real (el health pickup queda
@@ -2434,7 +2627,7 @@ mod tests {
             session.damage_entity(0);
 
             for _ in 0..200 {
-                session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+                session.update_hand_state(0.5, BLOCK_SIZE, 16, false, usize::MAX);
 
                 if session.hand_number() > 1 {
                     break;
@@ -2497,7 +2690,7 @@ mod tests {
         dirty_session.damage_entity(0);
 
         for _ in 0..200 {
-            dirty_session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+            dirty_session.update_hand_state(0.5, BLOCK_SIZE, 16, false, usize::MAX);
 
             if dirty_session.hand_number() > 1 {
                 break;
@@ -2549,7 +2742,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut first_session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut first_session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         first_session.player.pos = Vector2::new(168.0, 72.0);
         first_session.collect_nearby_ammo_pickups();
@@ -2565,8 +2766,15 @@ mod tests {
 
         let player_again = Player::from_level(&level_again, BLOCK_SIZE);
 
-        let second_session =
-            GameSession::new(level_again, player_again, BLOCK_SIZE, 0, GameMode::Portal);
+        let second_session = GameSession::new(
+            level_again,
+            player_again,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert!(second_session.ammo_pickups()[0].is_active());
         assert_eq!(second_session.weapon_reserve_ammo(), 18);
@@ -2772,7 +2980,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(session.entities().len(), corpse_count + 1);
 
@@ -2926,7 +3142,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         session.damage_entity(0);
         session.damage_entity(0);
@@ -2937,7 +3161,7 @@ mod tests {
         let mut spawned_hand_two = false;
 
         for _ in 0..300 {
-            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false, usize::MAX);
 
             if session.hand_number() > 1 {
                 spawned_hand_two = true;
@@ -3118,7 +3342,15 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         let cell_center = Vector2::new(6.0 * 48.0 + 24.0, 3.0 * 48.0 + 24.0);
 
@@ -3271,7 +3503,15 @@ mod tests {
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         // Jugador desplazado hacia la esquina de SU celda más alejada
         // de por dónde llega el Dealer (que entra desde arriba-
@@ -3309,7 +3549,15 @@ e           #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(session.entities().len(), 2);
 
@@ -3345,7 +3593,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(session.entities().len(), 4);
 
@@ -3386,7 +3642,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         for _ in 0..400 {
             session.update_entities(0.1, BLOCK_SIZE);
@@ -3418,7 +3682,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         // Confirma que la distancia euclidiana real (celdas
         // diagonalmente adyacentes) excede el rango de ataque por
@@ -3459,7 +3731,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         let cell_center = session.player.pos;
         session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
@@ -3511,7 +3791,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         // HAND I no tiene Dealers (0 marcadores 'e'): fuerza
         // inmediatamente la transición a HAND II.
@@ -3520,7 +3808,7 @@ e             #
         let mut spawned_hand_two = false;
 
         for _ in 0..300 {
-            session.update_hand_state(0.5, BLOCK_SIZE, 16, false);
+            session.update_hand_state(0.5, BLOCK_SIZE, 16, false, usize::MAX);
 
             if session.hand_number() > 1 {
                 spawned_hand_two = true;
@@ -3569,7 +3857,15 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
+        let mut session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         let cell_center = session.player.pos;
         session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
@@ -3598,8 +3894,15 @@ e             #
         let portal_level =
             Level::load(portal_file.path_str()).expect("el nivel de prueba debe cargar");
         let portal_player = Player::from_level(&portal_level, BLOCK_SIZE);
-        let portal_session =
-            GameSession::new(portal_level, portal_player, BLOCK_SIZE, 0, GameMode::Portal);
+        let portal_session = GameSession::new(
+            portal_level,
+            portal_player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(portal_session.mode(), GameMode::Portal);
 
@@ -3607,9 +3910,147 @@ e             #
         let horde_level =
             Level::load(horde_file.path_str()).expect("el nivel de prueba debe cargar");
         let horde_player = Player::from_level(&horde_level, BLOCK_SIZE);
-        let horde_session =
-            GameSession::new(horde_level, horde_player, BLOCK_SIZE, 0, GameMode::Horde);
+        let horde_session = GameSession::new(
+            horde_level,
+            horde_player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Horde,
+            NO_HORDE_CONFIG,
+            false,
+        );
 
         assert_eq!(horde_session.mode(), GameMode::Horde);
+    }
+
+    // --- Bloque 1, Commit 07: top-up de HAND I en Horde Mode. ---
+
+    /// Mapa con exactamente un marcador `e` (un Dealer "de fábrica"),
+    /// para poder distinguir con claridad entre "lo que el mapa trae"
+    /// y "lo que Horde Mode completa encima".
+    fn map_with_one_dealer() -> &'static str {
+        "\
+#########
+#p      #
+#  e    #
+#      g#
+#########
+"
+    }
+
+    #[test]
+    fn portal_mode_never_tops_up_the_map_native_enemy_count() {
+        let file = TempLevelFile::write(map_with_one_dealer());
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let config = HordeHandConfig {
+            first_hand_min: 4,
+            first_hand_max: 4,
+            final_hand_number: 4,
+        };
+
+        let session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            config,
+            false,
+        );
+
+        // Portal Mode ignora `config` por completo: el conteo sigue
+        // siendo exactamente el que el mapa trae (1), nunca 4.
+        assert_eq!(session.entities().len(), 1);
+    }
+
+    #[test]
+    fn horde_mode_tops_up_entities_to_reach_the_configured_first_hand_target() {
+        let file = TempLevelFile::write(map_with_one_dealer());
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let config = HordeHandConfig {
+            first_hand_min: 4,
+            first_hand_max: 4,
+            final_hand_number: 4,
+        };
+
+        let session =
+            GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false);
+
+        assert_eq!(session.entities().len(), 4);
+        assert_eq!(session.hand_number(), 1);
+    }
+
+    #[test]
+    fn horde_mode_never_removes_entities_when_the_map_already_meets_the_target() {
+        // House of Cards ya trae 4 Dealers de fábrica, exactamente el
+        // objetivo congelado de HAND I: no debe completarse ni
+        // recortarse nada.
+        let map = "\
+#########
+#p      #
+#  e    #
+#  e    #
+#  e    #
+#  e   g#
+#########
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let config = HordeHandConfig {
+            first_hand_min: 4,
+            first_hand_max: 4,
+            final_hand_number: 5,
+        };
+
+        let session =
+            GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false);
+
+        assert_eq!(session.entities().len(), 4);
+    }
+
+    #[test]
+    fn horde_mode_top_up_never_lands_on_the_player_goal_or_an_existing_dealer() {
+        let file = TempLevelFile::write(map_with_one_dealer());
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let player_cell = (
+            player.pos.y as usize / BLOCK_SIZE,
+            player.pos.x as usize / BLOCK_SIZE,
+        );
+        let goal_cell = level.goal();
+
+        let config = HordeHandConfig {
+            first_hand_min: 6,
+            first_hand_max: 6,
+            final_hand_number: 4,
+        };
+
+        let session =
+            GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false);
+
+        assert_eq!(session.entities().len(), 6);
+
+        let mut cells: Vec<(usize, usize)> = session
+            .entities()
+            .iter()
+            .map(|entity| world_to_cell(entity.position(), BLOCK_SIZE))
+            .collect();
+
+        cells.sort();
+        cells.dedup();
+
+        // Seis Dealers en seis celdas DISTINTAS: ninguno se apiló
+        // sobre otro, y ninguno cayó sobre el jugador o la meta.
+        assert_eq!(cells.len(), 6);
+        assert!(!cells.contains(&player_cell));
+        assert!(!cells.contains(&goal_cell));
     }
 }

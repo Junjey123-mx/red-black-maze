@@ -145,6 +145,22 @@ pub(crate) enum HandHudMessage {
     HandBanner(usize),
 }
 
+/// Resultado de `HordeManager::tick` en el cuadro exacto en que una
+/// Hand nueva comienza (Bloque 1, Commit 07).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandOutcome {
+    /// Hand normal: el llamador debe spawnear `dealer_count` Dealers
+    /// nuevos, exactamente como antes de este commit.
+    Spawn { dealer_count: usize },
+
+    /// Se alcanzó la Hand reservada como final para este nivel
+    /// (`LevelManager::current_horde_hand_config().final_hand_number`).
+    /// Todavía no existe The King (Bloque 3), así que esta Hand no
+    /// spawnea ningún Dealer — el llamador no debe crear entidades ni
+    /// tocar munición/vida para ella.
+    FinalHandReached,
+}
+
 /// Administra la progresión de Horde ("Dealer Hands") para UNA
 /// `GameSession`: qué Hand está activa, si el jugador está en la
 /// intermisión de recarga, y el conteo de la última Hand spawneada
@@ -230,20 +246,32 @@ impl HordeManager {
     /// patrón ya establecido para el resto de temporizadores de
     /// partida (nunca reloj de pared).
     ///
-    /// Retorna `Some(next_hand_dealer_count)` EXACTAMENTE en el
-    /// cuadro en que corresponde spawnear la siguiente Hand (el
-    /// llamador es quien realmente coloca las entidades); `None` en
-    /// cualquier otro cuadro.
+    /// Retorna `Some(HandOutcome)` EXACTAMENTE en el cuadro en que
+    /// corresponde comenzar la siguiente Hand (el llamador es quien
+    /// realmente coloca las entidades para `Spawn`); `None` en
+    /// cualquier otro cuadro. El countdown/mensaje de recarga avanza
+    /// igual sin importar si la Hand que viene resulta `Spawn` o
+    /// `FinalHandReached` — la diferencia solo importa para lo que el
+    /// llamador hace DESPUÉS de recibir el resultado.
     ///
     /// `alive_dealer_count` es la fuente de verdad de "la Hand
     /// terminó" (sección 6): nunca `entities.len()`/`is_empty()`,
     /// que seguirían contando cadáveres durante sus 15s de despawn.
+    ///
+    /// `final_hand_number` (Bloque 1, Commit 07) es el número de Hand
+    /// reservado para la ronda final de este nivel
+    /// (`LevelManager::current_horde_hand_config`): en cuanto la
+    /// siguiente Hand alcanza ese número, el doblado se detiene y se
+    /// reporta `FinalHandReached` en su lugar — `previous_spawn_count`
+    /// queda congelado en su último valor real, sin significado una
+    /// vez alcanzada la ronda final.
     pub(crate) fn tick(
         &mut self,
         delta_time: f32,
         alive_dealer_count: usize,
         level_cap: usize,
-    ) -> Option<usize> {
+        final_hand_number: usize,
+    ) -> Option<HandOutcome> {
         if !delta_time.is_finite() || delta_time <= 0.0 {
             return None;
         }
@@ -275,21 +303,59 @@ impl HordeManager {
                     return None;
                 }
 
+                let next_hand_number = self.hand_number + 1;
+
+                self.hand_number = next_hand_number;
+                self.phase = HandPhase::Active;
+                self.banner_remaining = HAND_BANNER_DURATION;
+
+                if next_hand_number >= final_hand_number {
+                    return Some(HandOutcome::FinalHandReached);
+                }
+
                 // La progresión nunca depende de `previous_spawn_count`
                 // en 0 (un nivel estático hipotético sin Dealers
                 // iniciales no debe quedar atascado doblando 0 para
                 // siempre).
                 let next_count = (self.previous_spawn_count.max(1) * 2).min(level_cap);
 
-                self.hand_number += 1;
                 self.previous_spawn_count = next_count;
-                self.phase = HandPhase::Active;
-                self.banner_remaining = HAND_BANNER_DURATION;
 
-                Some(next_count)
+                Some(HandOutcome::Spawn {
+                    dealer_count: next_count,
+                })
             }
         }
     }
+}
+
+/// Elige, de forma determinista, cuántos Dealers trae la HAND I de
+/// una sesión de Horde (Bloque 1, Commit 07): un valor uniforme en
+/// `first_hand_min..=first_hand_max`. Con `first_hand_min ==
+/// first_hand_max` (los tres niveles estáticos: la RNG nunca produce
+/// más de un resultado posible) retorna siempre ese mismo valor fijo.
+///
+/// `GameSession` usa el resultado para completar, mediante
+/// `select_spawn_cells` (la MISMA infraestructura que ya usan las
+/// Hands II+), los Dealers que el mapa no trae de fábrica —
+/// `first_hand_min`/`first_hand_max` nunca modifican el mapa ni el
+/// conteo de enemigos de Portal Mode.
+pub(crate) fn first_hand_dealer_count(
+    session_seed: u64,
+    first_hand_min: usize,
+    first_hand_max: usize,
+) -> usize {
+    if first_hand_min >= first_hand_max {
+        return first_hand_min;
+    }
+
+    const FIRST_HAND_SEED_DISCRIMINATOR: u64 = 0x4E64_7004;
+
+    let seed = derive_resource_seed(session_seed, FIRST_HAND_SEED_DISCRIMINATOR, 0);
+
+    let mut rng = Rng::new(seed);
+
+    first_hand_min + rng.gen_range(first_hand_max - first_hand_min + 1)
 }
 
 /// Deriva una semilla determinista para la Hand `hand_number` a
@@ -718,9 +784,14 @@ mod tests {
         assert_eq!(state.phase(), HandPhase::Active);
     }
 
+    /// Simula la fase completa de recarga hasta que la siguiente Hand
+    /// comienza, y retorna cuántos Dealers trajo — nunca usada con un
+    /// `final_hand_number` alcanzable dentro de la ventana de prueba
+    /// (`usize::MAX` en todos los llamadores), así que siempre debe
+    /// resultar en `HandOutcome::Spawn`.
     fn run_full_reload(state: &mut HordeManager, level_cap: usize) -> usize {
         // Último Dealer muere.
-        assert_eq!(state.tick(0.016, 0, level_cap), None);
+        assert_eq!(state.tick(0.016, 0, level_cap, usize::MAX), None);
 
         // 4 segundos completos de countdown, en pasos pequeños.
         let mut spawned = None;
@@ -728,15 +799,21 @@ mod tests {
         let mut elapsed = 0.0;
 
         while elapsed < 4.5 {
-            if let Some(count) = state.tick(0.05, 0, level_cap) {
-                spawned = Some(count);
+            if let Some(outcome) = state.tick(0.05, 0, level_cap, usize::MAX) {
+                spawned = Some(outcome);
                 break;
             }
 
             elapsed += 0.05;
         }
 
-        spawned.expect("la Hand debe spawnear dentro de ~4s")
+        match spawned.expect("la Hand debe spawnear dentro de ~4s") {
+            HandOutcome::Spawn { dealer_count } => dealer_count,
+
+            HandOutcome::FinalHandReached => {
+                panic!("run_full_reload no debe alcanzar la Hand final reservada en este test")
+            }
+        }
     }
 
     #[test]
@@ -801,7 +878,7 @@ mod tests {
         let mut state = HordeManager::new(4);
 
         for _ in 0..120 {
-            assert_eq!(state.tick(0.016, 3, 100), None);
+            assert_eq!(state.tick(0.016, 3, 100, usize::MAX), None);
         }
 
         assert_eq!(state.phase(), HandPhase::Active);
@@ -811,7 +888,7 @@ mod tests {
     fn last_dealer_death_immediately_starts_reloading() {
         let mut state = HordeManager::new(4);
 
-        state.tick(0.016, 0, 100);
+        state.tick(0.016, 0, 100, usize::MAX);
 
         assert!(matches!(state.phase(), HandPhase::Reloading { .. }));
     }
@@ -820,13 +897,13 @@ mod tests {
     fn invalid_delta_time_does_not_advance_the_phase() {
         let mut state = HordeManager::new(4);
 
-        state.tick(0.016, 0, 100);
+        state.tick(0.016, 0, 100, usize::MAX);
 
         let phase_before = state.phase();
 
-        state.tick(0.0, 0, 100);
-        state.tick(-1.0, 0, 100);
-        state.tick(f32::NAN, 0, 100);
+        state.tick(0.0, 0, 100, usize::MAX);
+        state.tick(-1.0, 0, 100, usize::MAX);
+        state.tick(f32::NAN, 0, 100, usize::MAX);
 
         assert_eq!(state.phase(), phase_before);
     }
@@ -837,26 +914,26 @@ mod tests {
     fn hud_sequence_matches_the_documented_timeline() {
         let mut state = HordeManager::new(4);
 
-        state.tick(0.016, 0, 100);
+        state.tick(0.016, 0, 100, usize::MAX);
 
         // t=0.5s: mensaje de "reloading".
-        state.tick(0.5 - 0.016, 0, 100);
+        state.tick(0.5 - 0.016, 0, 100, usize::MAX);
         assert_eq!(state.hud_message(), HandHudMessage::HouseIsReloading);
 
         // t=1.5s: NEXT HAND IN 3.
-        state.tick(1.0, 0, 100);
+        state.tick(1.0, 0, 100, usize::MAX);
         assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(3));
 
         // t=2.5s: NEXT HAND IN 2.
-        state.tick(1.0, 0, 100);
+        state.tick(1.0, 0, 100, usize::MAX);
         assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(2));
 
         // t=3.5s: NEXT HAND IN 1.
-        state.tick(1.0, 0, 100);
+        state.tick(1.0, 0, 100, usize::MAX);
         assert_eq!(state.hud_message(), HandHudMessage::NextHandIn(1));
 
         // t=4.5s: ya debería haber spawneado y mostrar el banner.
-        let spawned = state.tick(1.0, 0, 100);
+        let spawned = state.tick(1.0, 0, 100, usize::MAX);
         assert!(spawned.is_some());
         assert_eq!(
             state.hud_message(),
@@ -875,7 +952,7 @@ mod tests {
             HandHudMessage::HandBanner(state.hand_number())
         );
 
-        state.tick(1.5, 5, 100);
+        state.tick(1.5, 5, 100, usize::MAX);
 
         assert_eq!(state.hud_message(), HandHudMessage::None);
     }
@@ -885,6 +962,120 @@ mod tests {
         let state = HordeManager::new(4);
 
         assert_eq!(state.hud_message(), HandHudMessage::None);
+    }
+
+    // --- Bloque 1, Commit 07: Hand final reservada por nivel. ---
+
+    #[test]
+    fn reaching_the_configured_final_hand_number_reports_final_hand_reached_instead_of_a_spawn() {
+        // Refleja Crimson Entrance/Black Club: HAND 1=4, 2=8, 3=16,
+        // 4=Final reservada.
+        let mut state = HordeManager::new(4);
+
+        let hand_two = run_full_reload_with_final(&mut state, 100, 4);
+        assert_eq!(hand_two, HandOutcome::Spawn { dealer_count: 8 });
+
+        let hand_three = run_full_reload_with_final(&mut state, 100, 4);
+        assert_eq!(hand_three, HandOutcome::Spawn { dealer_count: 16 });
+
+        let hand_four = run_full_reload_with_final(&mut state, 100, 4);
+        assert_eq!(hand_four, HandOutcome::FinalHandReached);
+        assert_eq!(state.hand_number(), 4);
+    }
+
+    /// Igual que `run_full_reload`, pero conservando el
+    /// `HandOutcome` completo (nunca desenvuelto a `usize`) y con
+    /// `final_hand_number` configurable, para poder ejercitar
+    /// `HandOutcome::FinalHandReached` explícitamente.
+    fn run_full_reload_with_final(
+        state: &mut HordeManager,
+        level_cap: usize,
+        final_hand_number: usize,
+    ) -> HandOutcome {
+        assert_eq!(state.tick(0.016, 0, level_cap, final_hand_number), None);
+
+        let mut elapsed = 0.0;
+
+        while elapsed < 4.5 {
+            if let Some(outcome) = state.tick(0.05, 0, level_cap, final_hand_number) {
+                return outcome;
+            }
+
+            elapsed += 0.05;
+        }
+
+        panic!("la Hand debe spawnear (o reservarse) dentro de ~4s")
+    }
+
+    #[test]
+    fn the_procedural_level_reserves_hand_two_as_final_with_no_doubling_at_all() {
+        // The Dealer's True Maze: HAND 1=40..=50, HAND 2=Final
+        // reservada — ni una sola Hand normal de por medio.
+        let mut state = HordeManager::new(45);
+
+        let hand_two = run_full_reload_with_final(&mut state, 100, 2);
+
+        assert_eq!(hand_two, HandOutcome::FinalHandReached);
+        assert_eq!(state.hand_number(), 2);
+    }
+
+    #[test]
+    fn house_of_cards_gets_one_extra_normal_hand_before_the_final_hand() {
+        // House of Cards: HAND 1=4, 2=8, 3=16, 4=32, 5=Final
+        // reservada.
+        let mut state = HordeManager::new(4);
+
+        assert_eq!(
+            run_full_reload_with_final(&mut state, 100, 5),
+            HandOutcome::Spawn { dealer_count: 8 }
+        );
+        assert_eq!(
+            run_full_reload_with_final(&mut state, 100, 5),
+            HandOutcome::Spawn { dealer_count: 16 }
+        );
+        assert_eq!(
+            run_full_reload_with_final(&mut state, 100, 5),
+            HandOutcome::Spawn { dealer_count: 32 }
+        );
+        assert_eq!(
+            run_full_reload_with_final(&mut state, 100, 5),
+            HandOutcome::FinalHandReached
+        );
+    }
+
+    // --- Bloque 1, Commit 07: elección de la HAND I. ---
+
+    #[test]
+    fn fixed_range_first_hand_dealer_count_always_returns_the_same_value() {
+        for seed in [0, 1, 12345, u64::MAX] {
+            assert_eq!(first_hand_dealer_count(seed, 4, 4), 4);
+        }
+    }
+
+    #[test]
+    fn ranged_first_hand_dealer_count_stays_within_bounds() {
+        for seed in 0..50u64 {
+            let count = first_hand_dealer_count(seed, 40, 50);
+
+            assert!((40..=50).contains(&count), "seed {seed}: {count}");
+        }
+    }
+
+    #[test]
+    fn ranged_first_hand_dealer_count_is_deterministic_per_seed() {
+        let a = first_hand_dealer_count(777, 40, 50);
+        let b = first_hand_dealer_count(777, 40, 50);
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ranged_first_hand_dealer_count_can_differ_across_seeds() {
+        let counts: HashSet<usize> = (0..50u64)
+            .map(|seed| first_hand_dealer_count(seed, 40, 50))
+            .collect();
+
+        assert!(counts.len() > 1);
     }
 
     // --- Determinismo de spawn (sección 17) ---

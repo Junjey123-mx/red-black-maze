@@ -695,7 +695,7 @@ impl<'aud> App<'aud> {
          *
          * Restauración de Portal Mode: este es el ÚNICO punto de
          * entrada de TODA la progresión de Dealer Hands
-         * (countdown/mensaje/repoblación — `HandState::tick` es lo
+         * (countdown/mensaje/repoblación — `HordeManager::tick` es lo
          * único que puede sacar la fase de `Active`, y solo se
          * evalúa desde aquí). Con `GameMode::Portal` activo,
          * simplemente NO se invoca: la fase queda congelada en
@@ -712,6 +712,9 @@ impl<'aud> App<'aud> {
                 BLOCK_SIZE,
                 self.level_manager.current_dealer_cap(),
                 self.level_manager.current_is_procedural(),
+                self.level_manager
+                    .current_horde_hand_config()
+                    .final_hand_number,
             );
         }
 
@@ -1278,7 +1281,17 @@ impl<'aud> App<'aud> {
 
         let hand_seed = self.level_manager.current_hand_seed();
 
-        self.session = GameSession::new(level, player, BLOCK_SIZE, hand_seed, mode);
+        let horde_hand_config = self.level_manager.current_horde_hand_config();
+
+        self.session = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            hand_seed,
+            mode,
+            horde_hand_config,
+            self.level_manager.current_is_procedural(),
+        );
 
         self.state = GameState::Playing;
 
@@ -1742,9 +1755,21 @@ pub fn run() {
 
     let audio = AudioManager::new(audio_device);
 
+    let initial_horde_hand_config = level_manager.current_horde_hand_config();
+
+    let initial_is_procedural = level_manager.current_is_procedural();
+
     let mut app = App::new(
         level_manager,
-        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::default()),
+        GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::default(),
+            initial_horde_hand_config,
+            initial_is_procedural,
+        ),
         texture_manager,
         welcome,
         level_select,

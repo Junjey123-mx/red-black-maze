@@ -24,6 +24,27 @@ pub(crate) struct LevelInfo {
     pub(crate) theme: LevelTheme,
 }
 
+/// Configuración congelada de progresión de Horde para un nivel
+/// concreto (Bloque 1, Commit 07). Ver `LevelManager::current_horde_hand_config`
+/// para el detalle de qué produce cada campo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HordeHandConfig {
+    /// Límite inferior (inclusive) de Dealers de HAND I. Igual a
+    /// `first_hand_max` para los tres niveles estáticos (un valor
+    /// fijo, sin aleatoriedad); distinto solo para el nivel
+    /// procedural.
+    pub(crate) first_hand_min: usize,
+
+    /// Límite superior (inclusive) de Dealers de HAND I.
+    pub(crate) first_hand_max: usize,
+
+    /// Número de Hand reservado para la ronda final (todavía sin
+    /// implementar — el Bloque 3 la reemplaza por The King). La
+    /// progresión por doblado nunca alcanza este número: se detiene
+    /// exactamente un paso antes.
+    pub(crate) final_hand_number: usize,
+}
+
 /// Catálogo explícito de los niveles disponibles.
 const LEVELS: [LevelInfo; 3] = [
     LevelInfo {
@@ -203,26 +224,27 @@ impl LevelManager {
         }
     }
 
-    /// Tope de Dealers vivos simultáneos del nivel ACTUALMENTE activo
-    /// (sección 11 de "Dealer Hands"): decidido según tamaño real del
-    /// mapa y cantidad inicial de cada uno de los cuatro niveles,
-    /// nunca superior a `hand::GLOBAL_HARD_DEALER_CAP` (52).
+    /// Tope de Dealers vivos simultáneos del nivel ACTUALMENTE activo:
+    /// un respaldo de seguridad defensivo para la progresión de Horde
+    /// (`hand::HordeManager::tick` ya lo pasa a `.min()` junto a
+    /// `hand::GLOBAL_HARD_DEALER_CAP`, 52), nunca la fuente de verdad
+    /// real de "dónde termina" una progresión — eso lo decide
+    /// `current_horde_hand_config` (`final_hand_number`), que detiene
+    /// el doblado exactamente en la Hand configurada antes de que este
+    /// tope pudiera siquiera activarse en la práctica.
     ///
-    /// Valores elegidos (documentados también en la auditoría de la
-    /// tarea):
-    /// - Crimson Entrance (53 celdas transitables, 2 Dealers
-    ///   iniciales): cap 16 -> progresión 2, 4, 8, 16(cap).
-    /// - Black Club (47 celdas transitables, 3 iniciales): cap 12 ->
-    ///   progresión 3, 6, 12(cap).
-    /// - House of Cards (111 celdas transitables, 4 iniciales): cap
-    ///   32 -> progresión 4, 8, 16, 32(cap).
-    /// - The Dealer's True Maze (~222 celdas transitables, ~23
-    ///   iniciales, varía por seed): cap 50 -> progresión ~23, ~46,
-    ///   50(cap) — el cap más alto del catálogo, pedido
-    ///   explícitamente, y seguro bajo el límite global de 52.
+    /// Bloque 1 (per-level Hand config): estos valores ahora
+    /// coinciden con el pico real de cada progresión congelada
+    /// (`current_horde_hand_config`) en vez de con el conteo de
+    /// Dealers que el mapa `.txt` trae de fábrica — Black Club subió
+    /// de 12 a 16 porque su progresión congelada (4, 8, 16) supera el
+    /// tope anterior; el resto ya coincidía. Portal Mode nunca lee
+    /// este valor (Tarea "Portal Mode": `App` solo lo consulta dentro
+    /// de la llamada a `update_hand_state`, ya condicionada a
+    /// `GameMode::Horde`), así que este ajuste no le afecta.
     pub(crate) fn current_dealer_cap(&self) -> usize {
         const CRIMSON_ENTRANCE_DEALER_CAP: usize = 16;
-        const BLACK_CLUB_DEALER_CAP: usize = 12;
+        const BLACK_CLUB_DEALER_CAP: usize = 16;
         const HOUSE_OF_CARDS_DEALER_CAP: usize = 32;
         const PROCEDURAL_DEALER_CAP: usize = 50;
 
@@ -235,6 +257,55 @@ impl LevelManager {
             1 => BLACK_CLUB_DEALER_CAP,
             2 => HOUSE_OF_CARDS_DEALER_CAP,
             _ => PROCEDURAL_DEALER_CAP,
+        }
+    }
+
+    /// Configuración congelada de progresión de Horde para el nivel
+    /// ACTUALMENTE activo (Bloque 1, Commit 07): cuántos Dealers trae
+    /// la HAND I (`first_hand_min..=first_hand_max`, un rango
+    /// degenerado — `min == max` — para los tres niveles estáticos, y
+    /// un rango real para el nivel procedural) y en qué número de
+    /// Hand queda reservada la ronda final (todavía sin implementar:
+    /// el Bloque 3 la reemplazará por The King).
+    ///
+    /// Progresión resultante, combinada con el doblado que
+    /// `HordeManager::tick` ya aplicaba sin cambios:
+    /// - Crimson Entrance: HAND 1=4, 2=8, 3=16, 4=Final reservada.
+    /// - Black Club: HAND 1=4, 2=8, 3=16, 4=Final reservada.
+    /// - House of Cards: HAND 1=4, 2=8, 3=16, 4=32, 5=Final reservada.
+    /// - The Dealer's True Maze: HAND 1=40..=50 (según semilla),
+    ///   2=Final reservada.
+    ///
+    /// Es la ÚNICA configuración centralizada de estos números —
+    /// `GameSession`/`hand` nunca comparan `self.current`/`LevelTheme`
+    /// por su cuenta; solo reciben ya resueltos los valores que este
+    /// método retorna.
+    pub(crate) fn current_horde_hand_config(&self) -> HordeHandConfig {
+        const CRIMSON_ENTRANCE_FIRST_HAND: usize = 4;
+        const BLACK_CLUB_FIRST_HAND: usize = 4;
+        const HOUSE_OF_CARDS_FIRST_HAND: usize = 4;
+        const PROCEDURAL_FIRST_HAND_MIN: usize = 40;
+        const PROCEDURAL_FIRST_HAND_MAX: usize = 50;
+
+        if self.current_is_procedural() {
+            return HordeHandConfig {
+                first_hand_min: PROCEDURAL_FIRST_HAND_MIN,
+                first_hand_max: PROCEDURAL_FIRST_HAND_MAX,
+                final_hand_number: 2,
+            };
+        }
+
+        let (first_hand, final_hand_number) = match self.current {
+            0 => (CRIMSON_ENTRANCE_FIRST_HAND, 4),
+            1 => (BLACK_CLUB_FIRST_HAND, 4),
+            2 => (HOUSE_OF_CARDS_FIRST_HAND, 5),
+            _ => (CRIMSON_ENTRANCE_FIRST_HAND, 4),
+        };
+
+        HordeHandConfig {
+            first_hand_min: first_hand,
+            first_hand_max: first_hand,
+            final_hand_number,
         }
     }
 
@@ -579,7 +650,7 @@ mod tests {
         assert_eq!(manager.current_dealer_cap(), 16);
 
         manager.load(1).expect("Black Club debe cargar");
-        assert_eq!(manager.current_dealer_cap(), 12);
+        assert_eq!(manager.current_dealer_cap(), 16);
 
         manager.load(2).expect("House of Cards debe cargar");
         assert_eq!(manager.current_dealer_cap(), 32);
@@ -621,5 +692,79 @@ mod tests {
             manager.current_hand_seed(),
             manager.current_procedural_seed().unwrap()
         );
+    }
+
+    // --- Bloque 1, Commit 07: configuración de Hand por nivel. ---
+
+    #[test]
+    fn crimson_entrance_and_black_club_share_the_frozen_first_hand_and_final_hand() {
+        let mut manager = LevelManager::new();
+
+        manager.load(0).expect("Crimson Entrance debe cargar");
+        let crimson = manager.current_horde_hand_config();
+        assert_eq!(crimson.first_hand_min, 4);
+        assert_eq!(crimson.first_hand_max, 4);
+        assert_eq!(crimson.final_hand_number, 4);
+
+        manager.load(1).expect("Black Club debe cargar");
+        let black_club = manager.current_horde_hand_config();
+        assert_eq!(black_club.first_hand_min, 4);
+        assert_eq!(black_club.first_hand_max, 4);
+        assert_eq!(black_club.final_hand_number, 4);
+    }
+
+    #[test]
+    fn house_of_cards_has_one_extra_normal_hand_before_the_final_hand() {
+        let mut manager = LevelManager::new();
+
+        manager.load(2).expect("House of Cards debe cargar");
+
+        let config = manager.current_horde_hand_config();
+
+        assert_eq!(config.first_hand_min, 4);
+        assert_eq!(config.first_hand_max, 4);
+        assert_eq!(config.final_hand_number, 5);
+    }
+
+    #[test]
+    fn procedural_level_has_a_first_hand_range_and_reserves_hand_two_as_final() {
+        let mut manager = LevelManager::new();
+
+        manager.load(3).expect("el nivel procedural debe generar");
+
+        let config = manager.current_horde_hand_config();
+
+        assert_eq!(config.first_hand_min, 40);
+        assert_eq!(config.first_hand_max, 50);
+        assert_eq!(config.final_hand_number, 2);
+    }
+
+    #[test]
+    fn every_static_level_first_hand_progression_stays_within_its_updated_dealer_cap() {
+        // La progresión por doblado (HAND 1 -> HAND (final-1)) nunca
+        // debe verse recortada por `current_dealer_cap`: si lo fuera,
+        // la tabla congelada de Commit 07 quedaría rota en la
+        // práctica pese a estar bien definida aquí.
+        let mut manager = LevelManager::new();
+
+        for index in 0..3usize {
+            manager
+                .load(index)
+                .expect("los niveles estáticos deben cargar");
+
+            let config = manager.current_horde_hand_config();
+
+            let mut population = config.first_hand_max;
+
+            for _ in 1..config.final_hand_number.saturating_sub(1) {
+                population *= 2;
+            }
+
+            assert!(
+                population <= manager.current_dealer_cap(),
+                "índice {index}: la progresión ({population}) supera el tope ({})",
+                manager.current_dealer_cap()
+            );
+        }
     }
 }

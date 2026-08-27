@@ -25,7 +25,7 @@ pub(crate) use entity::{
 };
 pub(crate) use health_pickup::HealthPickup;
 pub use level::{Level, LevelError};
-pub(crate) use level_manager::LevelTheme;
+pub(crate) use level_manager::{HordeHandConfig, LevelTheme};
 pub use level_manager::{LevelManager, LevelManagerError};
 pub(crate) use pathfinding::DistanceField;
 pub(crate) use rng::Rng;
