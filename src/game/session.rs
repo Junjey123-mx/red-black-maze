@@ -165,7 +165,6 @@ const KING_PHASE_THRESHOLDS: [i32; 4] = [800, 600, 400, 200];
 /// 400 y 10 en la invocación final de 200 (Bloque 4, Commit 32). El
 /// total máximo por combate completo es `5 + 5 + 5 + 10 = 25`; nunca
 /// pueden aparecer más.
-#[allow(dead_code)]
 const KING_SUMMON_COUNTS: [usize; 4] = [5, 5, 5, 10];
 
 /// Duración congelada de la fase `Summoning` de The King, en segundos
@@ -716,12 +715,12 @@ impl GameSession {
     /// automáticamente sin ningún caso especial.
     ///
     /// Commit 35: mientras la fase es `Summoning`, descuenta
-    /// `summon_timer`; al llegar a `0` la invocación termina y — por
-    /// ahora — el King vuelve siempre a `Fighting` (el spawn real de
-    /// Dealers llega en el Commit 39; el desvío a `Fleeing` en 200 HP,
-    /// en el Commit 45). Un `delta_time` no finito/no positivo se
-    /// ignora, igual que el resto de temporizadores de la sesión.
-    pub(crate) fn update_king_encounter(&mut self, delta_time: f32) {
+    /// `summon_timer`; al llegar a `0` la invocación termina, se
+    /// colocan los Dealers de la cohorte (Commit 39) y el King vuelve
+    /// a `Fighting` (el desvío a `Fleeing` en 200 HP llega en el
+    /// Commit 45). Un `delta_time` no finito/no positivo se ignora,
+    /// igual que el resto de temporizadores de la sesión.
+    pub(crate) fn update_king_encounter(&mut self, delta_time: f32, block_size: usize) {
         if self.king_encounter.phase != KingEncounterPhase::Summoning {
             return;
         }
@@ -735,17 +734,46 @@ impl GameSession {
             return;
         }
 
-        self.finish_king_summoning();
+        self.finish_king_summoning(block_size);
     }
 
-    /// Cierra la fase `Summoning` en curso: limpia el temporizador y
-    /// el umbral pendiente y devuelve al King a `Fighting`. El Commit
-    /// 39 añade aquí el spawn de la cohorte; el Commit 45, el desvío a
-    /// `Fleeing` cuando el umbral resuelto es el de 200 HP.
-    fn finish_king_summoning(&mut self) {
+    /// Cierra la fase `Summoning` en curso: coloca la cohorte de
+    /// Dealers del umbral pendiente en celdas seguras alrededor del
+    /// jugador (Commit 39), limpia el temporizador y el umbral
+    /// pendiente y devuelve al King a `Fighting`. El Commit 45 añade
+    /// aquí el desvío a `Fleeing` cuando el umbral resuelto es el de
+    /// 200 HP.
+    fn finish_king_summoning(&mut self, block_size: usize) {
+        if let Some(threshold_index) = self.king_encounter.pending_threshold {
+            let count = KING_SUMMON_COUNTS[threshold_index];
+
+            let cells = self.select_king_summon_cells(count, threshold_index, block_size);
+
+            for (row, column) in cells {
+                self.entities.push(Entity::summoned_dealer_at_cell(
+                    row,
+                    column,
+                    block_size,
+                    threshold_index,
+                ));
+            }
+        }
+
         self.king_encounter.pending_threshold = None;
         self.king_encounter.summon_timer = 0.0;
         self.king_encounter.phase = KingEncounterPhase::Fighting;
+    }
+
+    /// Cantidad de Dealers VIVOS invocados por The King en la cohorte
+    /// `threshold_index` ahora mismo. Bloque 4: base del gate entre
+    /// invocaciones (Commit 43) y de la limpieza al morir el jefe
+    /// (Commit 49).
+    #[allow(dead_code)]
+    pub(crate) fn living_summoned_cohort_count(&self, threshold_index: usize) -> usize {
+        self.entities
+            .iter()
+            .filter(|entity| !entity.is_dead() && entity.summon_cohort() == Some(threshold_index))
+            .count()
     }
 
     /// `true` mientras el encuentro está en la fase `Summoning`
@@ -920,9 +948,7 @@ impl GameSession {
     /// Dealers pegados al King por defecto: la distancia mínima se
     /// mide desde el jugador, igual que cualquier otro spawn de Hand.
     ///
-    /// No spawnea nada: solo elige celdas. El Commit 39 construye los
-    /// `Entity::dealer_at_cell` a partir de esta lista.
-    #[allow(dead_code)]
+    /// No spawnea nada: solo elige celdas.
     fn select_king_summon_cells(
         &self,
         count: usize,
@@ -6013,7 +6039,7 @@ e             #
     fn clear_king_summon_gate(run: &mut GameSession) {
         for _ in 0..4 {
             if run.king_is_summoning() {
-                run.update_king_encounter(KING_SUMMON_DURATION);
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
             }
 
             let summoned: Vec<usize> = run
@@ -6033,7 +6059,7 @@ e             #
                 run.damage_entity(index);
             }
 
-            run.update_king_encounter(KING_SUMMON_DURATION);
+            run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
         }
     }
 
@@ -6339,7 +6365,7 @@ e             #
                 // Cierra esta invocación para poder alcanzar la
                 // siguiente (el gate entre cohortes llega en el
                 // Commit 43).
-                run.update_king_encounter(KING_SUMMON_DURATION);
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
                 assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
             }
         }
@@ -6383,11 +6409,11 @@ e             #
     fn the_summoning_phase_lasts_exactly_two_seconds_then_returns_to_fighting() {
         let (mut run, _king) = king_at_summon(0);
 
-        run.update_king_encounter(1.0);
-        run.update_king_encounter(0.9);
+        run.update_king_encounter(1.0, BLOCK_SIZE);
+        run.update_king_encounter(0.9, BLOCK_SIZE);
         assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
 
-        run.update_king_encounter(0.2);
+        run.update_king_encounter(0.2, BLOCK_SIZE);
         assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
         assert_eq!(run.king_summon_time_remaining(), 0.0);
     }
@@ -6396,11 +6422,81 @@ e             #
     fn a_non_positive_delta_never_advances_the_summon_timer() {
         let (mut run, _king) = king_at_summon(1);
 
-        run.update_king_encounter(0.0);
-        run.update_king_encounter(-1.0);
-        run.update_king_encounter(f32::NAN);
+        run.update_king_encounter(0.0, BLOCK_SIZE);
+        run.update_king_encounter(-1.0, BLOCK_SIZE);
+        run.update_king_encounter(f32::NAN, BLOCK_SIZE);
         assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
         assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
+    }
+
+    // --- Bloque 4, Commit 39: primera invocación de 5 Dealers. ---
+
+    #[test]
+    fn the_eight_hundred_threshold_summons_exactly_five_dealers() {
+        let (mut run, king) = king_at_summon(0);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+
+        // Todavía sin Dealers VIVOS: la Final Hand no trae ninguno.
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::Dealer && !e.is_dead())
+                .count(),
+            0
+        );
+
+        // Termina la animación de 2 s -> aparecen 5 Dealers y el King
+        // vuelve a Fighting.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+
+        let summoned: Vec<&Entity> = run
+            .entities()
+            .iter()
+            .filter(|e| e.kind() == EnemyKind::Dealer && !e.is_dead())
+            .collect();
+        assert_eq!(summoned.len(), 5);
+        assert!(
+            summoned.iter().all(|e| e.summon_cohort() == Some(0)),
+            "marcados con su cohorte de origen"
+        );
+        assert_eq!(run.living_summoned_cohort_count(0), 5);
+
+        // Son entidades normales: misma vida de Dealer.
+        for dealer in summoned {
+            assert_eq!(dealer.health(), 100);
+        }
+
+        // El King sigue siendo el único King, vivo.
+        assert_eq!(
+            run.entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::King)
+                .count(),
+            1
+        );
+        assert!(run.king_alive());
+        let _ = king;
+    }
+
+    #[test]
+    fn summoned_dealers_spawn_away_from_the_player_and_the_king() {
+        let (mut run, king) = king_at_summon(0);
+        let player_cell = super::world_to_cell(run.player.pos, BLOCK_SIZE);
+        let king_cell = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+
+        for dealer in run
+            .entities()
+            .iter()
+            .filter(|e| e.summon_cohort().is_some())
+        {
+            let cell = super::world_to_cell(dealer.position(), BLOCK_SIZE);
+            assert_ne!(cell, player_cell);
+            assert_ne!(cell, king_cell);
+            assert!(run.level.is_walkable(cell.0, cell.1));
+        }
     }
 
     // --- Bloque 4, Commit 38: celdas de invocación seguras. ---
@@ -6465,13 +6561,13 @@ e             #
             if a > 1.0 {
                 saw_pulse = true;
             }
-            run.update_king_encounter(0.05);
+            run.update_king_encounter(0.05, BLOCK_SIZE);
             elapsed += 0.05;
         }
         assert!(saw_pulse, "el billboard debe latir durante la invocación");
 
         // Terminada la invocación vuelve a 1.0.
-        run.update_king_encounter(KING_SUMMON_DURATION);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
         assert_eq!(run.king_summon_animation_scale(), 1.0);
     }
 
@@ -6481,7 +6577,7 @@ e             #
         // en 800/600/400/200 (solo depende de `summon_timer`).
         let sample = |idx: usize| {
             let (mut run, _king) = king_at_summon(idx);
-            run.update_king_encounter(0.30);
+            run.update_king_encounter(0.30, BLOCK_SIZE);
             run.king_summon_animation_scale()
         };
         let base = sample(0);
@@ -6519,7 +6615,7 @@ e             #
 
         assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
 
-        run.update_king_encounter(KING_SUMMON_DURATION);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
         assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
 
         assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
@@ -6541,9 +6637,9 @@ e             #
             // detección de umbral sigue dependiendo solo del cruce de
             // vida.
             run.update_entities(0.001, BLOCK_SIZE);
-            run.update_king_encounter(0.001);
+            run.update_king_encounter(0.001, BLOCK_SIZE);
             if run.king_is_summoning() {
-                run.update_king_encounter(KING_SUMMON_DURATION);
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
             }
         }
         assert!(!run.king_alive());

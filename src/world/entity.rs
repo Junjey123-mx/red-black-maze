@@ -253,6 +253,16 @@ pub(crate) struct Entity {
     /// (esa llamada solo ocurre dentro de `update_playing`, igual que
     /// el resto de temporizadores de partida).
     corpse_elapsed: f32,
+
+    /// Origen de este Dealer si fue INVOCADO por The King (Bloque 4):
+    /// `Some(idx)` con `idx` el índice del umbral que lo generó
+    /// (0..4 → 800/600/400/200 HP), o `None` para cualquier Dealer del
+    /// mapa/de una Hand normal y para The King. Es solo una MARCA de
+    /// cohorte para el gate entre invocaciones (Commit 43) y la
+    /// limpieza al morir el jefe (Commit 49) — un Dealer invocado usa
+    /// exactamente la misma struct, IA, ataque, daño, cooldown,
+    /// billboard, audio y cleanup que cualquier otro.
+    summon_cohort: Option<usize>,
 }
 
 impl Entity {
@@ -276,7 +286,30 @@ impl Entity {
             hit_time_remaining: 0.0,
             attack_cooldown_remaining: 0.0,
             corpse_elapsed: 0.0,
+            summon_cohort: None,
         }
+    }
+
+    /// Crea un Dealer INVOCADO por The King en el umbral
+    /// `cohort` (Bloque 4, Commit 39): idéntico en todo a
+    /// `dealer_at_cell` salvo que queda marcado con su cohorte de
+    /// origen para el gate entre invocaciones y la limpieza final.
+    pub(crate) fn summoned_dealer_at_cell(
+        row: usize,
+        column: usize,
+        block_size: usize,
+        cohort: usize,
+    ) -> Self {
+        let mut dealer = Self::dealer_at_cell(row, column, block_size);
+        dealer.summon_cohort = Some(cohort);
+        dealer
+    }
+
+    /// Cohorte de invocación de origen (`Some(threshold_index)`) si
+    /// este Dealer fue invocado por The King; `None` en cualquier otro
+    /// caso. Bloque 4.
+    pub(crate) fn summon_cohort(&self) -> Option<usize> {
+        self.summon_cohort
     }
 
     /// Crea a The King centrado exactamente en la celda `(row,
@@ -305,6 +338,7 @@ impl Entity {
             hit_time_remaining: 0.0,
             attack_cooldown_remaining: 0.0,
             corpse_elapsed: 0.0,
+            summon_cohort: None,
         }
     }
 

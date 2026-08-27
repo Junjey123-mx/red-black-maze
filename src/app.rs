@@ -683,7 +683,8 @@ impl<'aud> App<'aud> {
          * ÚNICO llamador — para que Pause/Victory/Defeat lo congelen
          * automáticamente, mismo patrón que `process_dealer_attacks`.
          */
-        self.session.update_king_encounter(window.get_frame_time());
+        self.session
+            .update_king_encounter(window.get_frame_time(), BLOCK_SIZE);
 
         /*
          * Tarea 45: ataques de Dealer. El temporizador del flash se
