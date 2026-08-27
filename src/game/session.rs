@@ -42,7 +42,6 @@ pub(crate) enum ViewMode {
 pub(crate) enum KingEncounterPhase {
     Fighting,
     Summoning,
-    #[allow(dead_code)]
     Fleeing,
 }
 
@@ -761,7 +760,9 @@ impl GameSession {
     /// aquí el desvío a `Fleeing` cuando el umbral resuelto es el de
     /// 200 HP.
     fn finish_king_summoning(&mut self, block_size: usize) {
-        if let Some(threshold_index) = self.king_encounter.pending_threshold {
+        let resolved_threshold = self.king_encounter.pending_threshold;
+
+        if let Some(threshold_index) = resolved_threshold {
             let count = KING_SUMMON_COUNTS[threshold_index];
 
             let cells = self.select_king_summon_cells(count, threshold_index, block_size);
@@ -776,9 +777,29 @@ impl GameSession {
             }
         }
 
+        /*
+         * Bloque 4, Commit 45: la invocación de 200 HP (último índice)
+         * es especial — al terminar su animación The King NO vuelve a
+         * `Fighting` sino que entra de forma PERMANENTE en `Fleeing`.
+         * Las tres primeras (800/600/400) reanudan el combate normal.
+         */
+        let last_index = KING_PHASE_THRESHOLDS.len() - 1;
+
         self.king_encounter.pending_threshold = None;
         self.king_encounter.summon_timer = 0.0;
-        self.king_encounter.phase = KingEncounterPhase::Fighting;
+        self.king_encounter.phase = if resolved_threshold == Some(last_index) {
+            KingEncounterPhase::Fleeing
+        } else {
+            KingEncounterPhase::Fighting
+        };
+    }
+
+    /// `true` si The King está en su fase final de huida permanente
+    /// (Bloque 4, Commit 45): ya no ataca ni persigue al jugador, se
+    /// aleja de él, pero sigue siendo vulnerable hasta morir.
+    #[allow(dead_code)]
+    pub(crate) fn king_is_fleeing(&self) -> bool {
+        self.king_encounter.phase == KingEncounterPhase::Fleeing
     }
 
     /// Cantidad de Dealers VIVOS invocados por The King en la cohorte
@@ -6602,6 +6623,42 @@ e             #
         assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
         let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
         assert_eq!(third, first);
+    }
+
+    // --- Bloque 4, Commit 45: fase Fleeing. ---
+
+    #[test]
+    fn after_the_final_summon_the_king_enters_fleeing_permanently() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 3);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert!(run.king_is_fleeing());
+        assert_eq!(run.living_summoned_cohort_count(3), 10);
+        assert!(run.king_alive());
+
+        // Nunca vuelve a Fighting por sí solo.
+        for _ in 0..300 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            run.update_entities(0.1, BLOCK_SIZE);
+            assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        }
+        let _ = king;
+    }
+
+    #[test]
+    fn the_first_three_summons_return_to_fighting_not_fleeing() {
+        for idx in 0..3 {
+            let (mut run, _king) = king_at_summon(idx);
+            run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+            assert_eq!(
+                run.king_phase(),
+                KingEncounterPhase::Fighting,
+                "umbral {idx} reanuda combate"
+            );
+        }
     }
 
     // --- Bloque 4, Commit 44: invocación final de 10 Dealers (200). ---
