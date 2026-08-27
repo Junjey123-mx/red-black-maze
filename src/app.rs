@@ -853,6 +853,16 @@ impl<'aud> App<'aud> {
                      */
                     self.defeat.on_enter();
 
+                    /*
+                     * Bloque 5, Commit 65: si el jugador cae durante
+                     * el combate del jefe, `set_music` detiene
+                     * `final_battle.mp3` de forma limpia (para la
+                     * pista activa antes de arrancar la nueva) y cede
+                     * a la música de Derrota existente — nunca suenan
+                     * las dos a la vez. Fuera del jefe la pista activa
+                     * es la del nivel y el comportamiento es idéntico
+                     * al de antes.
+                     */
                     self.audio.set_music(MusicTrack::Defeat);
                 }
 
@@ -877,6 +887,14 @@ impl<'aud> App<'aud> {
                      */
                     self.victory.on_enter(self.level_manager.has_next());
 
+                    /*
+                     * Bloque 5, Commit 65: al derrotar a The King,
+                     * `set_music` detiene `final_battle.mp3` y cede a
+                     * la música de Victoria existente — sin
+                     * solapamiento. El resto de victorias (Portal, o
+                     * llegar a la meta) mantienen la pista de nivel
+                     * como pista activa y no cambian.
+                     */
                     self.audio.set_music(MusicTrack::Victory);
 
                     self.audio.play_sound(SoundEffect::Victory);

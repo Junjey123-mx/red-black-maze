@@ -938,6 +938,32 @@ mod tests {
         assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
     }
 
+    // --- Bloque 5, Commit 65: handoff a Victory/Defeat. ---
+
+    #[test]
+    fn ending_the_boss_fight_hands_off_from_final_battle_without_overlap() {
+        // Solo una pista puede estar activa: pasar a Victory/Defeat
+        // desde `FinalBattle` reemplaza la selección por completo.
+        for end_track in [MusicTrack::Victory, MusicTrack::Defeat] {
+            let mut audio = AudioManager::new(None);
+            audio.set_music(MusicTrack::FinalBattle);
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+            audio.set_music(end_track);
+            assert_eq!(audio.current_track(), Some(end_track));
+        }
+    }
+
+    #[test]
+    fn a_portal_style_end_transition_from_level_music_is_unchanged() {
+        // Portal nunca toca `FinalBattle`: el handoff sigue siendo
+        // nivel -> Victory/Defeat, exactamente como antes del Bloque 5.
+        let mut audio = AudioManager::new(None);
+        audio.set_music(MusicTrack::CrimsonEntrance);
+        audio.set_music(MusicTrack::Victory);
+        assert_eq!(audio.current_track(), Some(MusicTrack::Victory));
+    }
+
     // --- Bloque 5, Commit 63: pausa de final_battle.mp3. ---
 
     #[test]
