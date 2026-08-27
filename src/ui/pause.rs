@@ -1,6 +1,7 @@
 use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
+use crate::ui::Hitbox;
 
 /// Opción seleccionable del menú de pausa.
 ///
@@ -349,6 +350,50 @@ impl PauseScreen {
         self.selected = self.selected.toggled();
     }
 
+    /// Fija la selección directamente a `item`, sin pasar por
+    /// `toggled()`. Usado exclusivamente por el hover/clic de mouse
+    /// (`App::update_paused`): el teclado sigue usando
+    /// `select_previous`/`select_next` sin cambios.
+    pub(crate) fn set_selected(&mut self, item: PauseMenuItem) {
+        self.selected = item;
+    }
+
+    /// Elemento, si lo hay, cuya hitbox contiene `(mouse_x, mouse_y)`
+    /// (coordenadas lógicas del framebuffer).
+    ///
+    /// Recalcula el MISMO `compute_layout` que `render` usa para
+    /// dibujar las dos filas, para que la hitbox siempre coincida
+    /// exactamente con la posición visual actual.
+    pub(crate) fn hit_test(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+    ) -> Option<PauseMenuItem> {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        for (index, item) in [
+            (CONTINUE_ROW, PauseMenuItem::Continue),
+            (EXIT_TO_MENU_ROW, PauseMenuItem::ExitToMenu),
+        ] {
+            let row_y = layout.row_y(index);
+
+            let hitbox = Hitbox {
+                x0: layout.row_x,
+                y0: row_y,
+                x1: layout.row_x + layout.row_width,
+                y1: row_y + layout.row_height,
+            };
+
+            if hitbox.contains(mouse_x, mouse_y) {
+                return Some(item);
+            }
+        }
+
+        None
+    }
+
     /// Dibuja la superposición completa: oscurece TODO lo ya
     /// dibujado en `framebuffer` (el mundo/HUD/minimapa/arma
     /// congelados que `App::render_paused` ya dibujó antes de
@@ -553,6 +598,46 @@ mod tests {
 
         assert!(row0_bottom <= row1_top);
         assert!(row1_bottom <= layout.panel_bottom);
+    }
+
+    #[test]
+    fn hit_test_matches_each_row_and_none_outside_the_panel() {
+        let screen = PauseScreen::new();
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let continue_center_y = layout.row_y(CONTINUE_ROW) + layout.row_height / 2;
+        let exit_center_y = layout.row_y(EXIT_TO_MENU_ROW) + layout.row_height / 2;
+        let center_x = layout.row_x + layout.row_width / 2;
+
+        assert_eq!(
+            screen.hit_test(
+                REFERENCE_WIDTH,
+                REFERENCE_HEIGHT,
+                center_x,
+                continue_center_y
+            ),
+            Some(PauseMenuItem::Continue)
+        );
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, center_x, exit_center_y),
+            Some(PauseMenuItem::ExitToMenu)
+        );
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn set_selected_overrides_the_current_selection_directly() {
+        let mut screen = PauseScreen::new();
+
+        screen.set_selected(PauseMenuItem::ExitToMenu);
+
+        assert_eq!(screen.selected_item(), PauseMenuItem::ExitToMenu);
     }
 
     #[test]

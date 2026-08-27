@@ -2,7 +2,7 @@ use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::palette_for_theme;
-use crate::ui::{GameOfLife, GameOfLifeRenderConfig};
+use crate::ui::{GameOfLife, GameOfLifeRenderConfig, Hitbox};
 use crate::world::{LevelManager, LevelTheme};
 
 /// Tamaño, en píxeles de framebuffer, de cada celda del Juego de la
@@ -408,6 +408,51 @@ impl LevelSelectScreen {
         self.selected_index = (self.selected_index + 1) % level_count;
     }
 
+    /// Fija la selección directamente a `index`, sin pasar por
+    /// `select_previous`/`select_next`. Usado exclusivamente por el
+    /// hover/clic de mouse (`App::update_level_select`); el teclado
+    /// sigue usando `select_previous`/`select_next` sin cambios. No
+    /// valida `index` contra `level_count` por sí mismo — `hit_test`
+    /// ya nunca produce un índice fuera del catálogo actual.
+    pub(crate) fn set_selected_index(&mut self, index: usize) {
+        self.selected_index = index;
+    }
+
+    /// Índice de fila, si lo hay, cuya hitbox contiene `(mouse_x,
+    /// mouse_y)` (coordenadas lógicas del framebuffer).
+    ///
+    /// Recalcula el MISMO `compute_layout` que `render` usa para
+    /// dibujar cada fila, y se limita a `0..level_count` — el mismo
+    /// límite que ya usan `select_previous`/`select_next` — para que
+    /// nunca pueda resolver una fila fuera del catálogo actual.
+    pub(crate) fn hit_test(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+        level_count: usize,
+    ) -> Option<usize> {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        for index in 0..level_count {
+            let row_y = layout.row_y(index);
+
+            let hitbox = Hitbox {
+                x0: layout.row_x,
+                y0: row_y,
+                x1: layout.row_x + layout.row_width,
+                y1: row_y + layout.row_height,
+            };
+
+            if hitbox.contains(mouse_x, mouse_y) {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
     /// Avanza únicamente la simulación de fondo según el tiempo
     /// transcurrido. Delega enteramente en `GameOfLife::update`.
     pub(crate) fn update(&mut self, delta_time: f32) {
@@ -620,6 +665,59 @@ mod tests {
             screen.select_previous(4);
             assert!(screen.selected_index() < 4);
         }
+    }
+
+    #[test]
+    fn hit_test_matches_each_row_within_level_count_and_none_outside() {
+        let screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.row_x + layout.row_width / 2;
+
+        for index in 0..4usize {
+            let center_y = layout.row_y(index) + layout.row_height / 2;
+
+            assert_eq!(
+                screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, center_x, center_y, 4),
+                Some(index)
+            );
+        }
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0, 4),
+            None
+        );
+    }
+
+    #[test]
+    fn hit_test_excludes_rows_beyond_the_given_level_count() {
+        let screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.row_x + layout.row_width / 2;
+        let fourth_row_center_y = layout.row_y(3) + layout.row_height / 2;
+
+        assert_eq!(
+            screen.hit_test(
+                REFERENCE_WIDTH,
+                REFERENCE_HEIGHT,
+                center_x,
+                fourth_row_center_y,
+                3
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn set_selected_index_overrides_the_current_selection_directly() {
+        let mut screen = LevelSelectScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        screen.set_selected_index(2);
+
+        assert_eq!(screen.selected_index(), 2);
     }
 
     #[test]

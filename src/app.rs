@@ -28,6 +28,34 @@ use raylib::prelude::*;
 /// una igualdad exacta.
 const FOOTSTEP_MOVEMENT_EPSILON_SQUARED: f32 = 0.001;
 
+/// Traduce la posición actual del mouse (coordenadas reales de
+/// ventana, las que expone `RaylibHandle`) a coordenadas lógicas del
+/// framebuffer (`FRAMEBUFFER_WIDTH x FRAMEBUFFER_HEIGHT`), la MISMA
+/// resolución que ya usan `compute_layout`/`render` de cada pantalla.
+///
+/// La ventana se dibuja al doble de la resolución lógica
+/// (`WINDOW_SCALE` en `run()`) mediante `draw_texture_pro` mapeando
+/// el framebuffer COMPLETO al área de pantalla completa (Tarea 38);
+/// esta función invierte esa misma transformación a partir del
+/// tamaño de pantalla real reportado por Raylib, en vez de asumir un
+/// factor de escala fijo, para seguir siendo correcta aunque la
+/// ventana cambiara de tamaño en el futuro.
+fn mouse_position_in_framebuffer(
+    window: &RaylibHandle,
+    framebuffer_width: i32,
+    framebuffer_height: i32,
+) -> (i32, i32) {
+    let screen_width = (window.get_screen_width().max(1)) as f32;
+    let screen_height = (window.get_screen_height().max(1)) as f32;
+
+    let mouse = window.get_mouse_position();
+
+    let x = (mouse.x / screen_width * framebuffer_width as f32) as i32;
+    let y = (mouse.y / screen_height * framebuffer_height as f32) as i32;
+
+    (x, y)
+}
+
 /// Coordina el estado de la aplicación y la sesión de juego activa.
 ///
 /// El parámetro de vida `'aud` es el que impone `AudioManager`
@@ -179,6 +207,26 @@ impl<'aud> App<'aud> {
         self.welcome.update(window.get_frame_time());
 
         /*
+         * Mouse: hover resalta `PLAY` con el mismo acento de
+         * "selección" que el resto de los menús (`set_hovered`, leído
+         * únicamente por `render`); un clic izquierdo dentro de la
+         * MISMA hitbox es una activación EQUIVALENTE a ENTER/SPACE,
+         * nunca un segundo camino de transición — se combina en la
+         * misma condición de abajo.
+         */
+        let (mouse_x, mouse_y) =
+            mouse_position_in_framebuffer(window, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
+
+        let hovering_play =
+            self.welcome
+                .hit_test(FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT, mouse_x, mouse_y);
+
+        self.welcome.set_hovered(hovering_play);
+
+        let clicked_play =
+            hovering_play && window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+
+        /*
          * ENTER es la activación requerida; SPACE se admite también
          * porque es trivial y no introduce comportamiento de mouse
          * nuevo. Un disparo aceptado solo cambia el estado hacia
@@ -187,6 +235,7 @@ impl<'aud> App<'aud> {
          */
         if window.is_key_pressed(KeyboardKey::KEY_ENTER)
             || window.is_key_pressed(KeyboardKey::KEY_SPACE)
+            || clicked_play
         {
             self.state = GameState::LevelSelect;
 
@@ -236,12 +285,54 @@ impl<'aud> App<'aud> {
         }
 
         /*
-         * La confirmación `MenuSelect` corresponde a la ACTIVACIÓN
-         * del menú (la pulsación de ENTER en sí), no al éxito de la
-         * carga: incluso si `start_selected_level` falla y reporta su
-         * propio error, el usuario sí activó la acción.
+         * Mouse: mismo patrón exacto que `update_paused`/
+         * `update_victory`/`update_defeat` — hover mueve la selección
+         * (`set_selected_index`, la MISMA fuente de verdad que el
+         * teclado) solo cuando el mouse realmente se movió este cuadro
+         * o al hacer clic; clic izquierdo confirma la fila bajo el
+         * cursor. `hit_test` ya se limita a `0..level_count`, así que
+         * nunca puede seleccionar ni activar una fila fuera del
+         * catálogo actual.
          */
-        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+        let level_count = self.level_manager.level_count();
+
+        let mouse_delta = window.get_mouse_delta();
+
+        let mouse_moved = mouse_delta.x != 0.0 || mouse_delta.y != 0.0;
+
+        let (mouse_x, mouse_y) =
+            mouse_position_in_framebuffer(window, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
+
+        let hovered_index = self.level_select.hit_test(
+            FRAMEBUFFER_WIDTH,
+            FRAMEBUFFER_HEIGHT,
+            mouse_x,
+            mouse_y,
+            level_count,
+        );
+
+        let left_clicked = window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+
+        if let Some(index) = hovered_index {
+            if (mouse_moved || left_clicked) && index != self.level_select.selected_index() {
+                self.level_select.set_selected_index(index);
+
+                if !left_clicked {
+                    self.audio.play_sound(SoundEffect::MenuMove);
+                }
+            }
+        }
+
+        /*
+         * La confirmación `MenuSelect` corresponde a la ACTIVACIÓN
+         * del menú (la pulsación de ENTER en sí, o el clic
+         * equivalente), no al éxito de la carga: incluso si
+         * `start_selected_level` falla y reporta su propio error, el
+         * usuario sí activó la acción.
+         */
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || (left_clicked && hovered_index.is_some())
+        {
             self.audio.play_sound(SoundEffect::MenuSelect);
 
             self.start_selected_level();
@@ -758,7 +849,41 @@ impl<'aud> App<'aud> {
             }
         }
 
-        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+        /*
+         * Mouse: hover mueve la selección y clic izquierdo confirma
+         * la opción bajo el cursor. Fuente de verdad ÚNICA con el
+         * teclado (`self.pause.selected`, vía `set_selected`); nunca
+         * un segundo índice paralelo. El hover solo mueve la
+         * selección cuando el mouse REALMENTE se desplazó este cuadro
+         * (o al hacer clic, una intención explícita incluso con el
+         * cursor quieto): así, mantener el cursor inmóvil sobre una
+         * fila nunca le "gana" a `↑`/`↓` en cuadros posteriores.
+         */
+        let mouse_delta = window.get_mouse_delta();
+
+        let mouse_moved = mouse_delta.x != 0.0 || mouse_delta.y != 0.0;
+
+        let (mouse_x, mouse_y) =
+            mouse_position_in_framebuffer(window, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
+
+        let hovered_item =
+            self.pause
+                .hit_test(FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT, mouse_x, mouse_y);
+
+        let left_clicked = window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+
+        if let Some(item) = hovered_item {
+            if (mouse_moved || left_clicked) && item != self.pause.selected_item() {
+                self.pause.set_selected(item);
+
+                if !left_clicked {
+                    self.audio.play_sound(SoundEffect::MenuMove);
+                }
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) || (left_clicked && hovered_item.is_some())
+        {
             self.audio.play_sound(SoundEffect::MenuSelect);
 
             match self.pause.selected_item() {
@@ -827,12 +952,51 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Mouse: mismo patrón exacto que `update_paused` — hover
+         * mueve la selección (`set_selected_index`, la MISMA fuente
+         * de verdad que el teclado) solo cuando el mouse realmente se
+         * movió este cuadro o al hacer clic; clic izquierdo confirma
+         * la fila bajo el cursor. `hit_test` ya excluye `NEXT LEVEL`
+         * cuando `has_next_level` es `false`, así que esa fila nunca
+         * puede seleccionarse ni activarse por mouse mientras está
+         * deshabilitada.
+         */
+        let mouse_delta = window.get_mouse_delta();
+
+        let mouse_moved = mouse_delta.x != 0.0 || mouse_delta.y != 0.0;
+
+        let (mouse_x, mouse_y) =
+            mouse_position_in_framebuffer(window, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
+
+        let hovered_index = self.victory.hit_test(
+            FRAMEBUFFER_WIDTH,
+            FRAMEBUFFER_HEIGHT,
+            mouse_x,
+            mouse_y,
+            has_next_level,
+        );
+
+        let left_clicked = window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+
+        if let Some(index) = hovered_index {
+            if (mouse_moved || left_clicked) && index != self.victory.selected_index() {
+                self.victory.set_selected_index(index);
+
+                if !left_clicked {
+                    self.audio.play_sound(SoundEffect::MenuMove);
+                }
+            }
+        }
+
+        /*
          * `MenuSelect` solo suena para una acción EJECUTABLE:
          * `selected_action` ya retorna `None` para `NEXT LEVEL`
          * deshabilitado en el nivel final, así que esa fila nunca
          * llega a reproducir el sonido.
          */
-        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || (left_clicked && hovered_index.is_some())
+        {
             if let Some(action) = self.victory.selected_action(has_next_level) {
                 self.audio.play_sound(SoundEffect::MenuSelect);
 
@@ -908,7 +1072,38 @@ impl<'aud> App<'aud> {
             }
         }
 
-        if window.is_key_pressed(KeyboardKey::KEY_ENTER) {
+        /*
+         * Mouse: mismo patrón exacto que `update_paused`/
+         * `update_victory` — hover mueve la selección (`set_selected`,
+         * la MISMA fuente de verdad que el teclado) solo cuando el
+         * mouse realmente se movió este cuadro o al hacer clic; clic
+         * izquierdo confirma la fila bajo el cursor.
+         */
+        let mouse_delta = window.get_mouse_delta();
+
+        let mouse_moved = mouse_delta.x != 0.0 || mouse_delta.y != 0.0;
+
+        let (mouse_x, mouse_y) =
+            mouse_position_in_framebuffer(window, FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT);
+
+        let hovered_item =
+            self.defeat
+                .hit_test(FRAMEBUFFER_WIDTH, FRAMEBUFFER_HEIGHT, mouse_x, mouse_y);
+
+        let left_clicked = window.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+
+        if let Some(item) = hovered_item {
+            if (mouse_moved || left_clicked) && item != self.defeat.selected_item() {
+                self.defeat.set_selected(item);
+
+                if !left_clicked {
+                    self.audio.play_sound(SoundEffect::MenuMove);
+                }
+            }
+        }
+
+        if window.is_key_pressed(KeyboardKey::KEY_ENTER) || (left_clicked && hovered_item.is_some())
+        {
             let action = self.defeat.selected_item();
 
             self.audio.play_sound(SoundEffect::MenuSelect);

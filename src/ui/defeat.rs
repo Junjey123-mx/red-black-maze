@@ -2,6 +2,7 @@ use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
 use crate::rendering::palette_for_theme;
+use crate::ui::Hitbox;
 use crate::world::LevelTheme;
 
 /// Fondo casi negro, deliberadamente oscuro (Tarea 46): a
@@ -330,6 +331,47 @@ impl DefeatScreen {
         self.selected = self.selected.toggled();
     }
 
+    /// Fija la selección directamente a `item`, sin pasar por
+    /// `toggled()`. Usado exclusivamente por el hover/clic de mouse
+    /// (`App::update_defeat`); el teclado sigue usando
+    /// `select_previous`/`select_next` sin cambios.
+    pub(crate) fn set_selected(&mut self, item: DefeatMenuItem) {
+        self.selected = item;
+    }
+
+    /// Elemento, si lo hay, cuya hitbox contiene `(mouse_x, mouse_y)`
+    /// (coordenadas lógicas del framebuffer).
+    ///
+    /// Recalcula el MISMO `compute_layout` que `render` usa para
+    /// dibujar las dos filas, para que la hitbox siempre coincida
+    /// exactamente con la posición visual actual.
+    pub(crate) fn hit_test(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+    ) -> Option<DefeatMenuItem> {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        for item in [DefeatMenuItem::Retry, DefeatMenuItem::MainMenu] {
+            let row_y = layout.row_y(item.row_index());
+
+            let hitbox = Hitbox {
+                x0: layout.row_x,
+                y0: row_y,
+                x1: layout.row_x + layout.row_width,
+                y1: row_y + layout.row_height,
+            };
+
+            if hitbox.contains(mouse_x, mouse_y) {
+                return Some(item);
+            }
+        }
+
+        None
+    }
+
     /// Dibuja la pantalla completa: fondo casi negro, título `YOU
     /// LOST THE HAND` y las dos filas `RETRY`/`MAIN MENU`, con un
     /// acento cromático discreto tomado de `theme` (el nivel donde
@@ -459,6 +501,49 @@ mod tests {
         assert!(title_width > 0);
         assert!(layout.title_x >= 0);
         assert!(layout.title_x + title_width <= REFERENCE_WIDTH);
+    }
+
+    #[test]
+    fn hit_test_matches_each_row_and_none_outside_the_rows() {
+        let screen = DefeatScreen::new();
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.row_x + layout.row_width / 2;
+
+        let retry_center_y =
+            layout.row_y(DefeatMenuItem::Retry.row_index()) + layout.row_height / 2;
+        let main_menu_center_y =
+            layout.row_y(DefeatMenuItem::MainMenu.row_index()) + layout.row_height / 2;
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, center_x, retry_center_y),
+            Some(DefeatMenuItem::Retry)
+        );
+
+        assert_eq!(
+            screen.hit_test(
+                REFERENCE_WIDTH,
+                REFERENCE_HEIGHT,
+                center_x,
+                main_menu_center_y
+            ),
+            Some(DefeatMenuItem::MainMenu)
+        );
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn set_selected_overrides_the_current_selection_directly() {
+        let mut screen = DefeatScreen::new();
+
+        screen.set_selected(DefeatMenuItem::MainMenu);
+
+        assert_eq!(screen.selected_item(), DefeatMenuItem::MainMenu);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
-use crate::ui::{GameOfLife, GameOfLifeRenderConfig};
+use crate::ui::{GameOfLife, GameOfLifeRenderConfig, Hitbox};
 
 /// Tamaño, en píxeles de framebuffer, de cada celda del Juego de la
 /// Vida de fondo. Deliberadamente ajeno a `BLOCK_SIZE`/`Level`: es
@@ -406,9 +406,59 @@ impl VictoryScreen {
     }
 
     /// Índice actualmente seleccionado.
-    #[allow(dead_code)]
     pub(crate) fn selected_index(&self) -> usize {
         self.selected_index
+    }
+
+    /// Fija la selección directamente a `row_index`, sin pasar por
+    /// `select_previous`/`select_next`. Usado exclusivamente por el
+    /// hover/clic de mouse (`App::update_victory`); no valida por sí
+    /// mismo si la fila está deshabilitada — `hit_test` ya nunca
+    /// retorna `NEXT_LEVEL_ROW` cuando `has_next_level` es `false`, y
+    /// `selected_action` sigue siendo la única autoridad defensiva
+    /// sobre qué acción es ejecutable.
+    pub(crate) fn set_selected_index(&mut self, row_index: usize) {
+        self.selected_index = row_index;
+    }
+
+    /// Índice de fila, si lo hay, cuya hitbox contiene `(mouse_x,
+    /// mouse_y)` (coordenadas lógicas del framebuffer).
+    ///
+    /// La fila `NEXT LEVEL` se excluye por completo cuando
+    /// `has_next_level` es `false` — la misma condición que ya usan
+    /// `select_previous`/`select_next`/`selected_action` para tratarla
+    /// como inexistente — así que ni el hover ni el clic pueden
+    /// nunca seleccionarla ni activarla mientras está deshabilitada.
+    pub(crate) fn hit_test(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+        has_next_level: bool,
+    ) -> Option<usize> {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        for index in 0..ACTION_LABELS.len() {
+            if index == NEXT_LEVEL_ROW && !has_next_level {
+                continue;
+            }
+
+            let row_y = layout.row_y(index);
+
+            let hitbox = Hitbox {
+                x0: layout.row_x,
+                y0: row_y,
+                x1: layout.row_x + layout.row_width,
+                y1: row_y + layout.row_height,
+            };
+
+            if hitbox.contains(mouse_x, mouse_y) {
+                return Some(index);
+            }
+        }
+
+        None
     }
 
     /// Debe llamarse cada vez que `App` entra a esta pantalla
@@ -726,6 +776,59 @@ mod tests {
         assert!(title_width > 0);
         assert!(layout.title_x >= 0);
         assert!(layout.title_x + title_width <= REFERENCE_WIDTH);
+    }
+
+    #[test]
+    fn hit_test_matches_each_enabled_row_and_none_outside() {
+        let screen = VictoryScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.row_x + layout.row_width / 2;
+
+        for index in 0..3usize {
+            let center_y = layout.row_y(index) + layout.row_height / 2;
+
+            assert_eq!(
+                screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, center_x, center_y, true),
+                Some(index)
+            );
+        }
+
+        assert_eq!(
+            screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0, true),
+            None
+        );
+    }
+
+    #[test]
+    fn hit_test_excludes_the_disabled_next_level_row() {
+        let screen = VictoryScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.row_x + layout.row_width / 2;
+        let next_level_center_y = layout.row_y(NEXT_LEVEL_ROW) + layout.row_height / 2;
+
+        assert_eq!(
+            screen.hit_test(
+                REFERENCE_WIDTH,
+                REFERENCE_HEIGHT,
+                center_x,
+                next_level_center_y,
+                false
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn set_selected_index_overrides_the_current_selection_directly() {
+        let mut screen = VictoryScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        screen.set_selected_index(MAIN_MENU_ROW);
+
+        assert_eq!(screen.selected_index(), MAIN_MENU_ROW);
     }
 
     #[test]

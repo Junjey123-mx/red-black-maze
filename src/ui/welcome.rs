@@ -1,7 +1,7 @@
 use raylib::prelude::Color;
 
 use crate::rendering::framebuffer::Framebuffer;
-use crate::ui::{GameOfLife, GameOfLifeRenderConfig};
+use crate::ui::{GameOfLife, GameOfLifeRenderConfig, Hitbox};
 
 /// Tamaño, en píxeles de framebuffer, de cada celda del Juego de la
 /// Vida de fondo. Deliberadamente ajeno a `BLOCK_SIZE`: es una
@@ -23,6 +23,17 @@ const TITLE_SHADOW_COLOR: Color = Color::new(120, 18, 24, 255);
 const BUTTON_PANEL_COLOR: Color = Color::new(14, 12, 14, 255);
 const BUTTON_BORDER_COLOR: Color = Color::new(150, 24, 32, 255);
 const BUTTON_TEXT_COLOR: Color = Color::new(224, 218, 205, 255);
+
+/// Estilo de `PLAY` mientras el cursor está sobre su hitbox.
+///
+/// MISMOS literales que `SELECTED_PANEL_COLOR`/`SELECTED_BORDER_COLOR`
+/// ya usados por Pausa/Victoria/Derrota/Selección de Nivel para
+/// resaltar la fila con foco de teclado — el acento de "selección"
+/// establecido en todo el proyecto, no un color nuevo — para que el
+/// hover del mouse reutilice EXACTAMENTE el mismo lenguaje visual, tal
+/// como ya hacen esas otras pantallas.
+const BUTTON_HOVER_PANEL_COLOR: Color = Color::new(40, 10, 14, 255);
+const BUTTON_HOVER_BORDER_COLOR: Color = Color::new(210, 40, 50, 255);
 
 const TITLE_TEXT: &str = "RED-BLACK MAZE";
 const TITLE_SCALE: i32 = 4;
@@ -295,6 +306,14 @@ fn deterministic_seed_cells(grid_width: usize, grid_height: usize) -> Vec<(usize
 /// su propia presentación.
 pub(crate) struct WelcomeScreen {
     game_of_life: GameOfLife,
+
+    /// `true` mientras el cursor está sobre la hitbox de `PLAY`, fijado
+    /// exclusivamente por `App::update_welcome` vía `set_hovered` cada
+    /// cuadro (nunca por `render`, que solo lee este campo). Es el
+    /// ÚNICO estado de "selección" de esta pantalla — no existe un
+    /// campo paralelo para teclado, porque con un solo control no hay
+    /// nada más que alternar.
+    hovered: bool,
 }
 
 impl WelcomeScreen {
@@ -314,7 +333,17 @@ impl WelcomeScreen {
 
         game_of_life.seed(&deterministic_seed_cells(grid_width, grid_height));
 
-        Self { game_of_life }
+        Self {
+            game_of_life,
+            hovered: false,
+        }
+    }
+
+    /// Fija si el cursor está actualmente sobre `PLAY`, para que
+    /// `render` pueda resaltarlo. Llamado exclusivamente por
+    /// `App::update_welcome`, cada cuadro, a partir de `hit_test`.
+    pub(crate) fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
     }
 
     /// Avanza únicamente la simulación de fondo según el tiempo
@@ -322,6 +351,33 @@ impl WelcomeScreen {
     /// reimplementa ninguna regla de Conway.
     pub(crate) fn update(&mut self, delta_time: f32) {
         self.game_of_life.update(delta_time);
+    }
+
+    /// `true` si `(mouse_x, mouse_y)` (coordenadas lógicas del
+    /// framebuffer) cae dentro del botón `PLAY`.
+    ///
+    /// Con un único control en esta pantalla no existe ningún estado
+    /// de "selección" que alternar: hover y clic sobre el botón
+    /// producen la MISMA activación que ya dispara `ENTER`/`SPACE`
+    /// (ver `App::update_welcome`), sin introducir un segundo camino
+    /// de transición.
+    pub(crate) fn hit_test(
+        &self,
+        framebuffer_width: i32,
+        framebuffer_height: i32,
+        mouse_x: i32,
+        mouse_y: i32,
+    ) -> bool {
+        let layout = compute_layout(framebuffer_width, framebuffer_height);
+
+        let hitbox = Hitbox {
+            x0: layout.button_x,
+            y0: layout.button_y,
+            x1: layout.button_x + layout.button_width,
+            y1: layout.button_y + layout.button_height,
+        };
+
+        hitbox.contains(mouse_x, mouse_y)
     }
 
     /// Dibuja la pantalla completa: fondo oscuro, Juego de la Vida
@@ -373,14 +429,22 @@ impl WelcomeScreen {
         );
 
         // Control PLAY: panel oscuro con borde carmesí y texto
-        // marfil centrado.
+        // marfil centrado. Bajo hover, panel/borde cambian al MISMO
+        // acento de "selección" que el resto de las pantallas de
+        // menú ya usa para su fila resaltada.
+        let (button_panel_color, button_border_color) = if self.hovered {
+            (BUTTON_HOVER_PANEL_COLOR, BUTTON_HOVER_BORDER_COLOR)
+        } else {
+            (BUTTON_PANEL_COLOR, BUTTON_BORDER_COLOR)
+        };
+
         fill_rect(
             framebuffer,
             layout.button_x,
             layout.button_y,
             layout.button_x + layout.button_width,
             layout.button_y + layout.button_height,
-            BUTTON_BORDER_COLOR,
+            button_border_color,
         );
 
         fill_rect(
@@ -389,7 +453,7 @@ impl WelcomeScreen {
             layout.button_y + BUTTON_BORDER_THICKNESS,
             layout.button_x + layout.button_width - BUTTON_BORDER_THICKNESS,
             layout.button_y + layout.button_height - BUTTON_BORDER_THICKNESS,
-            BUTTON_PANEL_COLOR,
+            button_panel_color,
         );
 
         draw_text(
@@ -466,6 +530,38 @@ mod tests {
         let second = deterministic_seed_cells(grid_width, grid_height);
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn new_screen_starts_not_hovered() {
+        let screen = WelcomeScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        assert!(!screen.hovered);
+    }
+
+    #[test]
+    fn set_hovered_updates_the_flag_render_reads() {
+        let mut screen = WelcomeScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        screen.set_hovered(true);
+        assert!(screen.hovered);
+
+        screen.set_hovered(false);
+        assert!(!screen.hovered);
+    }
+
+    #[test]
+    fn hit_test_matches_the_play_button_hitbox() {
+        let screen = WelcomeScreen::new(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let layout = compute_layout(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+
+        let center_x = layout.button_x + layout.button_width / 2;
+        let center_y = layout.button_y + layout.button_height / 2;
+
+        assert!(screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, center_x, center_y));
+
+        assert!(!screen.hit_test(REFERENCE_WIDTH, REFERENCE_HEIGHT, 0, 0));
     }
 
     #[test]
