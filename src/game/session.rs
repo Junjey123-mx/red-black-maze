@@ -721,6 +721,23 @@ impl GameSession {
     /// Commit 45). Un `delta_time` no finito/no positivo se ignora,
     /// igual que el resto de temporizadores de la sesión.
     pub(crate) fn update_king_encounter(&mut self, delta_time: f32, block_size: usize) {
+        /*
+         * Bloque 4, Commit 43: gate entre cohortes. Si un umbral ya
+         * fue roto pero su invocación quedó en espera porque la
+         * cohorte anterior seguía viva, la invocación arranca EN EL
+         * INSTANTE en que esa cohorte se limpia — sin esperar a otro
+         * disparo.
+         */
+        if self.king_encounter.phase == KingEncounterPhase::Fighting {
+            if let Some(pending) = self.king_encounter.pending_threshold {
+                if !self.previous_cohort_blocks(pending) {
+                    self.king_encounter.phase = KingEncounterPhase::Summoning;
+                    self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                }
+            }
+            return;
+        }
+
         if self.king_encounter.phase != KingEncounterPhase::Summoning {
             return;
         }
@@ -774,6 +791,15 @@ impl GameSession {
             .iter()
             .filter(|entity| !entity.is_dead() && entity.summon_cohort() == Some(threshold_index))
             .count()
+    }
+
+    /// `true` si la cohorte INMEDIATAMENTE anterior a la invocación
+    /// del umbral `threshold_index` todavía tiene Dealers vivos y por
+    /// tanto bloquea que The King cruce por debajo de ese umbral
+    /// (Bloque 4, Commit 43). La invocación de 800 (índice 0) nunca
+    /// tiene cohorte previa, así que nunca está bloqueada.
+    fn previous_cohort_blocks(&self, threshold_index: usize) -> bool {
+        threshold_index >= 1 && self.living_summoned_cohort_count(threshold_index - 1) > 0
     }
 
     /// `true` mientras el encuentro está en la fase `Summoning`
@@ -1438,6 +1464,29 @@ impl GameSession {
             None => return EntityDamageOutcome::None,
         };
 
+        /*
+         * Bloque 4, Commit 43: gate entre cohortes. Si un umbral ya se
+         * rompió pero su invocación sigue en espera (la cohorte
+         * anterior no ha muerto), The King puede seguir recibiendo
+         * daño pero NUNCA por debajo de ese umbral pendiente. El
+         * disparo que ya está en el suelo se rechaza en silencio (sin
+         * SFX de impacto), igual que durante `Summoning`.
+         */
+        if let Some(pending) = self.king_encounter.pending_threshold {
+            let floor = KING_PHASE_THRESHOLDS[pending];
+
+            if health <= floor {
+                return EntityDamageOutcome::None;
+            }
+
+            let allowed = damage.min(health - floor);
+
+            return match self.entities.get_mut(entity_index) {
+                Some(entity) => entity.apply_damage(allowed),
+                None => EntityDamageOutcome::None,
+            };
+        }
+
         let consumed = self.king_encounter.thresholds_consumed;
 
         let applied_damage = if consumed < KING_PHASE_THRESHOLDS.len() {
@@ -1446,18 +1495,24 @@ impl GameSession {
             if health > threshold && health - damage <= threshold {
                 self.king_encounter.thresholds_consumed += 1;
                 self.king_encounter.last_hit_broke_phase = true;
+                self.king_encounter.pending_threshold = Some(consumed);
 
                 /*
-                 * Bloque 4, Commit 35: cruzar un umbral abre una fase
-                 * `Summoning` temporizada de `KING_SUMMON_DURATION`
-                 * segundos. Durante ella `update_entities`/
-                 * `process_dealer_attacks` dejan al King inmóvil y sin
-                 * atacar; el jugador, el mundo y los Dealers ya
-                 * presentes siguen actualizándose con normalidad.
+                 * Cruzar un umbral abre una fase `Summoning`
+                 * temporizada (Commit 35) — salvo que la cohorte
+                 * anterior siga viva (Commit 43): en ese caso The King
+                 * se queda EN el umbral, en `Fighting` (sigue
+                 * persiguiendo y atacando junto a su cohorte), y la
+                 * invocación arranca automáticamente en cuanto esa
+                 * cohorte se limpie (`update_king_encounter`).
                  */
-                self.king_encounter.phase = KingEncounterPhase::Summoning;
-                self.king_encounter.summon_timer = KING_SUMMON_DURATION;
-                self.king_encounter.pending_threshold = Some(consumed);
+                if self.previous_cohort_blocks(consumed) {
+                    self.king_encounter.phase = KingEncounterPhase::Fighting;
+                    self.king_encounter.summon_timer = 0.0;
+                } else {
+                    self.king_encounter.phase = KingEncounterPhase::Summoning;
+                    self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                }
 
                 health - threshold
             } else {
@@ -6037,10 +6092,14 @@ e             #
     /// cohortes del Commit 43 no detenga el avance en las pruebas que
     /// solo miden el combate del propio King).
     fn clear_king_summon_gate(run: &mut GameSession) {
-        for _ in 0..4 {
+        for _ in 0..12 {
             if run.king_is_summoning() {
                 run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
             }
+
+            // Promueve un gate pendiente (cohorte previa ya limpia) a
+            // `Summoning`.
+            run.update_king_encounter(0.0, BLOCK_SIZE);
 
             let summoned: Vec<usize> = run
                 .entities()
@@ -6357,14 +6416,21 @@ e             #
         let (mut run, king) = horde_at_the_king(4);
 
         for step in 0..=threshold_index {
+            // Abre el gate: limpia cualquier cohorte previa viva y
+            // drena su invocación si estaba en curso.
+            clear_king_summon_gate(&mut run);
+
             let target = KING_PHASE_THRESHOLDS[step];
+            let mut guard = 0;
             while run.king_health().map(|(h, _)| h).unwrap_or(0) > target {
                 run.damage_entity(king);
+                guard += 1;
+                assert!(guard < 100, "el King debería bajar hasta {target}");
             }
+
             if step < threshold_index {
-                // Cierra esta invocación para poder alcanzar la
-                // siguiente (el gate entre cohortes llega en el
-                // Commit 43).
+                // Resuelve la invocación de este umbral para poder
+                // alcanzar el siguiente.
                 run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
                 assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
             }
@@ -6502,6 +6568,108 @@ e             #
         assert_eq!(third, first);
     }
 
+    // --- Bloque 4, Commit 43: gate entre cohortes. ---
+
+    /// Lleva el encuentro hasta justo después de la invocación de 800
+    /// (5 Dealers de cohorte 0 vivos, King en `Fighting` a 800 HP).
+    fn king_after_first_cohort() -> (GameSession, usize) {
+        let (mut run, king) = king_at_summon(0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.living_summoned_cohort_count(0), 5);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        (run, king)
+    }
+
+    #[test]
+    fn the_king_cannot_cross_the_next_threshold_while_its_cohort_is_alive() {
+        let (mut run, king) = king_after_first_cohort();
+
+        // Baja hasta 600 exactamente, pero no puede atravesarlo.
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+        assert_eq!(run.king_thresholds_consumed(), 2);
+        assert_eq!(
+            run.king_phase(),
+            KingEncounterPhase::Fighting,
+            "gated: todavía no invoca"
+        );
+        assert!(!run.king_is_summoning());
+
+        // Muchos disparos más: sigue clavado en 600.
+        for _ in 0..20 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+
+        // Ninguna cohorte nueva mientras tanto.
+        assert_eq!(run.living_summoned_cohort_count(1), 0);
+    }
+
+    #[test]
+    fn the_pending_invocation_starts_the_instant_the_cohort_is_cleared() {
+        let (mut run, king) = king_after_first_cohort();
+
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+        assert!(!run.king_is_summoning());
+
+        // Mata a la cohorte de 800.
+        let cohort: Vec<usize> = run
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.summon_cohort() == Some(0))
+            .map(|(i, _)| i)
+            .collect();
+        for i in cohort {
+            run.damage_entity(i);
+            run.damage_entity(i);
+        }
+        assert_eq!(run.living_summoned_cohort_count(0), 0);
+
+        // El siguiente tick del encuentro arranca la invocación de 600
+        // sin necesidad de otro disparo.
+        run.update_king_encounter(0.0, BLOCK_SIZE);
+        assert!(run.king_is_summoning());
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.living_summoned_cohort_count(1), 5);
+        let _ = king;
+    }
+
+    #[test]
+    fn rapid_fire_never_stacks_king_summon_waves() {
+        let (mut run, king) = horde_at_the_king(4);
+
+        // Descarga sin pausa: sin drenar invocaciones ni matar
+        // cohortes. Nunca deben coexistir dos oleadas.
+        for _ in 0..400 {
+            run.damage_entity(king);
+            run.update_king_encounter(0.0, BLOCK_SIZE);
+
+            let live_cohorts = (0..4)
+                .filter(|&c| run.living_summoned_cohort_count(c) > 0)
+                .count();
+            assert!(live_cohorts <= 1, "nunca dos cohortes simultáneas");
+
+            let total_summoned = run
+                .entities()
+                .iter()
+                .filter(|e| e.summon_cohort().is_some() && !e.is_dead())
+                .count();
+            assert!(total_summoned <= 5, "nunca más de una oleada de 5");
+        }
+
+        // El King quedó bloqueado en un umbral, nunca muerto por
+        // descarga rápida saltándose fases.
+        assert!(run.king_alive());
+        assert!(run.king_thresholds_consumed() <= 2);
+    }
+
     // --- Bloque 4, Commit 41: segunda invocación de 5 Dealers (600). ---
 
     #[test]
@@ -6529,10 +6697,16 @@ e             #
         assert_eq!(run.living_summoned_cohort_count(2), 5);
         assert_eq!(run.king_thresholds_consumed(), 3);
 
-        // Cohortes separadas: 5 en cada índice, nunca fusionadas.
-        assert_eq!(run.living_summoned_cohort_count(0), 5);
-        assert_eq!(run.living_summoned_cohort_count(1), 5);
+        // Las cohortes previas ya fueron resueltas para abrir el gate;
+        // esta es la única viva y todos sus Dealers llevan su marca.
         assert_eq!(run.living_summoned_cohort_count(3), 0);
+        for dealer in run
+            .entities()
+            .iter()
+            .filter(|e| e.summon_cohort().is_some() && !e.is_dead())
+        {
+            assert_eq!(dealer.summon_cohort(), Some(2));
+        }
     }
 
     // --- Bloque 4, Commit 39: primera invocación de 5 Dealers. ---
@@ -6744,9 +6918,7 @@ e             #
             // vida.
             run.update_entities(0.001, BLOCK_SIZE);
             run.update_king_encounter(0.001, BLOCK_SIZE);
-            if run.king_is_summoning() {
-                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
-            }
+            clear_king_summon_gate(&mut run);
         }
         assert!(!run.king_alive());
         assert_eq!(run.king_thresholds_consumed(), 4);
