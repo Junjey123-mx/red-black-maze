@@ -1,4 +1,6 @@
-use crate::audio::{AudioManager, MusicTrack, SoundEffect, music_track_for_theme};
+use crate::audio::{
+    AudioManager, MusicTrack, SoundEffect, music_track_for_theme, weapon_fire_sound,
+};
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
 use crate::game::{GameMode, GameSession, GameState, HandHudMessage, ViewMode};
 use crate::input::controller::process_events;
@@ -579,17 +581,19 @@ impl<'aud> App<'aud> {
         }
 
         /*
-         * The Royal Flush (Bloque 2, Commit 14): mismo patrón exacto
-         * que las recolecciones de arriba — vive aquí, dentro de
-         * `update_playing` (el ÚNICO llamador), para que
+         * The Royal Flush (Bloque 2, Commits 14/18): mismo patrón
+         * exacto que las recolecciones de arriba — vive aquí, dentro
+         * de `update_playing` (el ÚNICO llamador), para que
          * Pause/Victory/Defeat la congelen sin ningún caso especial.
          * `collect_nearby_royal_flush_pickup` decide por sí sola si
          * hay una mejora activa en rango y, de haberla, asciende el
-         * `WeaponTier` de la única arma equipada. El SFX de recogida
-         * se conecta en el Commit 18; por ahora la recogida es
-         * silenciosa.
+         * `WeaponTier` de la única arma equipada y retorna `true`
+         * exactamente ese cuadro — el único evento que solicita
+         * `SoundEffect::RoyalFlushPickup`, una sola vez.
          */
-        let _royal_flush_collected = self.session.collect_nearby_royal_flush_pickup();
+        if self.session.collect_nearby_royal_flush_pickup() {
+            self.audio.play_sound(SoundEffect::RoyalFlushPickup);
+        }
 
         /*
          * Emergency Ammo Respawn: anti-softlock, no regeneración
@@ -863,14 +867,20 @@ impl<'aud> App<'aud> {
             && self.session.try_fire_weapon()
         {
             /*
-             * `Shoot` representa el disparo del arma en sí, ya
-             * aceptado por `try_fire_weapon` (cooldown agotado y
-             * arma `Idle`). Suena exactamente una vez aquí,
-             * independientemente de qué resuelva después el
-             * hitscan: un disparo aceptado con impacto de pared o de
-             * Dealer todavía produce exactamente un `Shoot`.
+             * El disparo del arma en sí, ya aceptado por
+             * `try_fire_weapon` (cooldown agotado y arma `Idle`).
+             * Suena exactamente una vez aquí, independientemente de
+             * qué resuelva después el hitscan: un disparo aceptado
+             * con impacto de pared o de Dealer todavía produce
+             * exactamente un evento de disparo.
+             *
+             * Bloque 2, Commit 18: el SFX lo elige el `WeaponTier`
+             * activo — `RoyalWeaponFire` (más grave y contundente)
+             * cuando The Royal Flush está equipada, `Shoot` en caso
+             * contrario. Mismo evento, mismo momento, misma cadencia.
              */
-            self.audio.play_sound(SoundEffect::Shoot);
+            self.audio
+                .play_sound(weapon_fire_sound(self.session.weapon_tier()));
 
             let mut targets: Vec<HitscanTarget> = Vec::new();
 

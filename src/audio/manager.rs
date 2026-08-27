@@ -3,6 +3,7 @@ use std::path::Path;
 
 use raylib::prelude::*;
 
+use crate::player::WeaponTier;
 use crate::world::LevelTheme;
 
 /// Identidad tipada de una de las cuatro pistas de música de fondo
@@ -141,12 +142,27 @@ pub(crate) enum SoundEffect {
     /// los procedurales de The Dealer's True Maze; Dealer Hands nunca
     /// genera Health Pickups adicionales.
     HealthPickup,
+
+    /// Recogida EXITOSA de The Royal Flush (Bloque 2, Commit 18): se
+    /// dispara exactamente una vez, cuando
+    /// `GameSession::collect_nearby_royal_flush_pickup` reporta que la
+    /// mejora acaba de recogerse este cuadro — nunca por proximidad a
+    /// una mejora todavía activa o ya recogida.
+    RoyalFlushPickup,
+
+    /// Disparo aceptado con The Royal Flush equipada (Bloque 2,
+    /// Commit 18): reemplaza a `Shoot` como feedback del disparo
+    /// cuando el `WeaponTier` activo es `RoyalFlush`. Mismo evento de
+    /// disparo aceptado (`try_fire_weapon` -> `true`), mismo momento,
+    /// misma cadencia — solo suena más grave y contundente. El arma
+    /// Standard sigue usando `Shoot` sin cambios.
+    RoyalWeaponFire,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 14] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 16] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -161,7 +177,20 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 14] = [
     SoundEffect::PlayerHit,
     SoundEffect::AmmoPickup,
     SoundEffect::HealthPickup,
+    SoundEffect::RoyalFlushPickup,
+    SoundEffect::RoyalWeaponFire,
 ];
+
+/// SFX de disparo aceptado correspondiente al `WeaponTier` activo
+/// (Bloque 2, Commit 18). Única fuente de esta correspondencia:
+/// `App::update_playing` la consulta en vez de decidir el mapeo por
+/// su cuenta. `Standard` conserva exactamente `SoundEffect::Shoot`.
+pub(crate) fn weapon_fire_sound(tier: WeaponTier) -> SoundEffect {
+    match tier {
+        WeaponTier::Standard => SoundEffect::Shoot,
+        WeaponTier::RoyalFlush => SoundEffect::RoyalWeaponFire,
+    }
+}
 
 /// Única ubicación del catálogo ruta<->efecto. Ningún otro módulo
 /// conoce estas rutas.
@@ -181,6 +210,8 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::PlayerHit => "assets/audio/sfx/player_hit.wav",
         SoundEffect::AmmoPickup => "assets/audio/sfx/ammo_pickup.wav",
         SoundEffect::HealthPickup => "assets/audio/sfx/health_pickup.wav",
+        SoundEffect::RoyalFlushPickup => "assets/audio/sfx/royal_flush_pickup.wav",
+        SoundEffect::RoyalWeaponFire => "assets/audio/sfx/royal_weapon_fire.wav",
     }
 }
 
@@ -634,8 +665,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_fourteen_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 14);
+    fn catalog_contains_exactly_sixteen_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 16);
     }
 
     #[test]
@@ -689,6 +720,37 @@ mod tests {
         assert_eq!(
             sfx_path(SoundEffect::HealthPickup),
             "assets/audio/sfx/health_pickup.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::RoyalFlushPickup),
+            "assets/audio/sfx/royal_flush_pickup.wav"
+        );
+        assert_eq!(
+            sfx_path(SoundEffect::RoyalWeaponFire),
+            "assets/audio/sfx/royal_weapon_fire.wav"
+        );
+    }
+
+    // --- Bloque 2, Commit 18: selección de SFX de disparo por tier. ---
+
+    #[test]
+    fn standard_tier_keeps_the_original_shoot_sound() {
+        assert_eq!(weapon_fire_sound(WeaponTier::Standard), SoundEffect::Shoot);
+    }
+
+    #[test]
+    fn royal_flush_tier_uses_its_dedicated_fire_sound() {
+        assert_eq!(
+            weapon_fire_sound(WeaponTier::RoyalFlush),
+            SoundEffect::RoyalWeaponFire
+        );
+    }
+
+    #[test]
+    fn the_two_fire_sounds_are_distinct() {
+        assert_ne!(
+            weapon_fire_sound(WeaponTier::Standard),
+            weapon_fire_sound(WeaponTier::RoyalFlush)
         );
     }
 
