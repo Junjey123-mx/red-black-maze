@@ -71,25 +71,18 @@ const MISS_MARGIN_MULTIPLIER: f32 = 1.5;
 /// motivo que las constantes anteriores.
 const AMMO_PER_PICKUP: u32 = 6;
 
-/// Multiplicador del presupuesto de munición POR HAND: el jugador
-/// reportaba que la munición era demasiado escasa, así que cada Hand
-/// nueva planifica el DOBLE de balas de las que la fórmula base
-/// (disparos necesarios × margen de fallo) pediría. Solo afecta a la
-/// munición inyectada entre Hands — nunca a la vida del enemigo, al
-/// daño del arma ni a la munición inicial del nivel.
-const AMMO_PER_HAND_BUDGET_MULTIPLIER: u32 = 2;
-
 /// Tope de pickups adicionales inyectados de una sola vez al iniciar
-/// una Hand. Duplicado (6 -> 12) junto con
-/// `AMMO_PER_HAND_BUDGET_MULTIPLIER` para que el presupuesto doblado
-/// no quede recortado por el tope.
-const MAX_EXTRA_PICKUPS_PER_HAND: usize = 12;
+/// una Hand por la fórmula base de presupuesto, para no inundar el
+/// nivel de munición aunque el déficit calculado sea enorme. Los
+/// lotes CONDICIONALES (`GameSession::spawn_intermission_supplies`)
+/// tienen su propio tamaño fijo (4 o 3) y no pasan por este tope.
+const MAX_EXTRA_PICKUPS_PER_HAND: usize = 6;
 
 /// Cantidad de `AmmoPickup` que crea el Emergency Ammo Respawn
-/// (anti-softlock) cada vez que se activa. Duplicado (2 -> 4) para
-/// alinearse con el resto del suministro de munición por Hand: sigue
-/// sin ser regeneración pasiva, solo una salida de emergencia más
-/// holgada.
+/// (anti-softlock) cuando el jugador se queda SIN munición y sin
+/// recargas con enemigos todavía vivos. Deliberadamente holgado (4):
+/// es la última red de seguridad y no debe volver a fallar por
+/// escasez.
 pub(crate) const EMERGENCY_AMMO_PICKUP_COUNT: usize = 4;
 
 /// Banda de distancia navegable (pasos de `DistanceField`, nunca
@@ -578,31 +571,41 @@ fn take_spaced(pool: &[(usize, usize)], want: usize, chosen: &mut Vec<(usize, us
     }
 }
 
-/// Recolecta hasta `count` celdas TRANSITABLES, alcanzables y no
-/// ocupadas para la munición de una Hand, repartiéndola de forma
-/// DIVERSA en vez de amontonarla:
+/// Distancia navegable MÍNIMA de la parte de "difícil acceso" de un
+/// lote de munición: el jugador tiene que hacer un trayecto real para
+/// recogerla (nunca a su lado). Se relaja si el mapa no ofrece
+/// candidatos tan lejanos.
+const HARD_AMMO_MIN_DISTANCE_FALLBACKS: [u32; 3] = [6, 4, 1];
+
+/// Selecciona celdas para un lote de munición de Hand repartido en
+/// DOS grupos, para que no se amontone y para que no todo sea
+/// trivial de recoger:
 ///
-/// - la mitad (`count.div_ceil(2)`) en celdas CERCANAS y fuera del
-///   cono de visión inmediato del jugador — accesibles con un rodeo
-///   corto y de bajo riesgo;
-/// - la otra mitad en CUALQUIER celda transitable del mapa, sin que
-///   importe la distancia (fomenta explorar y separa la tanda).
+/// - `easy_count` en celdas de FÁCIL ACCESO: cercanas (banda
+///   `ACCESSIBLE_AMMO_DISTANCE_BANDS`) y fuera del cono de visión
+///   inmediato — accesibles con un rodeo corto y de bajo riesgo;
+/// - `hard_count` en celdas de DIFÍCIL ACCESO: a partir de
+///   `HARD_AMMO_MIN_DISTANCE_FALLBACKS` pasos navegables, en cualquier
+///   punto del mapa — hay que ir a por ellas.
 ///
-/// Dentro de cada grupo se procura mantener separación
-/// (`MIN_AMMO_SEPARATION_CELLS`) entre pickups, relajándola solo si el
-/// mapa es demasiado pequeño. Nunca la celda del jugador, nunca una
-/// pared, nunca una celda ya ocupada. Determinista para una misma
-/// `seed`.
-pub(crate) fn select_diverse_ammo_cells(
+/// Dentro del lote se mantiene separación (`MIN_AMMO_SEPARATION_CELLS`)
+/// entre pickups, relajándola solo si el mapa es demasiado pequeño; si
+/// un grupo no puede llenarse, el otro absorbe lo que falte. Nunca la
+/// celda del jugador, ni una pared, ni una celda ya ocupada.
+/// Determinista para una misma `seed`.
+pub(crate) fn select_split_ammo_cells(
     level: &Level,
     player_position: Vector2,
     player_facing: f32,
     block_size: usize,
     occupied: &HashSet<(usize, usize)>,
-    count: usize,
+    easy_count: usize,
+    hard_count: usize,
     seed: u64,
 ) -> Vec<(usize, usize)> {
-    if count == 0 {
+    let total = easy_count + hard_count;
+
+    if total == 0 {
         return Vec::new();
     }
 
@@ -622,12 +625,11 @@ pub(crate) fn select_diverse_ammo_cells(
             && distances.distance_at(cell.0, cell.1).is_some()
     };
 
-    // --- Grupo 1: cercano, alcanzable, fuera de vista inmediata. ---
-    let near_target = count.div_ceil(2);
-    let mut near_pool: Vec<(usize, usize)> = Vec::new();
+    // --- Grupo FÁCIL: cercano, alcanzable, fuera de vista inmediata. ---
+    let mut easy_pool: Vec<(usize, usize)> = Vec::new();
 
     for &(low, high) in &ACCESSIBLE_AMMO_DISTANCE_BANDS {
-        near_pool.clear();
+        easy_pool.clear();
 
         for row in 0..height {
             for column in 0..width {
@@ -647,45 +649,61 @@ pub(crate) fn select_diverse_ammo_cells(
                     continue;
                 }
 
-                near_pool.push(cell);
+                easy_pool.push(cell);
             }
         }
 
-        if near_pool.len() >= near_target || high == u32::MAX {
+        if easy_pool.len() >= easy_count || high == u32::MAX {
             break;
         }
     }
 
-    near_pool.sort();
-    rng.shuffle(&mut near_pool);
+    easy_pool.sort();
+    rng.shuffle(&mut easy_pool);
 
-    // --- Grupo 2: cualquier celda transitable del mapa. ---
-    let mut any_pool: Vec<(usize, usize)> = Vec::new();
+    // --- Grupo DIFÍCIL: lejos, en cualquier punto del mapa. ---
+    let mut hard_pool: Vec<(usize, usize)> = Vec::new();
 
-    for row in 0..height {
-        for column in 0..width {
-            let cell = (row, column);
+    for &min_distance in &HARD_AMMO_MIN_DISTANCE_FALLBACKS {
+        hard_pool.clear();
 
-            if is_eligible(cell) {
-                any_pool.push(cell);
+        for row in 0..height {
+            for column in 0..width {
+                let cell = (row, column);
+
+                if !is_eligible(cell) {
+                    continue;
+                }
+
+                if distances.distance_at(row, column).unwrap_or(0) < min_distance {
+                    continue;
+                }
+
+                hard_pool.push(cell);
             }
+        }
+
+        if hard_pool.len() >= hard_count || min_distance == 1 {
+            break;
         }
     }
 
-    any_pool.sort();
-    rng.shuffle(&mut any_pool);
+    hard_pool.sort();
+    rng.shuffle(&mut hard_pool);
 
-    // --- Selección espaciada: primero el grupo cercano, luego el
-    //     aleatorio, y si aún falta (mapa diminuto) se completa con lo
-    //     que quede sin exigir separación. ---
-    let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(count);
+    // --- Selección espaciada: primero el grupo fácil, luego el
+    //     difícil; si un grupo se queda corto el otro lo completa, y
+    //     si aún falta (mapa diminuto) se rellena sin exigir
+    //     separación. ---
+    let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(total);
 
-    take_spaced(&near_pool, near_target, &mut chosen);
-    take_spaced(&any_pool, count - chosen.len(), &mut chosen);
+    take_spaced(&easy_pool, easy_count, &mut chosen);
+    take_spaced(&hard_pool, total - chosen.len(), &mut chosen);
+    take_spaced(&easy_pool, total - chosen.len(), &mut chosen);
 
-    if chosen.len() < count {
-        for &cell in any_pool.iter().chain(near_pool.iter()) {
-            if chosen.len() >= count {
+    if chosen.len() < total {
+        for &cell in hard_pool.iter().chain(easy_pool.iter()) {
+            if chosen.len() >= total {
                 break;
             }
             if !chosen.contains(&cell) {
@@ -829,18 +847,20 @@ pub(crate) fn spawn_seed_for_hand(session_seed: u64, hand_number: usize) -> u64 
 /// Hand con `new_hand_dealer_count` Dealers, dado que el jugador ya
 /// tiene `accessible_ammo` balas alcanzables (cargador + reserva +
 /// pickups activos × munición por pickup) — sección 19. Misma fórmula
-/// que `world::level_generator::ammo_pickup_budget`, pero relativa a
-/// la munición YA disponible en vez de partir de cero y con el
-/// presupuesto DOBLADO (`AMMO_PER_HAND_BUDGET_MULTIPLIER`): la
-/// munición por Hand resultaba demasiado escasa.
+/// (sin doblar) que `world::level_generator::ammo_pickup_budget`, pero
+/// relativa a la munición YA disponible en vez de partir de cero.
+///
+/// Es la ruta BASE: `GameSession::spawn_intermission_supplies` la usa
+/// solo cuando el jugador NO cae en ninguno de los dos casos
+/// especiales de reabastecimiento (escaso, o reservas medias con
+/// munición aún en el suelo), que fijan su propio tamaño de lote.
 pub(crate) fn extra_ammo_pickups_needed(
     new_hand_dealer_count: usize,
     accessible_ammo: u32,
 ) -> usize {
     let shots_needed = new_hand_dealer_count as u32 * SHOTS_TO_KILL_ONE_DEALER;
 
-    let shots_with_margin = ((shots_needed as f32 * MISS_MARGIN_MULTIPLIER).ceil() as u32)
-        * AMMO_PER_HAND_BUDGET_MULTIPLIER;
+    let shots_with_margin = (shots_needed as f32 * MISS_MARGIN_MULTIPLIER).ceil() as u32;
 
     let deficit = shots_with_margin.saturating_sub(accessible_ammo);
 
@@ -1455,38 +1475,26 @@ mod tests {
 
     #[test]
     fn no_extra_pickups_when_ammo_is_already_sufficient() {
-        // 4 Dealers * 2 disparos * 1.5 margen = 12 disparos; DOBLADO
-        // (`AMMO_PER_HAND_BUDGET_MULTIPLIER`) = 24; 24 balas accesibles
-        // ya alcanzan justo, sin déficit.
-        assert_eq!(extra_ammo_pickups_needed(4, 24), 0);
+        // 4 Dealers * 2 disparos * 1.5 margen = 12 disparos con
+        // margen; 12 balas accesibles ya alcanzan justo, sin déficit.
+        assert_eq!(extra_ammo_pickups_needed(4, 12), 0);
     }
 
     #[test]
     fn extra_pickups_scale_with_the_ammo_deficit() {
-        // 8 Dealers * 2 * 1.5 = 24 disparos con margen; DOBLADO = 48.
-        // Con 24 balas accesibles el déficit es 24 -> ceil(24/6) = 4.
-        assert_eq!(extra_ammo_pickups_needed(8, 24), 4);
+        // 8 Dealers * 2 * 1.5 = 24 disparos con margen; con 12 balas
+        // accesibles el déficit es 12 -> ceil(12/6) = 2.
+        assert_eq!(extra_ammo_pickups_needed(8, 12), 2);
     }
 
     #[test]
     fn extra_pickups_are_capped_even_for_enormous_deficits() {
-        // El presupuesto por Hand está doblado pero el tope también
-        // (6 -> 12): nunca se inunda el mapa.
-        assert!(extra_ammo_pickups_needed(1000, 0) <= 12);
-        assert_eq!(extra_ammo_pickups_needed(1000, 0), 12);
+        // La fórmula base nunca inunda el mapa: tope de 6.
+        assert_eq!(extra_ammo_pickups_needed(1000, 0), 6);
     }
 
     #[test]
-    fn the_per_hand_ammo_budget_is_doubled() {
-        assert_eq!(AMMO_PER_HAND_BUDGET_MULTIPLIER, 2);
-
-        // 6 Dealers, 0 balas: base = ceil(6*2*1.5 / 6) = 3 pickups;
-        // doblado = 6.
-        assert_eq!(extra_ammo_pickups_needed(6, 0), 6);
-    }
-
-    #[test]
-    fn diverse_ammo_splits_between_near_out_of_view_and_anywhere() {
+    fn diverse_ammo_splits_between_easy_and_hard_access() {
         let level = test_level(); // sala abierta 13x7 interior
         let occupied: HashSet<(usize, usize)> = HashSet::new();
 
@@ -1499,35 +1507,42 @@ mod tests {
 
         let distances = DistanceField::from_level(&level, player_cell);
 
-        let cells = select_diverse_ammo_cells(&level, player_position, facing, 48, &occupied, 4, 7);
+        // 2 fáciles + 2 difíciles (el lote del tramo ESCASO).
+        let cells =
+            select_split_ammo_cells(&level, player_position, facing, 48, &occupied, 2, 2, 7);
         assert_eq!(cells.len(), 4);
 
-        // Ninguna es la del jugador y todas son alcanzables.
         for &cell in &cells {
             assert_ne!(cell, player_cell);
             assert!(distances.distance_at(cell.0, cell.1).is_some());
         }
 
-        // Grupo cercano (los primeros `div_ceil(4/2)` = 2): fuera del
-        // cono de visión inmediato y a pocos pasos.
+        // Grupo FÁCIL (primeros 2): fuera del cono de visión inmediato,
+        // a pocos pasos.
         for &(row, column) in cells.iter().take(2) {
             assert!(
                 !is_immediately_visible(row, column, player_position, facing, 48),
-                "la munición 'accesible' no debe aparecer delante del jugador"
+                "la munición de fácil acceso no debe aparecer delante del jugador"
             );
             let d = distances.distance_at(row, column).unwrap();
-            assert!((1..=12).contains(&d), "distancia {d} fuera de lo cercano");
+            assert!((1..=9).contains(&d), "fácil demasiado lejos: {d}");
+        }
+
+        // Grupo DIFÍCIL (últimos 2): lejos — hay que ir a por ellas.
+        for &(row, column) in cells.iter().skip(2) {
+            let d = distances.distance_at(row, column).unwrap();
+            assert!(d >= 6, "difícil demasiado cerca: {d}");
         }
 
         // Determinista.
         assert_eq!(
-            select_diverse_ammo_cells(&level, player_position, facing, 48, &occupied, 4, 7),
+            select_split_ammo_cells(&level, player_position, facing, 48, &occupied, 2, 2, 7),
             cells
         );
     }
 
     #[test]
-    fn diverse_ammo_cells_are_spread_apart_not_clustered() {
+    fn split_ammo_cells_are_spread_apart_not_clustered() {
         let level = test_level();
         let occupied: HashSet<(usize, usize)> = HashSet::new();
 
@@ -1537,11 +1552,9 @@ mod tests {
             player_cell.0 as f32 * 48.0 + 24.0,
         );
 
-        let cells = select_diverse_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 3);
+        let cells = select_split_ammo_cells(&level, player_position, 0.0, 48, &occupied, 2, 2, 3);
         assert_eq!(cells.len(), 4);
 
-        // En este mapa abierto la separación mínima se puede respetar:
-        // ningún par de pickups pegado.
         for i in 0..cells.len() {
             for j in (i + 1)..cells.len() {
                 assert!(
@@ -1555,7 +1568,7 @@ mod tests {
     }
 
     #[test]
-    fn diverse_ammo_cells_never_reuse_an_occupied_or_player_cell() {
+    fn split_ammo_cells_never_reuse_an_occupied_or_player_cell() {
         let level = test_level();
         let player_cell = (3, 3);
         let player_position = Vector2::new(
@@ -1568,7 +1581,9 @@ mod tests {
         occupied.insert((4, 3));
         occupied.insert((5, 5));
 
-        let cells = select_diverse_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 1);
+        // El lote complementario: 1 fácil + 2 difíciles.
+        let cells = select_split_ammo_cells(&level, player_position, 0.0, 48, &occupied, 1, 2, 1);
+        assert_eq!(cells.len(), 3);
         for cell in &cells {
             assert!(!occupied.contains(cell));
             assert_ne!(*cell, player_cell);

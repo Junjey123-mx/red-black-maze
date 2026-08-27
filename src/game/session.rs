@@ -153,6 +153,25 @@ impl KingEncounter {
 /// vía `Weapon::add_reserve_ammo`, que ya respeta el tope.
 const AMMO_PICKUP_AMOUNT: u32 = 6;
 
+/// Reabastecimiento de munición por Hand — tramo ESCASO. Al empezar
+/// una Hand nueva, si al jugador le quedan como mucho estas balas
+/// (cargador + reserva) Y ya no tiene ninguna recarga de munición sin
+/// recoger, se le inyecta un lote COMPLETO de
+/// `HAND_LOW_AMMO_EASY + HAND_LOW_AMMO_HARD` pickups.
+const HAND_LOW_AMMO_BULLETS: u32 = 20;
+const HAND_LOW_AMMO_EASY: usize = 2;
+const HAND_LOW_AMMO_HARD: usize = 2;
+
+/// Reabastecimiento de munición por Hand — tramo RESERVAS MEDIAS. Si
+/// al empezar una Hand nueva el jugador tiene como mucho estas balas
+/// pero TODAVÍA queda munición del nivel sin recoger, se le inyecta un
+/// lote COMPLEMENTARIO más pequeño (`HAND_MID_AMMO_EASY +
+/// HAND_MID_AMMO_HARD`). Fuera de estos dos tramos se usa la fórmula
+/// base de presupuesto de siempre.
+const HAND_MID_AMMO_BULLETS: u32 = 30;
+const HAND_MID_AMMO_EASY: usize = 1;
+const HAND_MID_AMMO_HARD: usize = 2;
+
 /// Radio de recolección de un pickup (`AmmoPickup` o `HealthPickup`),
 /// en píxeles de mundo.
 ///
@@ -1399,37 +1418,56 @@ impl GameSession {
         spawn_seed: u64,
         dealer_equivalent: usize,
     ) {
-        let accessible_ammo = self.weapon.ammo()
-            + self.weapon.reserve_ammo()
-            + self
-                .ammo_pickups
-                .iter()
-                .filter(|pickup| pickup.is_active())
-                .count() as u32
-                * AMMO_PICKUP_AMOUNT;
+        let total_bullets = self.weapon.ammo() + self.weapon.reserve_ammo();
 
-        let extra_pickups_needed =
-            hand::extra_ammo_pickups_needed(dealer_equivalent, accessible_ammo);
+        let active_pickups = self
+            .ammo_pickups
+            .iter()
+            .filter(|pickup| pickup.is_active())
+            .count();
 
-        if extra_pickups_needed > 0 {
+        /*
+         * Reabastecimiento de munición por Hand en tres tramos (ajuste
+         * pedido tras el cambio de munición):
+         *
+         *  1. ESCASO (<= HAND_LOW_AMMO_BULLETS balas) y sin ninguna
+         *     recarga de munición ya en el suelo -> lote COMPLETO:
+         *     2 de fácil acceso + 2 de difícil acceso.
+         *  2. RESERVAS MEDIAS (<= HAND_MID_AMMO_BULLETS) pero TODAVÍA
+         *     con munición del nivel sin recoger -> lote
+         *     COMPLEMENTARIO más pequeño: 1 de fácil + 2 de difícil.
+         *  3. Cualquier otro caso -> fórmula base de siempre
+         *     (`hand::extra_ammo_pickups_needed`, sin doblar),
+         *     repartida mitad fácil / mitad difícil.
+         *
+         * La red de emergencia (0 balas + sin recargas + enemigos
+         * vivos DURANTE la Hand -> `ensure_emergency_ammo`, 4 pickups)
+         * es independiente y no se toca.
+         */
+        let (easy_count, hard_count) =
+            if total_bullets <= HAND_LOW_AMMO_BULLETS && active_pickups == 0 {
+                (HAND_LOW_AMMO_EASY, HAND_LOW_AMMO_HARD)
+            } else if total_bullets <= HAND_MID_AMMO_BULLETS && active_pickups > 0 {
+                (HAND_MID_AMMO_EASY, HAND_MID_AMMO_HARD)
+            } else {
+                let accessible_ammo = total_bullets + active_pickups as u32 * AMMO_PICKUP_AMOUNT;
+
+                let needed = hand::extra_ammo_pickups_needed(dealer_equivalent, accessible_ammo);
+
+                (needed.div_ceil(2), needed / 2)
+            };
+
+        if easy_count + hard_count > 0 {
             let pickup_seed = spawn_seed.wrapping_add(1);
 
-            /*
-             * La munición de Hand se REPARTE de forma diversa
-             * (`select_diverse_ammo_cells`): la mitad en celdas
-             * cercanas y fuera de vista inmediata — accesibles con un
-             * rodeo corto y sin mucho riesgo — y la otra mitad en
-             * cualquier celda transitable del mapa, con separación
-             * entre pickups para que no aparezcan amontonados como
-             * antes.
-             */
-            let pickup_cells = hand::select_diverse_ammo_cells(
+            let pickup_cells = hand::select_split_ammo_cells(
                 &self.level,
                 self.player.pos,
                 self.player.a,
                 block_size,
                 occupied,
-                extra_pickups_needed,
+                easy_count,
+                hard_count,
                 pickup_seed,
             );
 
@@ -5423,6 +5461,101 @@ e             #
         };
 
         assert_eq!(positions(&first), positions(&second));
+    }
+
+    // --- Reabastecimiento de munición por Hand en tres tramos. ---
+
+    /// Sesión Horde en sala amplia, con la HAND I ya eliminada: la
+    /// siguiente llamada a `update_hand_state` dispara la intermisión
+    /// previa a la Final Hand (donde se decide el lote de munición).
+    fn horde_ready_for_final_supply() -> GameSession {
+        let mut session = new_horde_session_with_final_hand(2);
+        for index in 0..session.entities().len() {
+            session.damage_entity(index);
+            session.damage_entity(index);
+        }
+        session
+    }
+
+    fn run_one_final_intermission(session: &mut GameSession) {
+        for _ in 0..300 {
+            if let Some(HandOutcome::FinalHandReached) =
+                session.update_hand_state(0.05, BLOCK_SIZE, 52, false, 2)
+            {
+                return;
+            }
+        }
+        panic!("la intermisión debe alcanzar la Final Hand");
+    }
+
+    fn active_ammo_pickup_count(session: &GameSession) -> usize {
+        session
+            .ammo_pickups()
+            .iter()
+            .filter(|pickup| pickup.is_active())
+            .count()
+    }
+
+    #[test]
+    fn scarce_ammo_with_no_pickups_left_injects_the_full_four_pickup_batch() {
+        let mut session = horde_ready_for_final_supply();
+
+        // <= 20 balas y NINGUNA recarga en el suelo.
+        drain_all_ammo(&mut session);
+        session.weapon.add_reserve_ammo(15);
+        assert_eq!(session.weapon_ammo() + session.weapon_reserve_ammo(), 15);
+        assert_eq!(active_ammo_pickup_count(&session), 0);
+
+        run_one_final_intermission(&mut session);
+
+        // Lote completo: 2 fácil acceso + 2 difícil acceso.
+        assert_eq!(active_ammo_pickup_count(&session), 4);
+    }
+
+    #[test]
+    fn mid_ammo_with_pickups_still_on_the_ground_injects_the_three_pickup_complement() {
+        let mut session = horde_ready_for_final_supply();
+
+        // Reservas medias (24 balas, <= 30) y TODAVÍA una recarga sin
+        // recoger en el nivel.
+        let (row, column) = (2usize, 2usize);
+        session
+            .ammo_pickups
+            .push(AmmoPickup::at_cell(row, column, BLOCK_SIZE));
+        assert_eq!(active_ammo_pickup_count(&session), 1);
+        assert_eq!(session.weapon_ammo() + session.weapon_reserve_ammo(), 24);
+
+        run_one_final_intermission(&mut session);
+
+        // 1 original + lote complementario (1 fácil + 2 difícil) = 4.
+        assert_eq!(active_ammo_pickup_count(&session), 1 + 3);
+    }
+
+    #[test]
+    fn well_supplied_player_falls_back_to_the_base_budget_formula() {
+        let mut session = horde_ready_for_final_supply();
+
+        // Munición al tope (36) y sin recargas en el suelo: ni tramo
+        // escaso ni tramo medio -> fórmula base.
+        session.weapon.add_reserve_ammo(30); // 18 -> tope 30, total 36
+        assert_eq!(session.weapon_ammo() + session.weapon_reserve_ammo(), 36);
+        assert_eq!(active_ammo_pickup_count(&session), 0);
+
+        run_one_final_intermission(&mut session);
+
+        // Base: extra_ammo_pickups_needed(15, 36) = ceil((45-36)/6) = 2,
+        // repartido 1 fácil + 1 difícil. Nunca el lote fijo de 4.
+        let n = active_ammo_pickup_count(&session);
+        assert_eq!(n, 2, "la fórmula base, no un lote de tramo");
+    }
+
+    #[test]
+    fn the_emergency_ammo_batch_is_still_four_and_unconditional() {
+        // El contrato del anti-softlock NO cambia: 0 balas + sin
+        // recargas + enemigos vivos DURANTE la Hand -> 4 pickups.
+        let mut session = new_test_session_for_emergency_ammo();
+        drain_all_ammo(&mut session);
+        assert_eq!(session.ensure_emergency_ammo(BLOCK_SIZE), 4);
     }
 
     // --- Bloque 2, Commit 14: pickup de The Royal Flush. ---
