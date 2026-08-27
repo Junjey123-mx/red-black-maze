@@ -1631,11 +1631,16 @@ impl GameSession {
         self.king_attacked_this_frame = false;
 
         /*
-         * Bloque 4, Commit 35: The King no ataca mientras invoca
-         * (`Summoning`). Los Dealers ya presentes atacan igual que
-         * siempre.
+         * The King no ataca mientras invoca (`Summoning`, Commit 35)
+         * ni durante la huida final (`Fleeing`, Commit 47): en
+         * `Fleeing` deja de atacar y de perseguir al jugador — sus 10
+         * Dealers invocados son toda su ofensiva. Los Dealers atacan
+         * igual que siempre en ambas fases.
          */
-        let king_attacks_suppressed = self.king_encounter.phase == KingEncounterPhase::Summoning;
+        let king_attacks_suppressed = matches!(
+            self.king_encounter.phase,
+            KingEncounterPhase::Summoning | KingEncounterPhase::Fleeing
+        );
 
         for entity in &mut self.entities {
             if entity.is_dead() {
@@ -6644,6 +6649,61 @@ e             #
         assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
         let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
         assert_eq!(third, first);
+    }
+
+    // --- Bloque 4, Commit 47: sin ataque del King durante la huida. ---
+
+    #[test]
+    fn the_fleeing_king_does_not_attack_but_its_dealers_do() {
+        let (mut run, king) = king_fleeing_big();
+
+        // Jugador pegado al King: aun así el King no golpea.
+        run.player.pos = Vector2::new(
+            run.entities()[king].position().x + 10.0,
+            run.entities()[king].position().y,
+        );
+        run.update_entities(0.016, BLOCK_SIZE);
+
+        let health_before = run.player_health();
+        for _ in 0..300 {
+            run.process_dealer_attacks(0.1, BLOCK_SIZE);
+            assert!(!run.king_attacked_this_frame(), "el King no ataca huyendo");
+            run.player.pos = Vector2::new(
+                run.entities()[king].position().x + 10.0,
+                run.entities()[king].position().y,
+            );
+            run.update_entities(0.016, BLOCK_SIZE);
+        }
+        // Si algo dañó al jugador fue un Dealer (10), nunca el 20 del
+        // King.
+        let lost = health_before - run.player_health();
+        assert!(lost % 10 == 0);
+    }
+
+    #[test]
+    fn the_first_three_phases_keep_the_king_attack() {
+        // En cualquier fase Fighting previa a 200, el King golpea por
+        // 20 con normalidad.
+        let (mut run, king) = king_after_first_cohort();
+        run.player.pos = Vector2::new(
+            run.entities()[king].position().x + 18.0,
+            run.entities()[king].position().y,
+        );
+        // El cooldown/estado `Hit` pueden venir del último disparo;
+        // unos cuantos ticks (que limpian `Hit` -> `Alert`) y golpea.
+        let mut hit = false;
+        for _ in 0..12 {
+            run.update_entities(0.2, BLOCK_SIZE);
+            run.player.pos = Vector2::new(
+                run.entities()[king].position().x + 18.0,
+                run.entities()[king].position().y,
+            );
+            if run.process_dealer_attacks(0.5, BLOCK_SIZE) >= 20 && run.king_attacked_this_frame() {
+                hit = true;
+                break;
+            }
+        }
+        assert!(hit, "el King ataca en las fases Fighting");
     }
 
     // --- Bloque 4, Commit 46: pathfinding de huida. ---
