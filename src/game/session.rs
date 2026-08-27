@@ -871,6 +871,20 @@ impl GameSession {
          * sin volver a cambiar.
          */
         if resolved_threshold == Some(0) {
+            /*
+             * Bloque 5, Commit 60: `final_battle.mp3` NO puede
+             * arrancar antes de este punto. La invariante: al resolver
+             * el umbral 800 el estado musical siempre venía de
+             * `FirstSummonSilence` (fijado en `damage_king` al empezar
+             * esta misma invocación), nunca de `LevelMusic` ni de un
+             * `FinalBattle` prematuro.
+             */
+            debug_assert_eq!(
+                self.king_encounter.music,
+                BossMusicState::FirstSummonSilence,
+                "la primera invocación debe transcurrir en silencio antes de final_battle"
+            );
+
             self.king_encounter.music = BossMusicState::FinalBattle;
         }
     }
@@ -7622,6 +7636,49 @@ e             #
         }
         assert!(!run.king_alive());
         assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    // --- Bloque 5, Commit 60: aislamiento de la primera invocación. ---
+
+    #[test]
+    fn the_first_summon_window_stays_silent_for_its_full_duration() {
+        let (mut run, _king) = king_at_summon(0);
+
+        // Muestrea toda la ventana en pasos pequeños: `FirstSummonSilence`
+        // en cada uno hasta que la fase deja de ser `Summoning`.
+        let mut elapsed = 0.0;
+        while run.king_is_summoning() {
+            assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+            assert!(elapsed <= KING_SUMMON_DURATION + 1e-3);
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            elapsed += 0.1;
+        }
+
+        // Cubrió al menos los 2.0 s congelados y solo entonces cambia.
+        assert!(elapsed >= KING_SUMMON_DURATION - 1e-3);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn a_single_huge_frame_never_leaves_the_first_summon_without_a_silence_state() {
+        // Aunque un cuadro larguísimo agote el timer de golpe, el
+        // estado nunca "salta" por encima de FirstSummonSilence: ese
+        // estado ya se fijó en el disparo que rompió 800.
+        let (mut run, _king) = king_at_summon(0);
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+
+        run.update_king_encounter(60.0, BLOCK_SIZE);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn the_summon_cue_is_available_during_the_silent_first_window() {
+        let (mut run, _king) = king_at_summon(0);
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+        assert!(
+            run.take_king_summon_cue(),
+            "el cue de invocación se oye en el silencio"
+        );
     }
 
     #[test]
