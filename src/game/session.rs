@@ -349,7 +349,7 @@ impl GameSession {
 
         let horde = HordeManager::new(entities.len());
 
-        Self {
+        let mut session = Self {
             level,
             player,
             view_mode: ViewMode::Map2D,
@@ -365,7 +365,25 @@ impl GameSession {
             royal_flush_pickup: None,
             royal_flush_spawned: false,
             mode,
+        };
+
+        /*
+         * Bloque 2, Commit 15: para "The Dealer's True Maze" la
+         * penúltima Hand es la propia HAND I (`final_hand_number ==
+         * 2`), que nunca pasa por `update_hand_state`. En ese nivel
+         * The Royal Flush debe estar disponible desde el inicio de la
+         * run, dando tiempo real a encontrarla antes de la Final Hand.
+         * Para los tres niveles estáticos (`final_hand_number >= 4`)
+         * esta condición nunca se cumple y la mejora aparece más tarde,
+         * en la penúltima Hand, vía `update_hand_state`.
+         */
+        if mode == GameMode::Horde && horde_hand_config.final_hand_number == 2 {
+            let occupied = session.occupied_world_cells(block_size);
+
+            session.place_royal_flush_pickup(block_size, &occupied);
         }
+
+        session
     }
 
     /// Modo de juego (Portal u Horde) con el que se construyó esta
@@ -699,7 +717,53 @@ impl GameSession {
 
         self.spawn_intermission_supplies(block_size, &mut occupied, spawn_seed, spawn_cells.len());
 
+        /*
+         * Bloque 2, Commit 15: The Royal Flush aparece UNA ronda antes
+         * de la Final Hand reservada, al comenzar la penúltima Hand
+         * (Crimson/Black Club HAND 3, House of Cards HAND 4). Para
+         * "The Dealer's True Maze" la penúltima Hand es la propia
+         * HAND I, que no pasa por aquí — ese caso lo cubre
+         * `GameSession::new`. `spawn_royal_flush_pickup` ya es
+         * idempotente y Horde-only, así que este punto solo decide la
+         * celda y el momento.
+         */
+        if final_hand_number >= 2 && self.hand_number() == final_hand_number - 1 {
+            self.place_royal_flush_pickup(block_size, &occupied);
+        }
+
         outcome
+    }
+
+    /// Coloca The Royal Flush en una celda válida del mapa (misma
+    /// selección determinista que el resto de spawns de intermisión,
+    /// `hand::select_spawn_cells` con `count = 1` y semilla propia),
+    /// evitando cualquier celda ya ocupada.
+    ///
+    /// No-op si `select_spawn_cells` no devuelve ninguna celda (mapa
+    /// degenerado) o si `spawn_royal_flush_pickup` ya la rechaza
+    /// (mejora ya colocada, o sesión no-Horde). Nunca coloca más de
+    /// una: la garantía vive en `spawn_royal_flush_pickup`.
+    fn place_royal_flush_pickup(&mut self, block_size: usize, occupied: &HashSet<(usize, usize)>) {
+        if self.royal_flush_spawned {
+            return;
+        }
+
+        let seed = hand::spawn_seed_for_royal_flush(self.hand_seed);
+
+        let cells = hand::select_spawn_cells(
+            &self.level,
+            self.player.pos,
+            self.player.a,
+            block_size,
+            occupied,
+            1,
+            false,
+            seed,
+        );
+
+        if let Some(&(row, column)) = cells.first() {
+            self.spawn_royal_flush_pickup(row, column, block_size);
+        }
     }
 
     /// Inyecta el paquete de supplies de una intermisión de Horde:
@@ -1112,7 +1176,6 @@ impl GameSession {
     /// El Commit 15 decide DÓNDE y CUÁNDO llamarlo (intermisión previa
     /// a la penúltima Hand); este método solo garantiza la invariante
     /// de "como mucho una aparición".
-    #[allow(dead_code)]
     pub(crate) fn spawn_royal_flush_pickup(
         &mut self,
         row: usize,
@@ -1130,7 +1193,9 @@ impl GameSession {
 
     /// `true` si The Royal Flush ya se ha colocado alguna vez en esta
     /// run (recogida o no) — la condición que impide una segunda
-    /// aparición.
+    /// aparición. Introspección para pruebas del Bloque 2; el flujo de
+    /// producción lee el campo directamente dentro de
+    /// `place_royal_flush_pickup`.
     #[allow(dead_code)]
     pub(crate) fn royal_flush_spawned(&self) -> bool {
         self.royal_flush_spawned
@@ -4444,14 +4509,21 @@ e             #
     // --- Bloque 2, Commit 14: pickup de The Royal Flush. ---
 
     /// Sesión Horde en el mapa abierto de una celda-Dealer, con una
-    /// Final Hand reservada (`final_hand_number = 2`).
+    /// Final Hand reservada tardía (`final_hand_number = 4`, patrón de
+    /// Crimson Entrance): The Royal Flush NO aparece al crear la
+    /// sesión, solo más tarde en la penúltima Hand.
     fn new_horde_session() -> GameSession {
+        new_horde_session_with_final_hand(4)
+    }
+
+    fn new_horde_session_with_final_hand(final_hand_number: usize) -> GameSession {
         let map = "\
-#######
-#p    #
-#  e  #
-#    g#
-#######
+###########
+#p        #
+#    e    #
+#         #
+#        g#
+###########
 ";
 
         let file = TempLevelFile::write(map);
@@ -4461,7 +4533,7 @@ e             #
         let config = HordeHandConfig {
             first_hand_min: 1,
             first_hand_max: 1,
-            final_hand_number: 2,
+            final_hand_number,
         };
 
         GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false)
@@ -4564,6 +4636,115 @@ e             #
 
         assert!(!session.collect_nearby_royal_flush_pickup());
         assert_eq!(session.weapon_tier(), WeaponTier::Standard);
+    }
+
+    // --- Bloque 2, Commit 15: aparición en la penúltima Hand. ---
+
+    /// Avanza `session` a través de tantas intermisiones como haga
+    /// falta hasta alcanzar `HandOutcome::FinalHandReached`, matando
+    /// cada Hand nada más comenzar. Devuelve `false` si nunca llega.
+    fn drive_horde_to_final_hand(session: &mut GameSession, final_hand_number: usize) -> bool {
+        for _ in 0..4000 {
+            for index in 0..session.entities().len() {
+                session.damage_entity(index);
+                session.damage_entity(index);
+            }
+
+            if let Some(HandOutcome::FinalHandReached) =
+                session.update_hand_state(0.1, BLOCK_SIZE, 52, false, final_hand_number)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    #[test]
+    fn true_maze_style_config_exposes_the_royal_flush_from_the_start_of_the_run() {
+        // `final_hand_number == 2`: la penúltima Hand ES la HAND I.
+        let session = new_horde_session_with_final_hand(2);
+
+        let pickup = session
+            .royal_flush_pickup()
+            .expect("The Royal Flush debe existir desde el inicio en este nivel");
+        assert!(pickup.is_active());
+        assert!(session.royal_flush_spawned());
+    }
+
+    #[test]
+    fn static_level_config_does_not_expose_the_royal_flush_until_the_penultimate_hand() {
+        let mut session = new_horde_session_with_final_hand(4);
+
+        // HAND I / HAND II: todavía nada.
+        assert!(session.royal_flush_pickup().is_none());
+
+        for index in 0..session.entities().len() {
+            session.damage_entity(index);
+            session.damage_entity(index);
+        }
+        // Recorre la intermisión hasta HAND II.
+        for _ in 0..300 {
+            if session.hand_number() == 2 {
+                break;
+            }
+            session.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+        assert_eq!(session.hand_number(), 2);
+        assert!(
+            session.royal_flush_pickup().is_none(),
+            "The Royal Flush no debe aparecer antes de la penúltima Hand"
+        );
+
+        // Sigue hasta HAND III (la penúltima, con final_hand_number 4).
+        for _ in 0..300 {
+            if session.hand_number() == 3 {
+                break;
+            }
+            for index in 0..session.entities().len() {
+                session.damage_entity(index);
+                session.damage_entity(index);
+            }
+            session.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+
+        assert_eq!(session.hand_number(), 3);
+        let pickup = session
+            .royal_flush_pickup()
+            .expect("The Royal Flush debe aparecer al comenzar la penúltima Hand");
+        assert!(pickup.is_active());
+    }
+
+    #[test]
+    fn the_royal_flush_spawns_exactly_once_and_not_again_on_the_final_hand() {
+        let mut session = new_horde_session_with_final_hand(4);
+
+        assert!(drive_horde_to_final_hand(&mut session, 4));
+
+        // Ya en la Final Hand: la mejora existe (colocada en la
+        // penúltima) y NO se ha colocado una segunda.
+        assert!(session.royal_flush_spawned());
+        let position = session
+            .royal_flush_pickup()
+            .expect("colocada en la penúltima Hand")
+            .position();
+
+        // Un intento explícito extra nunca coloca otra.
+        session.spawn_royal_flush_pickup(1, 1, BLOCK_SIZE);
+        assert_eq!(session.royal_flush_pickup().unwrap().position(), position);
+    }
+
+    #[test]
+    fn the_royal_flush_position_is_deterministic_for_the_same_hand_seed() {
+        let first = new_horde_session_with_final_hand(2);
+        let second = new_horde_session_with_final_hand(2);
+
+        let pos = |s: &GameSession| {
+            let p = s.royal_flush_pickup().unwrap().position();
+            (p.x, p.y)
+        };
+
+        assert_eq!(pos(&first), pos(&second));
     }
 
     #[test]

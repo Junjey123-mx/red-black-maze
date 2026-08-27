@@ -111,6 +111,7 @@ const SEED_MULTIPLIER_B: u64 = 0xD1B54A32D192ED03;
 const EMERGENCY_AMMO_SEED_DISCRIMINATOR: u64 = 0xE33A_9001;
 const HEALTH_TARGET_SEED_DISCRIMINATOR: u64 = 0x4EA1_7002;
 const HEALTH_SPAWN_SEED_DISCRIMINATOR: u64 = 0x4EA1_7003;
+const ROYAL_FLUSH_SEED_DISCRIMINATOR: u64 = 0x2_0FA7_0005;
 
 /// Deriva una semilla determinista a partir de `session_seed`, un
 /// `discriminator` fijo por sistema, y un `index` (número de Hand o
@@ -682,6 +683,16 @@ pub(crate) fn health_pickup_target_for_hand(session_seed: u64, hand_number: usiz
     let mut rng = Rng::new(seed);
 
     MIN_HAND_HEALTH_PICKUPS + rng.gen_range(MAX_HAND_HEALTH_PICKUPS - MIN_HAND_HEALTH_PICKUPS + 1)
+}
+
+/// Semilla determinista de la posición de The Royal Flush (Bloque 2,
+/// Commit 15). Una sola aparición por run, así que no necesita un
+/// `index`: siempre la misma celda para la misma `session_seed`. Su
+/// discriminador propio garantiza que nunca coincide por casualidad
+/// con el layout de Dealers, munición de emergencia ni Health Pickups
+/// de ninguna Hand.
+pub(crate) fn spawn_seed_for_royal_flush(session_seed: u64) -> u64 {
+    derive_resource_seed(session_seed, ROYAL_FLUSH_SEED_DISCRIMINATOR, 0)
 }
 
 /// Semilla determinista de posiciones para los Health Pickups nuevos
@@ -1388,5 +1399,29 @@ mod tests {
 
         assert_ne!(dealer_seed, health_seed);
         assert_ne!(emergency_seed, health_seed);
+    }
+
+    // --- Bloque 2, Commit 15: semilla de The Royal Flush. ---
+
+    #[test]
+    fn royal_flush_seed_is_deterministic_per_session_seed() {
+        assert_eq!(
+            spawn_seed_for_royal_flush(777),
+            spawn_seed_for_royal_flush(777)
+        );
+        assert_ne!(
+            spawn_seed_for_royal_flush(777),
+            spawn_seed_for_royal_flush(778)
+        );
+    }
+
+    #[test]
+    fn royal_flush_seed_never_collides_with_the_other_resource_seeds() {
+        let royal = spawn_seed_for_royal_flush(42);
+
+        assert_ne!(royal, spawn_seed_for_hand(42, 1));
+        assert_ne!(royal, spawn_seed_for_hand(42, 2));
+        assert_ne!(royal, spawn_seed_for_emergency_ammo(42, 0));
+        assert_ne!(royal, spawn_seed_for_health_replenish(42, 2));
     }
 }
