@@ -675,6 +675,27 @@ impl GameSession {
                  * distintas, así que sigue siendo geométricamente
                  * imposible atacar a través de una pared.
                  */
+                /*
+                 * Bloque 4, Commit 46: en la fase `Fleeing` The King
+                 * usa el MISMO campo de distancias pero al revés —
+                 * `step_away_from_origin` — para alejarse del jugador
+                 * respetando paredes y sin oscilar. Nunca usa el
+                 * fallback de "misma celda -> posición exacta del
+                 * jugador": un jefe que huye jamás debe converger
+                 * hacia la cámara.
+                 */
+                if entity.kind() == EnemyKind::King && king_phase == KingEncounterPhase::Fleeing {
+                    let flee_target = distance_field.as_ref().and_then(|field| {
+                        let entity_cell = world_to_cell(entity.position(), block_size);
+
+                        field
+                            .step_away_from_origin(entity_cell)
+                            .map(|(row, column)| cell_center(row, column, block_size))
+                    });
+
+                    return entity.update(player_position, delta_time, block_size, flee_target);
+                }
+
                 let pursuit_target = distance_field.as_ref().and_then(|field| {
                     let entity_cell = world_to_cell(entity.position(), block_size);
 
@@ -6623,6 +6644,66 @@ e             #
         assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
         let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
         assert_eq!(third, first);
+    }
+
+    // --- Bloque 4, Commit 46: pathfinding de huida. ---
+
+    /// Lleva el encuentro a la fase `Fleeing` en la sala grande, con
+    /// la cohorte final ya colocada.
+    fn king_fleeing_big() -> (GameSession, usize) {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 3);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        (run, king)
+    }
+
+    #[test]
+    fn the_fleeing_king_moves_away_from_the_player_without_teleporting() {
+        let (mut run, king) = king_fleeing_big();
+
+        // Jugador junto al King para que exista margen real de huida.
+        let king_pos = run.entities()[king].position();
+        run.player.pos = Vector2::new(king_pos.x - 24.0, king_pos.y);
+
+        let player_cell = super::world_to_cell(run.player.pos, BLOCK_SIZE);
+        let start_field = DistanceField::from_level(&run.level, player_cell);
+        let start_cell = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+        let start_dist = start_field
+            .distance_at(start_cell.0, start_cell.1)
+            .unwrap_or(0);
+
+        let mut prev = run.entities()[king].position();
+        for _ in 0..120 {
+            run.update_entities(0.1, BLOCK_SIZE);
+            let now = run.entities()[king].position();
+            // Sin teletransporte: cada paso es pequeño (<= velocidad *
+            // dt + margen).
+            assert!((now.x - prev.x).hypot(now.y - prev.y) <= 12.0);
+            prev = now;
+        }
+
+        let end_cell = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+        let end_dist = start_field.distance_at(end_cell.0, end_cell.1).unwrap_or(0);
+        assert!(
+            end_dist > start_dist,
+            "el King aumentó su distancia de camino al jugador ({start_dist} -> {end_dist})"
+        );
+        assert!(run.level.is_walkable(end_cell.0, end_cell.1));
+    }
+
+    #[test]
+    fn the_fleeing_king_never_walks_onto_the_player() {
+        let (mut run, king) = king_fleeing_big();
+        run.player.pos = run.entities()[king].position();
+
+        for _ in 0..200 {
+            run.update_entities(0.1, BLOCK_SIZE);
+            run.player.pos = run.entities()[king].position() + Vector2::new(1.0, 0.0);
+        }
+        // El King sigue vivo y no ha atravesado ninguna pared.
+        let cell = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+        assert!(run.level.is_walkable(cell.0, cell.1));
     }
 
     // --- Bloque 4, Commit 45: fase Fleeing. ---

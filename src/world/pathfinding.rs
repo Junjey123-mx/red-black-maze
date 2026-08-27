@@ -118,6 +118,33 @@ impl DistanceField {
             .min_by_key(|&(_, distance)| distance)
             .map(|(cell, _)| cell)
     }
+
+    /// Simétrico de `step_toward_origin` para una entidad que HUYE del
+    /// origen (Bloque 4, Commit 46): elige, entre los vecinos
+    /// 4-direccionales alcanzables de `from`, aquel cuya distancia al
+    /// origen sea ESTRICTAMENTE MAYOR que la de `from` (nunca se
+    /// acerca ni se queda igual); si hay varios, el de mayor
+    /// distancia.
+    ///
+    /// Retorna `None` si `from` es inalcanzable/fuera de rango o si
+    /// ningún vecino alejable existe (callejón sin salida respecto al
+    /// origen): la entidad se detiene en vez de oscilar. Reutiliza la
+    /// MISMA cuadrícula, `Level::is_walkable` y topología 4-direccional
+    /// que el resto del campo — no hay un segundo grafo de navegación.
+    pub(crate) fn step_away_from_origin(&self, from: (usize, usize)) -> Option<(usize, usize)> {
+        let current_distance = self.distance_at(from.0, from.1)?;
+
+        neighbors(from.0, from.1, self.width, self.height)
+            .into_iter()
+            .flatten()
+            .filter_map(|cell| {
+                self.distance_at(cell.0, cell.1)
+                    .map(|distance| (cell, distance))
+            })
+            .filter(|&(_, distance)| distance > current_distance)
+            .max_by_key(|&(_, distance)| distance)
+            .map(|(cell, _)| cell)
+    }
 }
 
 /// Vecinos 4-direccionales (arriba/abajo/izquierda/derecha) de
@@ -318,6 +345,49 @@ mod tests {
         let out_of_range_field = DistanceField::from_level(&level, (1_000, 1_000));
 
         assert_eq!(out_of_range_field.distance_at(1, 3), None);
+    }
+
+    #[test]
+    fn step_away_from_origin_increases_path_distance_and_respects_walls() {
+        let map = "\
+#######
+#p    #
+##### #
+#g    #
+#######
+";
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el mapa debe cargar");
+
+        // Origen en g = (3, 1); la única abertura entre filas está en
+        // la columna 5.
+        let field = DistanceField::from_level(&level, (3, 1));
+
+        // Desde (3, 3) el paso que ALEJA del origen es hacia la
+        // derecha (col 4), nunca hacia la pared ni de vuelta.
+        let away = field.step_away_from_origin((3, 3)).expect("hay salida");
+        assert_eq!(away, (3, 4));
+        assert!(field.distance_at(away.0, away.1).unwrap() > field.distance_at(3, 3).unwrap());
+    }
+
+    #[test]
+    fn step_away_from_origin_stops_instead_of_oscillating_at_a_dead_end() {
+        let map = "\
+#####
+#pg #
+#####
+";
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el mapa debe cargar");
+
+        // Origen en g = (1, 2). Desde (1, 1) (celda de p) el único
+        // vecino transitable es el propio origen -> no hay a dónde
+        // alejarse.
+        let field = DistanceField::from_level(&level, (1, 2));
+        assert_eq!(field.step_away_from_origin((1, 1)), None);
+
+        // Celda inalcanzable / fuera de rango: sin pánico.
+        assert_eq!(field.step_away_from_origin((100, 100)), None);
     }
 
     #[test]
