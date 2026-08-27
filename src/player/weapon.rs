@@ -10,6 +10,31 @@ pub(crate) enum WeaponState {
     Reload,
 }
 
+/// Nivel del arma equipada (Bloque 2, Commit 12).
+///
+/// NO es una segunda arma ni un sistema de inventario/slots: es la
+/// ÚNICA distinción autoritativa entre el arma Standard existente y
+/// la futura mejora The Royal Flush. Sigue habiendo UNA sola arma
+/// equipada, UN solo cargador y UNA sola reserva (`Weapon`); el tier
+/// activo solo selecciona, más adelante, qué sprites se renderizan,
+/// cuánto daño hace un disparo y qué SFX de disparo suena.
+///
+/// `Standard` es el valor por defecto de cualquier `Weapon::new()`,
+/// así que toda sesión (y todo Retry/cambio de nivel/menú, que
+/// reconstruyen la sesión entera) arranca sin la mejora.
+/*
+ * `RoyalFlush` y los consumidores del tier (daño, sprites, SFX) se
+ * conectan en los commits 13-18 de este mismo bloque; hasta entonces
+ * la variante y los accesores existen pero nadie los usa todavía.
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub(crate) enum WeaponTier {
+    #[default]
+    Standard,
+    RoyalFlush,
+}
+
 /// Duración del estado visual de disparo.
 const FIRE_DURATION: f32 = 0.05;
 
@@ -47,6 +72,7 @@ pub(crate) struct Weapon {
     cooldown_remaining: f32,
     magazine: u32,
     reserve: u32,
+    tier: WeaponTier,
 }
 
 impl Weapon {
@@ -60,12 +86,37 @@ impl Weapon {
             cooldown_remaining: 0.0,
             magazine: MAGAZINE_CAPACITY,
             reserve: INITIAL_RESERVE_AMMO,
+            tier: WeaponTier::Standard,
         }
     }
 
     /// Estado visual actualmente activo.
     pub(crate) fn state(&self) -> WeaponState {
         self.state
+    }
+
+    /// Nivel del arma actualmente equipada (Bloque 2, Commit 12).
+    ///
+    /// Siempre `Standard` hasta que The Royal Flush se recoja dentro
+    /// de la run actual. Lo LEEN otros módulos (renderer, hitscan,
+    /// audio) para elegir sprites/daño/SFX; ninguno de ellos altera
+    /// el estado interno del arma a través de este valor.
+    #[allow(dead_code)]
+    pub(crate) fn tier(&self) -> WeaponTier {
+        self.tier
+    }
+
+    /// Asciende el arma equipada a `tier`.
+    ///
+    /// Único punto de escritura del nivel del arma. La recogida de
+    /// The Royal Flush (Bloque 2, Commit 14) lo llama con
+    /// `WeaponTier::RoyalFlush`; NO crea una segunda arma, no toca el
+    /// cargador/reserva/estado ni el enfriamiento — solo cambia qué
+    /// tier está activo para la MISMA arma. Idempotente: volver a
+    /// fijar el tier ya activo no tiene efecto observable.
+    #[allow(dead_code)]
+    pub(crate) fn set_tier(&mut self, tier: WeaponTier) {
+        self.tier = tier;
     }
 
     /// Tiempo de enfriamiento restante antes de aceptar otro
@@ -359,6 +410,59 @@ mod tests {
 
         assert_eq!(weapon.state(), WeaponState::Idle);
         assert_eq!(weapon.ammo(), 0);
+    }
+
+    // --- Bloque 2, Commit 12: WeaponTier. ---
+
+    #[test]
+    fn new_weapon_starts_on_the_standard_tier() {
+        let weapon = Weapon::new();
+
+        assert_eq!(weapon.tier(), WeaponTier::Standard);
+    }
+
+    #[test]
+    fn weapon_tier_default_is_standard() {
+        assert_eq!(WeaponTier::default(), WeaponTier::Standard);
+    }
+
+    #[test]
+    fn set_tier_upgrades_the_single_equipped_weapon_without_touching_ammo_or_state() {
+        let mut weapon = Weapon::new();
+
+        assert!(weapon.try_fire());
+        let magazine_before = weapon.ammo();
+        let reserve_before = weapon.reserve_ammo();
+        let state_before = weapon.state();
+
+        weapon.set_tier(WeaponTier::RoyalFlush);
+
+        assert_eq!(weapon.tier(), WeaponTier::RoyalFlush);
+        assert_eq!(weapon.ammo(), magazine_before);
+        assert_eq!(weapon.reserve_ammo(), reserve_before);
+        assert_eq!(weapon.state(), state_before);
+    }
+
+    #[test]
+    fn setting_the_same_tier_twice_is_idempotent() {
+        let mut weapon = Weapon::new();
+
+        weapon.set_tier(WeaponTier::RoyalFlush);
+        weapon.set_tier(WeaponTier::RoyalFlush);
+
+        assert_eq!(weapon.tier(), WeaponTier::RoyalFlush);
+    }
+
+    #[test]
+    fn a_fresh_weapon_never_inherits_a_previous_royal_flush_tier() {
+        let mut upgraded = Weapon::new();
+        upgraded.set_tier(WeaponTier::RoyalFlush);
+
+        // Retry/cambio de nivel/menú reconstruyen la sesión entera y
+        // con ella el arma: `Weapon::new` siempre vuelve a Standard.
+        let rebuilt = Weapon::new();
+
+        assert_eq!(rebuilt.tier(), WeaponTier::Standard);
     }
 
     #[test]
