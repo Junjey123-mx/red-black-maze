@@ -187,6 +187,14 @@ pub(crate) struct GameSession {
     /// sin ningún reset explícito.
     royal_flush_spawned: bool,
 
+    /// `true` en cuanto The King se ha colocado en la Final Hand de
+    /// esta run (Bloque 3, Commit 24). Impide un segundo spawn si la
+    /// intermisión vuelve a evaluar `FinalHandReached`, y es una de
+    /// las dos condiciones (junto con "ningún King vivo") de
+    /// `horde_completed`. Una run nueva reconstruye la sesión entera,
+    /// así que arranca en `false` sin reset explícito.
+    king_spawned: bool,
+
     /// Sistema de "Dealer Hands": HAND I/II/III..., cadáveres aparte
     /// (esos viven en `Entity`/`entities`, ver `update_entities`).
     /// Pertenece a la sesión — nunca a `AudioManager`/rendering — y
@@ -369,6 +377,7 @@ impl GameSession {
             hit_flash: HitFlashState::new(),
             royal_flush_pickup: None,
             royal_flush_spawned: false,
+            king_spawned: false,
             mode,
         };
 
@@ -565,6 +574,48 @@ impl GameSession {
         self.horde.hand_number()
     }
 
+    /// `true` si The King ya se colocó en la Final Hand de esta run
+    /// (vivo o cadáver). Bloque 3, Commit 24. Introspección para las
+    /// pruebas del bloque y el reset del Commit 27.
+    #[allow(dead_code)]
+    pub(crate) fn king_spawned(&self) -> bool {
+        self.king_spawned
+    }
+
+    /// `true` mientras haya un King VIVO en el mundo (nunca cuenta un
+    /// cadáver). Fuente del combate en curso: la barra de vida del
+    /// jefe (Commit 25) y `horde_completed` lo consultan.
+    pub(crate) fn king_alive(&self) -> bool {
+        self.entities
+            .iter()
+            .any(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
+    }
+
+    /// Puntos de vida actuales de The King, si hay uno en el mundo
+    /// (vivo o recién muerto). `None` mientras no ha aparecido o ya
+    /// despawneó su cadáver. Bloque 3, Commit 25 (barra de vida).
+    #[allow(dead_code)]
+    pub(crate) fn king_health(&self) -> Option<i32> {
+        self.entities
+            .iter()
+            .find(|entity| entity.kind() == EnemyKind::King)
+            .map(|king| king.health())
+    }
+
+    /// Condición de victoria de Horde Mode (Bloque 3, Commit 24 —
+    /// reemplaza la resolución temporal del Bloque 1).
+    ///
+    /// SOLO es `true` cuando: el modo es Horde, The King se llegó a
+    /// spawnear en la Final Hand, y ya NO queda ningún King vivo — es
+    /// decir, el jefe fue realmente derrotado. Alcanzar la Final Hand
+    /// con el King vivo NO cuenta; entrar a la Final Hand tampoco. La
+    /// Final Hand no spawnea Dealers normales, así que "no King vivo"
+    /// tras `king_spawned` equivale a "no queda ningún enemigo y no
+    /// queda ninguna Hand".
+    pub(crate) fn horde_completed(&self) -> bool {
+        self.mode == GameMode::Horde && self.king_spawned && !self.king_alive()
+    }
+
     /// Mensaje HUD del sistema de Hands para este cuadro, si hay
     /// alguno. Dominio puro — `rendering::hud` decide cómo dibujarlo.
     pub(crate) fn hand_hud_message(&self) -> HandHudMessage {
@@ -663,27 +714,73 @@ impl GameSession {
 
             Some(HandOutcome::FinalHandReached) => {
                 /*
-                 * Bloque 2, Commit 11: la Final Hand reservada no
-                 * spawnea Dealers todavía (The King llega en el
-                 * Bloque 3), pero su intermisión SÍ debe ofrecer una
-                 * oportunidad de recuperación — antes de este commit
-                 * el jugador llegaba a la ronda final sin ningún
-                 * supply nuevo. Se reutiliza el MISMO helper y la
-                 * MISMA colocación que las Hands normales; solo
-                 * cambia el "dealer-equivalente" que dimensiona la
-                 * munición.
+                 * Bloque 3, Commit 24: la Final Hand reservada ES el
+                 * combate contra The King. Todo esto ocurre EXACTAMENTE
+                 * una vez por run — `king_spawned` lo garantiza aunque
+                 * `HordeManager::tick` vuelva a reportar
+                 * `FinalHandReached` en un cuadro posterior (p. ej.
+                 * justo después de que el King muera, antes de que
+                 * `App` resuelva Victory).
                  */
+                if self.king_spawned {
+                    return outcome;
+                }
+
                 let mut occupied = self.occupied_world_cells(block_size);
 
-                let spawn_seed =
+                let supply_seed =
                     hand::spawn_seed_for_hand(self.hand_seed, self.horde.hand_number());
 
+                /*
+                 * Bloque 2, Commit 11: supplies de recuperación antes
+                 * del jefe — misma fórmula y colocación que las Hands
+                 * normales, dimensionadas con
+                 * `FINAL_HAND_SUPPLY_DEALER_EQUIVALENT`.
+                 */
                 self.spawn_intermission_supplies(
                     block_size,
                     &mut occupied,
-                    spawn_seed,
+                    supply_seed,
                     FINAL_HAND_SUPPLY_DEALER_EQUIVALENT,
                 );
+
+                /*
+                 * The King: UN solo Dealer-jefe, ningún Dealer normal
+                 * junto a él en esta primera versión. Se coloca con la
+                 * MISMA selección de celda que cualquier spawn de Hand
+                 * (`hand::select_spawn_cells`, distancia navegable
+                 * segura respecto al jugador), a través del MISMO
+                 * `self.entities` — es una entidad más del sistema.
+                 */
+                let king_seed = hand::spawn_seed_for_king(self.hand_seed);
+
+                let king_cells = hand::select_spawn_cells(
+                    &self.level,
+                    self.player.pos,
+                    self.player.a,
+                    block_size,
+                    &occupied,
+                    1,
+                    false,
+                    king_seed,
+                );
+
+                if let Some(&(row, column)) = king_cells.first() {
+                    self.entities
+                        .push(Entity::king_at_cell(row, column, block_size));
+                } else {
+                    // Mapa degenerado sin ninguna celda válida: coloca
+                    // al King en la celda del jugador como último
+                    // recurso (nunca debería ocurrir en los mapas
+                    // reales del proyecto).
+                    let (row, column) = world_to_cell(self.player.pos, block_size);
+                    self.entities
+                        .push(Entity::king_at_cell(row, column, block_size));
+                }
+
+                self.king_spawned = true;
+
+                eprintln!("Dealer Hands — FINAL HAND begins: THE KING has entered the maze.");
 
                 return outcome;
             }
@@ -4478,10 +4575,20 @@ e             #
 
         assert_eq!(outcome_at_transition, Some(HandOutcome::FinalHandReached));
 
-        // La Hand final reservada no spawnea ningún Dealer nuevo
-        // (todavía sin The King): el único Dealer que sigue en
-        // `entities()` es el cadáver de HAND I.
-        assert_eq!(session.alive_dealer_count(), 0);
+        // Bloque 3, Commit 24: la Final Hand reservada spawnea The
+        // King — y NINGÚN Dealer normal junto a él. El único enemigo
+        // vivo tras la transición es el jefe.
+        assert!(session.king_spawned());
+        assert!(session.king_alive());
+        assert_eq!(session.alive_dealer_count(), 1);
+
+        let living: Vec<_> = session
+            .entities()
+            .iter()
+            .filter(|e| !e.is_dead())
+            .map(|e| e.kind())
+            .collect();
+        assert_eq!(living, vec![EnemyKind::King]);
     }
 
     // --- Bloque 2, Commit 11: supplies en la intermisión previa a la
@@ -5069,6 +5176,129 @@ e             #
         assert_eq!(fresh.weapon_tier(), WeaponTier::Standard);
         assert!(fresh.royal_flush_pickup().is_none());
         assert!(!fresh.royal_flush_spawned());
+    }
+
+    // --- Bloque 3, Commit 24: The King como Final Hand + condición de
+    // victoria real. ---
+
+    /// Índice del King vivo dentro de `entities`, si lo hay.
+    fn living_king_index(session: &GameSession) -> Option<usize> {
+        session
+            .entities()
+            .iter()
+            .position(|e| e.kind() == EnemyKind::King && !e.is_dead())
+    }
+
+    #[test]
+    fn the_final_hand_spawns_exactly_one_king_and_no_dealers() {
+        let mut run = new_horde_session_with_final_hand(4);
+
+        assert!(!run.king_spawned());
+        assert!(drive_horde_to_final_hand(&mut run, 4));
+
+        assert!(run.king_spawned());
+        assert!(run.king_alive());
+
+        let living: Vec<_> = run
+            .entities()
+            .iter()
+            .filter(|e| !e.is_dead())
+            .map(|e| e.kind())
+            .collect();
+        assert_eq!(living, vec![EnemyKind::King], "un solo King, ningún Dealer");
+    }
+
+    #[test]
+    fn entering_the_final_hand_with_the_king_alive_is_not_a_horde_victory() {
+        let mut run = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut run, 4);
+
+        assert!(run.king_alive());
+        assert!(
+            !run.horde_completed(),
+            "alcanzar la Final Hand NUNCA basta para ganar"
+        );
+
+        // Muchos cuadros más con el King todavía vivo: sigue sin ser
+        // victoria.
+        for _ in 0..200 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+            assert!(!run.horde_completed());
+        }
+    }
+
+    #[test]
+    fn horde_victory_requires_actually_defeating_the_king() {
+        let mut run = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut run, 4);
+
+        let king = living_king_index(&run).expect("el King debe estar vivo");
+
+        // 19 impactos Standard (50): el King sobrevive, sin victoria.
+        for _ in 0..19 {
+            run.damage_entity(king);
+        }
+        assert!(run.king_alive());
+        assert!(!run.horde_completed());
+
+        // Impacto 20: el King muere -> Horde completado.
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
+        assert!(!run.king_alive());
+        assert!(run.horde_completed());
+    }
+
+    #[test]
+    fn the_king_never_respawns_after_being_defeated() {
+        let mut run = new_horde_session_with_final_hand(4);
+        drive_horde_to_final_hand(&mut run, 4);
+
+        let king = living_king_index(&run).unwrap();
+        for _ in 0..20 {
+            run.damage_entity(king);
+        }
+        assert!(run.horde_completed());
+
+        // Sigue "jugando" muchos cuadros: la intermisión no vuelve a
+        // colocar un segundo King ni ninguna Hand nueva.
+        for _ in 0..400 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+
+        let king_count = run
+            .entities()
+            .iter()
+            .filter(|e| e.kind() == EnemyKind::King)
+            .count();
+        assert!(king_count <= 1, "nunca hay más de un King por run");
+        assert!(run.horde_completed());
+    }
+
+    #[test]
+    fn portal_mode_never_spawns_the_king_and_never_completes_a_horde() {
+        let mut portal = new_test_session_with_one_dealer(); // Portal.
+
+        for _ in 0..400 {
+            portal.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+
+        assert!(!portal.king_spawned());
+        assert!(
+            portal
+                .entities()
+                .iter()
+                .all(|e| e.kind() == EnemyKind::Dealer)
+        );
+        assert!(!portal.horde_completed());
+    }
+
+    #[test]
+    fn true_maze_style_final_hand_also_spawns_the_king() {
+        // final_hand_number = 2: penúltima Hand = HAND I.
+        let mut run = new_horde_session_with_final_hand(2);
+        assert!(drive_horde_to_final_hand(&mut run, 2));
+
+        assert!(run.king_spawned());
+        assert!(run.king_alive());
     }
 
     #[test]

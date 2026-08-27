@@ -114,6 +114,7 @@ const EMERGENCY_AMMO_SEED_DISCRIMINATOR: u64 = 0xE33A_9001;
 const HEALTH_TARGET_SEED_DISCRIMINATOR: u64 = 0x4EA1_7002;
 const HEALTH_SPAWN_SEED_DISCRIMINATOR: u64 = 0x4EA1_7003;
 const ROYAL_FLUSH_SEED_DISCRIMINATOR: u64 = 0x2_0FA7_0005;
+const KING_SEED_DISCRIMINATOR: u64 = 0x4_1_16_0006;
 
 /// Deriva una semilla determinista a partir de `session_seed`, un
 /// `discriminator` fijo por sistema, y un `index` (número de Hand o
@@ -695,6 +696,14 @@ pub(crate) fn health_pickup_target_for_hand(session_seed: u64, hand_number: usiz
 /// de ninguna Hand.
 pub(crate) fn spawn_seed_for_royal_flush(session_seed: u64) -> u64 {
     derive_resource_seed(session_seed, ROYAL_FLUSH_SEED_DISCRIMINATOR, 0)
+}
+
+/// Semilla determinista de la celda de aparición de The King (Bloque
+/// 3, Commit 24). Un solo spawn por run, sin `index`; discriminador
+/// propio para que nunca coincida con el layout de Dealers, munición,
+/// vida ni The Royal Flush.
+pub(crate) fn spawn_seed_for_king(session_seed: u64) -> u64 {
+    derive_resource_seed(session_seed, KING_SEED_DISCRIMINATOR, 0)
 }
 
 /// Semilla determinista de posiciones para los Health Pickups nuevos
@@ -1425,5 +1434,20 @@ mod tests {
         assert_ne!(royal, spawn_seed_for_hand(42, 2));
         assert_ne!(royal, spawn_seed_for_emergency_ammo(42, 0));
         assert_ne!(royal, spawn_seed_for_health_replenish(42, 2));
+    }
+
+    // --- Bloque 3, Commit 24: semilla de The King. ---
+
+    #[test]
+    fn king_seed_is_deterministic_and_isolated_from_every_other_resource() {
+        assert_eq!(spawn_seed_for_king(42), spawn_seed_for_king(42));
+        assert_ne!(spawn_seed_for_king(42), spawn_seed_for_king(43));
+
+        let king = spawn_seed_for_king(42);
+        assert_ne!(king, spawn_seed_for_royal_flush(42));
+        assert_ne!(king, spawn_seed_for_hand(42, 1));
+        assert_ne!(king, spawn_seed_for_hand(42, 4));
+        assert_ne!(king, spawn_seed_for_emergency_ammo(42, 0));
+        assert_ne!(king, spawn_seed_for_health_replenish(42, 4));
     }
 }
