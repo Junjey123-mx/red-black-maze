@@ -712,7 +712,16 @@ impl<'aud> App<'aud> {
             .final_hand_number;
 
         if self.session.mode() == GameMode::Horde {
-            self.session.update_hand_state(
+            /*
+             * Bloque 1, Commit 10: `update_hand_state` retorna
+             * `Option<HandOutcome>` — el punto de extensión donde un
+             * bloque futuro podrá enganchar supplies/Royal Flush sin
+             * reabrir `GameSession`. Todavía no existe ningún
+             * consumidor para ese valor aquí (ninguna de esas
+             * features pertenece a este bloque), así que se descarta
+             * explícitamente en vez de dejarlo implícito.
+             */
+            let _hand_transition = self.session.update_hand_state(
                 window.get_frame_time(),
                 BLOCK_SIZE,
                 self.level_manager.current_dealer_cap(),

@@ -571,6 +571,16 @@ impl GameSession {
     /// spawnear ningún Dealer ni tocar munición/vida — el countdown y
     /// el banner "HAND N" ya se resolvieron dentro de `tick` por igual
     /// para ambos resultados.
+    ///
+    /// Retorna el `HandOutcome` de este cuadro (`None` la inmensa
+    /// mayoría de las veces, mientras la Hand actual sigue en curso o
+    /// la intermisión sigue contando). Bloque 1, Commit 10: es el
+    /// ÚNICO punto de transición "una Hand nueva acaba de comenzar"
+    /// — el punto de extensión donde un bloque futuro podrá enganchar
+    /// drops de supplies (`Spawn`) o la aparición de Royal Flush/The
+    /// King (`FinalHandReached`) sin reabrir este método. `App`
+    /// todavía no consume este valor (ningún consumidor existe hasta
+    /// ese bloque futuro).
     pub(crate) fn update_hand_state(
         &mut self,
         delta_time: f32,
@@ -578,7 +588,7 @@ impl GameSession {
         level_cap: usize,
         use_clusters: bool,
         final_hand_number: usize,
-    ) {
+    ) -> Option<HandOutcome> {
         let alive_count = self.alive_dealer_count();
 
         let outcome = self
@@ -587,7 +597,8 @@ impl GameSession {
 
         let new_hand_count = match outcome {
             Some(HandOutcome::Spawn { dealer_count }) => dealer_count,
-            Some(HandOutcome::FinalHandReached) | None => return,
+            Some(HandOutcome::FinalHandReached) => return outcome,
+            None => return None,
         };
 
         let mut occupied = self.occupied_world_cells(block_size);
@@ -698,6 +709,8 @@ impl GameSession {
                     .push(HealthPickup::at_cell(row, column, block_size));
             }
         }
+
+        outcome
     }
 
     /// Detecta y resuelve un softlock de munición (Emergency Ammo
@@ -4052,5 +4065,95 @@ e             #
         assert_eq!(cells.len(), 6);
         assert!(!cells.contains(&player_cell));
         assert!(!cells.contains(&goal_cell));
+    }
+
+    // --- Bloque 1, Commit 10: contrato de intermisión consolidado. ---
+
+    #[test]
+    fn intermission_contract_spawns_exactly_once_and_never_double_spawns() {
+        // Contrato completo, en un único test: la Hand se limpia, la
+        // intermisión cuenta silenciosamente (`None` cada cuadro
+        // mientras dura), la Hand siguiente se spawnea EXACTAMENTE
+        // una vez (`Some(HandOutcome::Spawn { .. })`), y ningún cuadro
+        // posterior repite ese spawn mientras la nueva Hand siga con
+        // vida.
+        let mut session = new_test_session_with_one_dealer();
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+        assert_eq!(session.alive_dealer_count(), 0);
+
+        let mut spawn_events = 0;
+
+        for _ in 0..300 {
+            match session.update_hand_state(0.05, BLOCK_SIZE, 16, false, usize::MAX) {
+                Some(HandOutcome::Spawn { dealer_count }) => {
+                    spawn_events += 1;
+                    assert_eq!(
+                        dealer_count, 2,
+                        "HAND I traía 1 Dealer; HAND II debe doblar a 2"
+                    );
+                }
+                Some(HandOutcome::FinalHandReached) => {
+                    panic!("usize::MAX como final_hand_number nunca debe alcanzarse aquí")
+                }
+                None => {}
+            }
+        }
+
+        assert_eq!(
+            spawn_events, 1,
+            "la Hand siguiente debe spawnear exactamente una vez, nunca más"
+        );
+        assert_eq!(session.hand_number(), 2);
+        assert_eq!(session.alive_dealer_count(), 2);
+    }
+
+    #[test]
+    fn intermission_contract_reports_final_hand_reached_through_the_same_return_value() {
+        let mut session = new_test_session_with_one_dealer();
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+
+        let mut outcome_at_transition = None;
+
+        for _ in 0..300 {
+            if let Some(outcome) = session.update_hand_state(0.05, BLOCK_SIZE, 16, false, 2) {
+                outcome_at_transition = Some(outcome);
+                break;
+            }
+        }
+
+        assert_eq!(outcome_at_transition, Some(HandOutcome::FinalHandReached));
+
+        // La Hand final reservada no spawnea ningún Dealer nuevo
+        // (todavía sin The King): el único Dealer que sigue en
+        // `entities()` es el cadáver de HAND I.
+        assert_eq!(session.alive_dealer_count(), 0);
+    }
+
+    #[test]
+    fn not_calling_update_hand_state_freezes_the_intermission_countdown() {
+        // Mismo mecanismo exacto que ya prueban las suites de pausa
+        // de este módulo: "Pause" no es un caso especial dentro de
+        // `GameSession` — es, simplemente, la ausencia de esta
+        // llamada. Consolidado aquí como parte del contrato de
+        // intermisión.
+        let mut session = new_test_session_with_one_dealer();
+
+        session.damage_entity(0);
+        session.damage_entity(0);
+
+        session.update_hand_state(1.0, BLOCK_SIZE, 16, false, usize::MAX);
+
+        let hand_number_before = session.hand_number();
+        let hud_message_before = session.hand_hud_message();
+
+        // "300 cuadros de pausa": ninguna llamada a
+        // `update_hand_state` en absoluto.
+
+        assert_eq!(session.hand_number(), hand_number_before);
+        assert_eq!(session.hand_hud_message(), hud_message_before);
     }
 }
