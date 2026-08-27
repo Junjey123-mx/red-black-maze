@@ -45,6 +45,20 @@ const PICKUP_RADIUS: f32 = 19.2;
 /// aquí.
 const HEALTH_PICKUP_AMOUNT: i32 = 20;
 
+/// "Dealer-equivalente" con el que se dimensiona el paquete de
+/// supplies que la intermisión previa a la Final Hand reservada
+/// inyecta (Bloque 2, Commit 11).
+///
+/// La Final Hand todavía no spawnea ningún Dealer (The King llega en
+/// el Bloque 3), así que la fórmula de munición
+/// (`hand::extra_ammo_pickups_needed`) no tiene un conteo real de
+/// enemigos del que partir. Este valor lo sustituye: representa la
+/// amenaza de la ronda final para que la intermisión garantice un
+/// piso de munición usable antes de entrar a ella — reutilizando
+/// EXACTAMENTE la misma fórmula y colocación que las Hands normales,
+/// sin rellenar automáticamente cargador/reserva ni salud.
+const FINAL_HAND_SUPPLY_DEALER_EQUIVALENT: usize = 10;
+
 /// Daño que un ataque de Dealer ACEPTADO inflige al jugador
 /// (Tarea 45). Las condiciones de aceptación (estado `Alert`,
 /// rango, cooldown) viven en `world::Entity::attempt_attack`; esta
@@ -597,7 +611,34 @@ impl GameSession {
 
         let new_hand_count = match outcome {
             Some(HandOutcome::Spawn { dealer_count }) => dealer_count,
-            Some(HandOutcome::FinalHandReached) => return outcome,
+
+            Some(HandOutcome::FinalHandReached) => {
+                /*
+                 * Bloque 2, Commit 11: la Final Hand reservada no
+                 * spawnea Dealers todavía (The King llega en el
+                 * Bloque 3), pero su intermisión SÍ debe ofrecer una
+                 * oportunidad de recuperación — antes de este commit
+                 * el jugador llegaba a la ronda final sin ningún
+                 * supply nuevo. Se reutiliza el MISMO helper y la
+                 * MISMA colocación que las Hands normales; solo
+                 * cambia el "dealer-equivalente" que dimensiona la
+                 * munición.
+                 */
+                let mut occupied = self.occupied_world_cells(block_size);
+
+                let spawn_seed =
+                    hand::spawn_seed_for_hand(self.hand_seed, self.horde.hand_number());
+
+                self.spawn_intermission_supplies(
+                    block_size,
+                    &mut occupied,
+                    spawn_seed,
+                    FINAL_HAND_SUPPLY_DEALER_EQUIVALENT,
+                );
+
+                return outcome;
+            }
+
             None => return None,
         };
 
@@ -630,6 +671,48 @@ impl GameSession {
             spawn_cells.len()
         );
 
+        self.spawn_intermission_supplies(block_size, &mut occupied, spawn_seed, spawn_cells.len());
+
+        outcome
+    }
+
+    /// Inyecta el paquete de supplies de una intermisión de Horde:
+    /// munición adicional (si el presupuesto lo exige) y Health
+    /// Pickups hasta el objetivo determinista de la Hand, reutilizando
+    /// EXACTAMENTE los mismos helpers de colocación
+    /// (`hand::select_spawn_cells`) y las mismas colecciones
+    /// (`self.ammo_pickups` / `self.health_pickups`) que el resto del
+    /// juego — nunca rellena directamente el cargador/la reserva del
+    /// arma ni la vida del jugador, el jugador sigue teniendo que
+    /// moverse y recoger físicamente los items.
+    ///
+    /// Extraído en el Bloque 2, Commit 11 sin cambiar el
+    /// comportamiento de las Hands normales (`Spawn` sigue pasando su
+    /// conteo real de Dealers colocados como `dealer_equivalent`, con
+    /// el mismo `spawn_seed`), y reutilizado además por la intermisión
+    /// previa a la Final Hand reservada — que antes no ofrecía ningún
+    /// supply — con `FINAL_HAND_SUPPLY_DEALER_EQUIVALENT` como conteo
+    /// sustituto.
+    ///
+    /// `occupied` se actualiza in situ con cada celda de munición
+    /// colocada (igual que antes), de modo que los Health Pickups
+    /// posteriores nunca caen encima de un pickup de munición recién
+    /// creado ni de ninguna otra celda ya ocupada. Nunca elimina
+    /// pickups existentes ni añade munición/vida por encima de lo que
+    /// la fórmula pide (`extra_ammo_pickups_needed` ya está acotada;
+    /// la vida usa `saturating_sub` contra el objetivo).
+    ///
+    /// Horde-only por construcción: el único llamador
+    /// (`update_hand_state`) solo se invoca cuando
+    /// `mode == GameMode::Horde` (`App::update_playing`), así que
+    /// Portal Mode nunca ejecuta esta ruta.
+    fn spawn_intermission_supplies(
+        &mut self,
+        block_size: usize,
+        occupied: &mut HashSet<(usize, usize)>,
+        spawn_seed: u64,
+        dealer_equivalent: usize,
+    ) {
         let accessible_ammo = self.weapon.ammo()
             + self.weapon.reserve_ammo()
             + self
@@ -640,7 +723,7 @@ impl GameSession {
                 * AMMO_PICKUP_AMOUNT;
 
         let extra_pickups_needed =
-            hand::extra_ammo_pickups_needed(spawn_cells.len(), accessible_ammo);
+            hand::extra_ammo_pickups_needed(dealer_equivalent, accessible_ammo);
 
         if extra_pickups_needed > 0 {
             let pickup_seed = spawn_seed.wrapping_add(1);
@@ -650,7 +733,7 @@ impl GameSession {
                 self.player.pos,
                 self.player.a,
                 block_size,
-                &occupied,
+                occupied,
                 extra_pickups_needed,
                 false,
                 pickup_seed,
@@ -698,7 +781,7 @@ impl GameSession {
                 self.player.pos,
                 self.player.a,
                 block_size,
-                &occupied,
+                occupied,
                 health_to_spawn,
                 false,
                 health_seed,
@@ -709,8 +792,6 @@ impl GameSession {
                     .push(HealthPickup::at_cell(row, column, block_size));
             }
         }
-
-        outcome
     }
 
     /// Detecta y resuelve un softlock de munición (Emergency Ammo
@@ -4131,6 +4212,107 @@ e             #
         // (todavía sin The King): el único Dealer que sigue en
         // `entities()` es el cadáver de HAND I.
         assert_eq!(session.alive_dealer_count(), 0);
+    }
+
+    // --- Bloque 2, Commit 11: supplies en la intermisión previa a la
+    // Final Hand reservada. ---
+
+    /// Lleva `session` desde "acaba de morir el último Dealer de HAND
+    /// I" hasta el cuadro exacto en que la intermisión reporta
+    /// `HandOutcome::FinalHandReached`, con `final_hand_number = 2`
+    /// (patrón de "The Dealer's True Maze": una sola Hand normal antes
+    /// de la final).
+    fn run_intermission_until_final_hand(session: &mut GameSession) {
+        session.damage_entity(0);
+        session.damage_entity(0);
+
+        for _ in 0..300 {
+            if let Some(HandOutcome::FinalHandReached) =
+                session.update_hand_state(0.05, BLOCK_SIZE, 16, false, 2)
+            {
+                return;
+            }
+        }
+
+        panic!("la intermisión debe alcanzar la Final Hand reservada dentro de la ventana");
+    }
+
+    #[test]
+    fn final_hand_intermission_spawns_recovery_supplies() {
+        let mut session = new_test_session_with_one_dealer();
+
+        // El mapa de prueba no trae ningún marcador de munición ni de
+        // vida: antes de este commit la intermisión previa a la Final
+        // Hand no ofrecía ninguna oportunidad de recuperación.
+        assert_eq!(session.ammo_pickups().len(), 0);
+        assert_eq!(session.health_pickups().len(), 0);
+
+        run_intermission_until_final_hand(&mut session);
+
+        assert!(
+            !session.ammo_pickups().is_empty(),
+            "la intermisión previa a la Final Hand debe soltar munición de recuperación"
+        );
+        assert!(
+            !session.health_pickups().is_empty(),
+            "la intermisión previa a la Final Hand debe soltar vida de recuperación"
+        );
+    }
+
+    #[test]
+    fn final_hand_supplies_never_land_on_the_player_goal_or_each_other() {
+        let mut session = new_test_session_with_one_dealer();
+
+        let player_cell = world_to_cell(session.player.pos, BLOCK_SIZE);
+        let goal_cell = session.level.goal();
+
+        run_intermission_until_final_hand(&mut session);
+
+        let mut cells: Vec<(usize, usize)> = session
+            .ammo_pickups()
+            .iter()
+            .map(|pickup| world_to_cell(pickup.position(), BLOCK_SIZE))
+            .collect();
+
+        for pickup in session.health_pickups() {
+            cells.push(world_to_cell(pickup.position(), BLOCK_SIZE));
+        }
+
+        let unique: HashSet<(usize, usize)> = cells.iter().copied().collect();
+
+        assert_eq!(
+            unique.len(),
+            cells.len(),
+            "dos supplies se apilaron en la misma celda"
+        );
+        assert!(!cells.contains(&player_cell));
+        assert!(!cells.contains(&goal_cell));
+    }
+
+    #[test]
+    fn final_hand_supplies_are_deterministic_for_the_same_hand_seed() {
+        let mut first = new_test_session_with_one_dealer();
+        let mut second = new_test_session_with_one_dealer();
+
+        run_intermission_until_final_hand(&mut first);
+        run_intermission_until_final_hand(&mut second);
+
+        let positions = |session: &GameSession| -> (Vec<(f32, f32)>, Vec<(f32, f32)>) {
+            (
+                session
+                    .ammo_pickups()
+                    .iter()
+                    .map(|p| (p.position().x, p.position().y))
+                    .collect(),
+                session
+                    .health_pickups()
+                    .iter()
+                    .map(|p| (p.position().x, p.position().y))
+                    .collect(),
+            )
+        };
+
+        assert_eq!(positions(&first), positions(&second));
     }
 
     #[test]
