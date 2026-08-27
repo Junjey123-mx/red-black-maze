@@ -255,17 +255,27 @@ pub(crate) fn render_world_sprites(
     health_pickups: &[HealthPickup],
     wall_depth_buffer: &[f32],
     theme: LevelTheme,
+    show_goal: bool,
 ) {
     let mut items: Vec<BillboardItem> = Vec::new();
 
-    if let Some(texture) = textures.themed_goal_texture(theme) {
-        let (row, column) = level.goal();
+    /*
+     * Horde Mode (sección 5): sin marcador de meta en absoluto —
+     * ni la fila se añade a `items`, así que tampoco participa del
+     * ordenamiento far->near ni de la oclusión contra paredes. La
+     * celda de meta sigue existiendo en `Level` (la validación de
+     * carga la exige); esto es puramente de presentación.
+     */
+    if show_goal {
+        if let Some(texture) = textures.themed_goal_texture(theme) {
+            let (row, column) = level.goal();
 
-        items.push(BillboardItem {
-            world_position: cell_center(row, column, block_size),
-            texture,
-            world_size: block_size as f32,
-        });
+            items.push(BillboardItem {
+                world_position: cell_center(row, column, block_size),
+                texture,
+                world_size: block_size as f32,
+            });
+        }
     }
 
     if let Some(texture) = textures.themed_torch_texture(torch_frame_index, theme) {

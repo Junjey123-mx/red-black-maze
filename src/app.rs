@@ -524,8 +524,15 @@ impl<'aud> App<'aud> {
          * obligatoria de Defeat sobre Victory) se aplica DESPUÉS de
          * que el daño de Dealer de este cuadro (más abajo) ya se haya
          * aplicado, mediante `GameState::resolve_playing_terminal_state`.
+         *
+         * Horde Mode (sección 5): la meta nunca produce Victory —
+         * `has_reached_goal` ni siquiera se evalúa cuando el modo no
+         * es `Portal`, así que pisar la celda de meta (todavía
+         * presente en `Level`, solo sin renderizar) en Horde Mode es
+         * indistinguible de pisar cualquier otra celda transitable.
          */
-        let reached_goal = self.session.has_reached_goal(BLOCK_SIZE);
+        let reached_goal =
+            self.session.mode() == GameMode::Portal && self.session.has_reached_goal(BLOCK_SIZE);
 
         /*
          * Avanza la animación de antorcha según el tiempo real
@@ -1340,6 +1347,15 @@ impl<'aud> App<'aud> {
     }
 
     fn render_playing(&self, framebuffer: &mut Framebuffer) {
+        /*
+         * Horde Mode (sección 5): la meta nunca se dibuja, en
+         * ninguna de las dos vistas — resuelto UNA vez aquí y
+         * propagado a `render_maze`/`render_world_sprites`, en vez de
+         * que cada renderer vuelva a leer `self.session.mode()` por
+         * su cuenta.
+         */
+        let show_goal = self.session.mode() == GameMode::Portal;
+
         match self.session.view_mode {
             ViewMode::Map2D => {
                 /*
@@ -1361,7 +1377,12 @@ impl<'aud> App<'aud> {
                     BLOCK_SIZE,
                 );
 
-                render_maze(framebuffer, &self.session.level, display_cell_size);
+                render_maze(
+                    framebuffer,
+                    &self.session.level,
+                    display_cell_size,
+                    show_goal,
+                );
 
                 render_fov_rays(
                     framebuffer,
@@ -1418,6 +1439,7 @@ impl<'aud> App<'aud> {
                     self.session.health_pickups(),
                     &wall_depth_buffer,
                     theme,
+                    show_goal,
                 );
 
                 /*

@@ -83,12 +83,19 @@ fn fill_rectangle(
 }
 
 /// Dibuja una celda del laberinto.
+///
+/// `show_goal` controla ÚNICAMENTE el marcador rojo de la celda `g`
+/// (Horde Mode, sección 5): en `false` esa celda se dibuja
+/// idéntica a una celda transitable normal, sin ningún marcador
+/// visible — nunca se toca el mapa en sí (`Level` sigue exigiendo
+/// exactamente una celda `g` para cargar), solo su presentación.
 pub fn draw_cell(
     framebuffer: &mut Framebuffer,
     x0: usize,
     y0: usize,
     block_size: usize,
     cell: char,
+    show_goal: bool,
 ) {
     let wall_color = Color::new(48, 48, 82, 255);
     let floor_color = Color::new(255, 220, 220, 255);
@@ -110,6 +117,10 @@ pub fn draw_cell(
         // Meta.
         'g' => {
             fill_rectangle(framebuffer, x0, y0, block_size, block_size, floor_color);
+
+            if !show_goal {
+                return;
+            }
 
             let margin = block_size / 4;
             let marker_size = block_size.saturating_sub(margin * 2);
@@ -137,14 +148,19 @@ pub fn draw_cell(
 /// `compute_display_cell_size`); para un nivel de 13×9 a 624×432
 /// vale exactamente `BLOCK_SIZE`, por lo que el dibujo resultante es
 /// idéntico al de antes de Tarea 35.
-pub(crate) fn render_maze(framebuffer: &mut Framebuffer, level: &Level, display_cell_size: usize) {
+pub(crate) fn render_maze(
+    framebuffer: &mut Framebuffer,
+    level: &Level,
+    display_cell_size: usize,
+    show_goal: bool,
+) {
     for row_index in 0..level.height() {
         for column_index in 0..level.width() {
             if let Some(cell) = level.cell_at(row_index, column_index) {
                 let x0 = column_index * display_cell_size;
                 let y0 = row_index * display_cell_size;
 
-                draw_cell(framebuffer, x0, y0, display_cell_size, cell);
+                draw_cell(framebuffer, x0, y0, display_cell_size, cell, show_goal);
             }
         }
     }
