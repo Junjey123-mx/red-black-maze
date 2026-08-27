@@ -180,12 +180,20 @@ pub(crate) enum SoundEffect {
     /// suena EXACTAMENTE una vez (`apply_damage` ignora todo daño
     /// posterior a un `Dead`).
     KingDeath,
+
+    /// The King invoca una cohorte de Dealers (Bloque 5, Commit 51):
+    /// se dispara EXACTAMENTE una vez por cada transición autoritativa
+    /// a `KingEncounterPhase::Summoning` (800/600/400/200), nunca por
+    /// cuadro ni desde rendering/timer. NO es un sonido de impacto:
+    /// convive con `KingHit`/`EnemyDeath` sin sustituir a ninguno. WAV
+    /// generado localmente en el mismo formato que el resto de SFX.
+    KingSummon,
 }
 
 /// Enumeración completa de `SoundEffect`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_SOUND_EFFECTS: [SoundEffect; 20] = [
+const ALL_SOUND_EFFECTS: [SoundEffect; 21] = [
     SoundEffect::Shoot,
     SoundEffect::WallHit,
     SoundEffect::EnemyIdle,
@@ -206,6 +214,7 @@ const ALL_SOUND_EFFECTS: [SoundEffect; 20] = [
     SoundEffect::KingHit,
     SoundEffect::KingAttack,
     SoundEffect::KingDeath,
+    SoundEffect::KingSummon,
 ];
 
 /// SFX de disparo aceptado correspondiente al `WeaponTier` activo
@@ -262,6 +271,7 @@ fn sfx_path(effect: SoundEffect) -> &'static str {
         SoundEffect::KingHit => "assets/audio/sfx/king_hit.wav",
         SoundEffect::KingAttack => "assets/audio/sfx/king_attack.wav",
         SoundEffect::KingDeath => "assets/audio/sfx/king_death.wav",
+        SoundEffect::KingSummon => "assets/audio/sfx/king_summon.wav",
     }
 }
 
@@ -715,8 +725,8 @@ mod tests {
     // --- Catálogo de SFX: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_twenty_sound_effects() {
-        assert_eq!(ALL_SOUND_EFFECTS.len(), 20);
+    fn catalog_contains_exactly_twenty_one_sound_effects() {
+        assert_eq!(ALL_SOUND_EFFECTS.len(), 21);
     }
 
     #[test]
@@ -795,6 +805,26 @@ mod tests {
             sfx_path(SoundEffect::KingDeath),
             "assets/audio/sfx/king_death.wav"
         );
+        assert_eq!(
+            sfx_path(SoundEffect::KingSummon),
+            "assets/audio/sfx/king_summon.wav"
+        );
+    }
+
+    #[test]
+    fn the_king_summon_cue_is_distinct_from_every_king_impact_sound() {
+        // `KingSummon` es el evento de invocación, no un sonido de
+        // impacto: nunca debe colisionar con los SFX de golpe/muerte.
+        for impact in [
+            SoundEffect::KingHit,
+            SoundEffect::KingDeath,
+            SoundEffect::EnemyDeath,
+            SoundEffect::KingAttack,
+            SoundEffect::KingSpawn,
+        ] {
+            assert_ne!(SoundEffect::KingSummon, impact);
+            assert_ne!(sfx_path(SoundEffect::KingSummon), sfx_path(impact));
+        }
     }
 
     // --- Bloque 2, Commit 18: selección de SFX de disparo por tier. ---
