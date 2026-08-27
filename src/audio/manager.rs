@@ -938,6 +938,29 @@ mod tests {
         assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
     }
 
+    // --- Bloque 5, Commit 63: pausa de final_battle.mp3. ---
+
+    #[test]
+    fn pausing_and_resuming_never_change_the_selected_track() {
+        let mut audio = AudioManager::new(None);
+        audio.set_music(MusicTrack::FinalBattle);
+
+        // Ciclo pausa/reanuda repetido: la selección se conserva
+        // exactamente (nunca vuelve al menú ni a la música de nivel).
+        for _ in 0..10 {
+            audio.pause_music();
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+            audio.play_music();
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+            // Lo que `App::sync_boss_music` hace tras reanudar: pedir
+            // de nuevo la misma pista -> no-op.
+            audio.set_music(MusicTrack::FinalBattle);
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+        }
+    }
+
     // --- Bloque 5, Commit 53: un solo SFX de impacto por disparo. ---
 
     #[test]

@@ -460,6 +460,16 @@ impl<'aud> App<'aud> {
 
             self.pause.on_enter();
 
+            /*
+             * Bloque 5, Commit 63: `pause_music` suspende la pista
+             * ACTIVA sea cual sea — música de nivel o
+             * `final_battle.mp3` — preservando su posición y su
+             * selección (`current_track` no cambia). Al reanudar,
+             * `update_paused` llama a `play_music` (misma posición) y
+             * `sync_boss_music` vuelve a pedir la MISMA pista, que es
+             * un no-op: la canción del jefe nunca se reinicia ni
+             * vuelve a la del nivel por una pausa.
+             */
             self.audio.pause_music();
 
             return;
