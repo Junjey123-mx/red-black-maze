@@ -1013,7 +1013,6 @@ impl GameSession {
     /// `AudioManager`; el encuentro es la única autoridad sobre cuándo
     /// cambia. En Portal Mode, o antes de la primera invocación,
     /// siempre es `BossMusicState::LevelMusic`.
-    #[allow(dead_code)]
     pub(crate) fn boss_music_state(&self) -> BossMusicState {
         self.king_encounter.music
     }

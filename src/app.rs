@@ -3,7 +3,7 @@ use crate::audio::{
     music_track_for_theme, weapon_fire_sound,
 };
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
-use crate::game::{GameMode, GameSession, GameState, HandHudMessage, ViewMode};
+use crate::game::{BossMusicState, GameMode, GameSession, GameState, HandHudMessage, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
 use crate::raycasting::{HitscanHit, HitscanTarget, cast_hitscan};
@@ -686,6 +686,13 @@ impl<'aud> App<'aud> {
          */
         self.session
             .update_king_encounter(window.get_frame_time(), BLOCK_SIZE);
+
+        /*
+         * Bloque 5, Commit 59: traduce el estado musical autoritativo
+         * del encuentro (`GameSession::boss_music_state`) a llamadas
+         * del `AudioManager`. Idempotente cuadro a cuadro.
+         */
+        self.sync_boss_music();
 
         /*
          * Tarea 45: ataques de Dealer. El temporizador del flash se
@@ -1489,6 +1496,36 @@ impl<'aud> App<'aud> {
                     .current_theme()
                     .expect("Defeat solo se alcanza tras generar/cargar un nivel con tema"),
             ),
+        }
+    }
+
+    /// Traduce el estado musical del encuentro contra The King a
+    /// órdenes del `AudioManager` (Bloque 5). El encuentro es la única
+    /// autoridad sobre CUÁNDO cambia; `App` solo ejecuta:
+    ///
+    /// - `LevelMusic`: no toca nada — la pista del nivel, ya
+    ///   seleccionada al construir la sesión, sigue sonando (cubre
+    ///   toda la aparición de The King y la pelea de 1000→801 HP).
+    /// - `FirstSummonSilence`: detiene la música de fondo (Commit 59)
+    ///   — silencio deliberado durante los 2.0 s de la primera
+    ///   invocación; solo se oyen los SFX.
+    /// - `FinalBattle`: arranca/mantiene `final_battle.mp3` (Commit
+    ///   61); `set_music` es no-op si ya es la pista activa, así que
+    ///   600/400/200 y `Fleeing` no la reinician.
+    ///
+    /// Todas las ramas son idempotentes: se ejecuta una vez por cuadro
+    /// jugable sin acumular efectos.
+    fn sync_boss_music(&mut self) {
+        match self.session.boss_music_state() {
+            BossMusicState::LevelMusic => {}
+
+            BossMusicState::FirstSummonSilence => {
+                self.audio.stop_music();
+            }
+
+            BossMusicState::FinalBattle => {
+                // Commit 61 conecta el arranque de `final_battle.mp3`.
+            }
         }
     }
 

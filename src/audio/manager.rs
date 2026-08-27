@@ -593,6 +593,24 @@ impl<'aud> AudioManager<'aud> {
         }
     }
 
+    /// Detiene por completo la música de fondo y deja el manager SIN
+    /// pista activa (Bloque 5, Commit 59): a diferencia de `set_music`,
+    /// no arranca ninguna pista nueva — es la ventana de silencio
+    /// deliberado de la primera invocación de The King. Idempotente:
+    /// llamarlo repetidamente cuadro a cuadro es un no-op seguro (la
+    /// pista ya está detenida y `current_track` ya es `None`). La
+    /// siguiente llamada a `set_music` arrancará su pista desde el
+    /// principio, nunca reanudará una posición vieja.
+    pub(crate) fn stop_music(&mut self) {
+        if let Some(track) = self.current_track {
+            if let Some(music) = self.music.get(&track) {
+                music.stop_stream();
+            }
+
+            self.current_track = None;
+        }
+    }
+
     /// Solicita la reproducción de un efecto discreto
     /// (`Shoot`/`WallHit`/`EnemyHit`/`EnemyDeath`/`MenuMove`/
     /// `MenuSelect`/`Victory`/`Footstep`/`Reload`/`PlayerHit`). No-op seguro si
