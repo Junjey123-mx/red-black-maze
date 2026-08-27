@@ -372,6 +372,14 @@ fn letter_glyph_rows(character: char) -> [u8; 7] {
         'L' => [
             0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
         ],
+
+        // 'M'/':' añadidos para el HUD de progreso de Horde ("HAND
+        // N/M", "ENEMIES: K") — mismo bitmap 5x7 que el resto de esta
+        // fuente mínima local.
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        ':' => [0, 0b00100, 0, 0, 0b00100, 0, 0],
         'N' => [
             0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001,
         ],
@@ -429,6 +437,47 @@ fn hand_message_width(text: &str, scale: i32) -> i32 {
     width
 }
 
+/// Dibuja `text` de izquierda a derecha comenzando en `(origin_x,
+/// origin_y)`, mezclando `DIGIT_FONT` (3 de ancho) para cualquier
+/// carácter `'0'..='9'` con la fuente de letras local (`LETTER_WIDTH`
+/// de ancho) para el resto — la MISMA regla que `hand_message_width`
+/// ya usa para medir. Único punto de este bucle de dibujo: tanto
+/// `render_hand_message` como `render_horde_progress` lo reutilizan
+/// en vez de reimplementarlo cada una con su propio anclaje.
+fn draw_mixed_text(
+    framebuffer: &mut Framebuffer,
+    text: &str,
+    origin_x: i32,
+    origin_y: i32,
+    scale: i32,
+    color: Color,
+) {
+    let mut cursor_x = origin_x;
+
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            let digit = character.to_digit(10).unwrap_or(0) as u8;
+
+            draw_glyph(
+                framebuffer,
+                &DIGIT_FONT[digit as usize % 10],
+                DIGIT_WIDTH,
+                cursor_x,
+                origin_y,
+                color,
+            );
+
+            cursor_x += (DIGIT_WIDTH + GLYPH_GAP) * scale;
+        } else {
+            let rows = letter_glyph_rows(character);
+
+            draw_glyph(framebuffer, &rows, LETTER_WIDTH, cursor_x, origin_y, color);
+
+            cursor_x += (LETTER_WIDTH + GLYPH_GAP) * scale;
+        }
+    }
+}
+
 /// Dibuja un mensaje del sistema de Hands, centrado horizontalmente,
 /// anclado cerca de la parte superior del framebuffer.
 ///
@@ -447,37 +496,119 @@ pub(crate) fn render_hand_message(framebuffer: &mut Framebuffer, text: &str) {
 
     let content_width = hand_message_width(text, HAND_MESSAGE_SCALE);
 
-    let mut cursor_x = (framebuffer_width - content_width) / 2;
+    let cursor_x = (framebuffer_width - content_width) / 2;
 
-    for character in text.chars() {
-        if character.is_ascii_digit() {
-            let digit = character.to_digit(10).unwrap_or(0) as u8;
+    draw_mixed_text(
+        framebuffer,
+        text,
+        cursor_x,
+        HAND_MESSAGE_TOP_MARGIN,
+        HAND_MESSAGE_SCALE,
+        HAND_MESSAGE_COLOR,
+    );
+}
 
-            draw_glyph(
-                framebuffer,
-                &DIGIT_FONT[digit as usize % 10],
-                DIGIT_WIDTH,
-                cursor_x,
-                HAND_MESSAGE_TOP_MARGIN,
-                HAND_MESSAGE_COLOR,
-            );
+// --- HUD de progreso de Horde (Bloque 1, Commit 09) ---
+//
+// "HAND N/M", "ENEMIES: K" — anclado abajo-derecha, simétrico al HUD
+// de vida/munición (abajo-izquierda) de `render_hud`, para que ambos
+// bloques nunca se solapen. Reutiliza la MISMA fuente de letras/
+// dígitos que `render_hand_message`, nunca una fuente nueva.
 
-            cursor_x += (DIGIT_WIDTH + GLYPH_GAP) * HAND_MESSAGE_SCALE;
-        } else {
-            let rows = letter_glyph_rows(character);
+/// Escala de las dos líneas de progreso de Horde: igual a
+/// `GLYPH_SCALE` (la del HUD de vida/munición), para que ambos
+/// bloques de HUD compartan la misma escala visual.
+const HORDE_PROGRESS_SCALE: i32 = GLYPH_SCALE;
 
-            draw_glyph(
-                framebuffer,
-                &rows,
-                LETTER_WIDTH,
-                cursor_x,
-                HAND_MESSAGE_TOP_MARGIN,
-                HAND_MESSAGE_COLOR,
-            );
+/// Alto lógico (sin escalar) de un glifo de LETRA/DÍGITO dentro de
+/// este bloque — mismo valor que ya usa `letter_glyph_rows`/
+/// `DIGIT_FONT` (ambos 7 y 5 filas respectivamente, pero `draw_glyph`
+/// ya itera por `rows.len()` real; este valor es solo para el
+/// ESPACIADO vertical entre líneas, que usa el más alto de los dos).
+const HORDE_PROGRESS_LINE_HEIGHT: i32 = 7;
 
-            cursor_x += (LETTER_WIDTH + GLYPH_GAP) * HAND_MESSAGE_SCALE;
-        }
+/// Separación vertical entre la línea "HAND N/M" y "ENEMIES: K".
+const HORDE_PROGRESS_LINE_GAP: i32 = 4;
+
+/// Margen derecho/inferior — mismos valores que `LEFT_MARGIN`/
+/// `BOTTOM_MARGIN` del HUD de vida/munición, reflejados al otro lado.
+const HORDE_PROGRESS_RIGHT_MARGIN: i32 = LEFT_MARGIN;
+const HORDE_PROGRESS_BOTTOM_MARGIN: i32 = BOTTOM_MARGIN;
+
+/// Dibuja el HUD de progreso de Horde Mode: "HAND N/M" arriba,
+/// "ENEMIES: K" debajo, ambas líneas alineadas a la derecha.
+///
+/// Presentación pura: recibe instantáneas primitivas ya resueltas por
+/// el llamador (`App`, a partir de `GameSession`/`LevelManager`) — no
+/// conoce `GameMode`/`HordeManager`; es responsabilidad de `App`
+/// llamar aquí SOLO durante Horde Mode (Portal Mode simplemente nunca
+/// invoca esta función, igual que `App::update_playing` nunca invoca
+/// `GameSession::update_hand_state` en Portal).
+///
+/// `last_normal_hand` es la última Hand que SÍ trae Dealers (la
+/// anterior a la ronda final reservada) — nunca `final_hand_number`
+/// en sí, que todavía no representa una Hand jugable (Bloque 3 la
+/// reemplazará por The King).
+pub(crate) fn render_horde_progress(
+    framebuffer: &mut Framebuffer,
+    hand_number: usize,
+    last_normal_hand: usize,
+    alive_dealer_count: usize,
+) {
+    let framebuffer_width = framebuffer.width();
+
+    let framebuffer_height = framebuffer.height();
+
+    if framebuffer_width <= 0 || framebuffer_height <= 0 {
+        return;
     }
+
+    let hand_digits_a = digits_of(hand_number as i64, 1);
+    let hand_digits_b = digits_of(last_normal_hand as i64, 1);
+    let enemy_digits = digits_of(alive_dealer_count as i64, 1);
+
+    let mut hand_line = String::new();
+    hand_line.push_str("HAND ");
+    for digit in &hand_digits_a {
+        hand_line.push((b'0' + digit) as char);
+    }
+    hand_line.push('/');
+    for digit in &hand_digits_b {
+        hand_line.push((b'0' + digit) as char);
+    }
+
+    let mut enemies_line = String::new();
+    enemies_line.push_str("ENEMIES: ");
+    for digit in &enemy_digits {
+        enemies_line.push((b'0' + digit) as char);
+    }
+
+    let hand_line_width = hand_message_width(&hand_line, HORDE_PROGRESS_SCALE);
+    let enemies_line_width = hand_message_width(&enemies_line, HORDE_PROGRESS_SCALE);
+
+    let row_height = HORDE_PROGRESS_LINE_HEIGHT * HORDE_PROGRESS_SCALE;
+
+    let enemies_line_y = framebuffer_height - HORDE_PROGRESS_BOTTOM_MARGIN - row_height;
+
+    let hand_line_y = enemies_line_y - HORDE_PROGRESS_LINE_GAP - row_height;
+
+    draw_mixed_text(
+        framebuffer,
+        &hand_line,
+        framebuffer_width - HORDE_PROGRESS_RIGHT_MARGIN - hand_line_width,
+        hand_line_y,
+        HORDE_PROGRESS_SCALE,
+        HAND_MESSAGE_COLOR,
+    );
+
+    draw_mixed_text(
+        framebuffer,
+        &enemies_line,
+        framebuffer_width - HORDE_PROGRESS_RIGHT_MARGIN - enemies_line_width,
+        enemies_line_y,
+        HORDE_PROGRESS_SCALE,
+        HAND_MESSAGE_COLOR,
+    );
 }
 
 #[cfg(test)]

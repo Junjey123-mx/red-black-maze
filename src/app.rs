@@ -11,8 +11,8 @@ use crate::rendering::map_2d::{
 };
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
-    render_fps, render_hand_message, render_hit_flash_overlay, render_hud, render_minimap,
-    render_weapon, render_world_sprites,
+    render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress, render_hud,
+    render_minimap, render_weapon, render_world_sprites,
 };
 use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
@@ -1527,6 +1527,34 @@ impl<'aud> App<'aud> {
                     self.session.weapon_reserve_ammo(),
                     theme,
                 );
+
+                /*
+                 * HUD de progreso de Horde (Bloque 1, Commit 09):
+                 * abajo-derecha, simétrico al de vida/munición.
+                 * Oculto por completo en Portal Mode — la condición
+                 * es la MISMA que ya usa `App::update_playing` para
+                 * decidir si `update_hand_state` avanza la
+                 * progresión, así que nunca puede mostrar un número
+                 * "congelado" de un sistema que no está corriendo.
+                 * `alive_dealer_count` cuenta únicamente Dealers VIVOS
+                 * (nunca cadáveres todavía en despawn), la MISMA
+                 * fuente de verdad que decide cuándo termina una Hand.
+                 */
+                if self.session.mode() == GameMode::Horde {
+                    let final_hand_number = self
+                        .level_manager
+                        .current_horde_hand_config()
+                        .final_hand_number;
+
+                    let last_normal_hand = final_hand_number.saturating_sub(1).max(1);
+
+                    render_horde_progress(
+                        framebuffer,
+                        self.session.hand_number(),
+                        last_normal_hand,
+                        self.session.alive_dealer_count(),
+                    );
+                }
             }
         }
 
