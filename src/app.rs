@@ -1003,6 +1003,19 @@ impl<'aud> App<'aud> {
                 ViewMode::World3D => ViewMode::Map2D,
             };
         }
+
+        /*
+         * Bloque 5, Commit 52: `SoundEffect::KingSummon` suena
+         * EXACTAMENTE una vez por cada transición autoritativa a
+         * `Summoning` (800/600/400/200). El evento se origina en
+         * `GameSession` (rotura de umbral no bloqueada, o apertura
+         * del gate al limpiarse la cohorte previa) y se consume aquí,
+         * una sola vez por cuadro jugable — nunca desde rendering, el
+         * temporizador de invocación ni la actualización de entidades.
+         */
+        if self.session.take_king_summon_cue() {
+            self.audio.play_sound(SoundEffect::KingSummon);
+        }
     }
 
     /// Procesa el menú de pausa: ESC reanuda incondicionalmente

@@ -85,6 +85,15 @@ struct KingEncounter {
     /// actual (Bloque 4, Commit 35). `0.0` fuera de `Summoning`. Solo
     /// avanza vía `update_king_encounter`.
     summon_timer: f32,
+
+    /// `true` desde que una transición AUTORITATIVA a
+    /// `KingEncounterPhase::Summoning` ocurre (rotura de umbral no
+    /// bloqueada, o apertura del gate al limpiarse la cohorte previa)
+    /// hasta que `take_king_summon_cue` lo consume (Bloque 5, Commit
+    /// 52). Garantiza que `SoundEffect::KingSummon` suene EXACTAMENTE
+    /// una vez por invocación (800/600/400/200) y nunca por cuadro,
+    /// desde rendering ni desde el temporizador.
+    summon_cue_pending: bool,
 }
 
 impl KingEncounter {
@@ -95,6 +104,7 @@ impl KingEncounter {
             last_hit_broke_phase: false,
             pending_threshold: None,
             summon_timer: 0.0,
+            summon_cue_pending: false,
         }
     }
 }
@@ -753,6 +763,7 @@ impl GameSession {
                 if !self.previous_cohort_blocks(pending) {
                     self.king_encounter.phase = KingEncounterPhase::Summoning;
                     self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                    self.king_encounter.summon_cue_pending = true;
                 }
             }
             return;
@@ -851,6 +862,19 @@ impl GameSession {
     #[allow(dead_code)]
     pub(crate) fn king_is_summoning(&self) -> bool {
         self.king_encounter.phase == KingEncounterPhase::Summoning
+    }
+
+    /// Consume el evento "The King acaba de entrar en `Summoning`"
+    /// (Bloque 5, Commit 52): retorna `true` EXACTAMENTE una vez por
+    /// cada transición autoritativa a la fase de invocación y lo
+    /// limpia. `App` lo consulta una vez por cuadro de juego para
+    /// reproducir `SoundEffect::KingSummon`; Pause/Victory/Defeat
+    /// simplemente no llaman aquí, así que el evento no se pierde ni
+    /// se duplica.
+    pub(crate) fn take_king_summon_cue(&mut self) -> bool {
+        let pending = self.king_encounter.summon_cue_pending;
+        self.king_encounter.summon_cue_pending = false;
+        pending
     }
 
     /// Segundos restantes de la fase `Summoning` actual (`0.0` fuera
@@ -1554,6 +1578,7 @@ impl GameSession {
                 } else {
                     self.king_encounter.phase = KingEncounterPhase::Summoning;
                     self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                    self.king_encounter.summon_cue_pending = true;
                 }
 
                 health - threshold
@@ -7434,5 +7459,85 @@ e             #
             run.entities().iter().all(|e| e.summon_cohort().is_none()),
             "sin minions sueltos tras la victoria"
         );
+    }
+
+    // --- Bloque 5, Commit 52: cue de audio de invocación. ---
+
+    #[test]
+    fn entering_summoning_raises_the_summon_cue_exactly_once() {
+        let (mut run, _king) = king_at_summon(0);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+
+        // Exactamente una vez por transición: primera lectura `true`,
+        // el resto `false` durante toda la animación.
+        assert!(run.take_king_summon_cue());
+        for _ in 0..40 {
+            assert!(!run.take_king_summon_cue());
+            run.update_king_encounter(0.05, BLOCK_SIZE);
+        }
+    }
+
+    #[test]
+    fn every_one_of_the_four_summons_raises_the_cue_once() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = (run, king);
+
+        let mut cues = 0;
+        // Recorre el combate completo drenando invocaciones y
+        // limpiando cohortes, contando cada cue.
+        for _ in 0..600 {
+            if run.take_king_summon_cue() {
+                cues += 1;
+            }
+            if !run.king_alive() {
+                break;
+            }
+            if run.king_is_summoning() {
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+                continue;
+            }
+            // Limpia cohortes vivas para abrir el siguiente gate.
+            let summoned: Vec<usize> = run
+                .entities()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.summon_cohort().is_some() && !e.is_dead())
+                .map(|(i, _)| i)
+                .collect();
+            if summoned.is_empty() {
+                run.damage_entity(king);
+            } else {
+                for i in summoned {
+                    run.damage_entity(i);
+                    run.damage_entity(i);
+                }
+                run.update_king_encounter(0.0, BLOCK_SIZE);
+            }
+        }
+        // Drena cualquier cue final pendiente.
+        if run.take_king_summon_cue() {
+            cues += 1;
+        }
+
+        assert!(!run.king_alive());
+        assert_eq!(cues, 4, "un cue por cada invocación 800/600/400/200");
+    }
+
+    #[test]
+    fn protected_damage_never_raises_the_summon_cue() {
+        let (mut run, king) = king_at_summon(0);
+        assert!(run.take_king_summon_cue());
+
+        // Disparos rechazados durante la invocación: ni daño ni cue.
+        for _ in 0..10 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+            assert!(!run.take_king_summon_cue());
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_session_starts_with_no_pending_summon_cue() {
+        let mut fresh = new_horde_session();
+        assert!(!fresh.take_king_summon_cue());
     }
 }
