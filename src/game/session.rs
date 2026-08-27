@@ -6502,6 +6502,21 @@ e             #
         assert_eq!(third, first);
     }
 
+    // --- Bloque 4, Commit 41: segunda invocación de 5 Dealers (600). ---
+
+    #[test]
+    fn the_six_hundred_threshold_summons_a_second_five_dealer_cohort() {
+        let (mut run, _king) = king_at_summon(1);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+        assert!((run.king_summon_time_remaining() - KING_SUMMON_DURATION).abs() < f32::EPSILON);
+        assert_eq!(run.king_health(), Some((600, 1000)));
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        assert_eq!(run.living_summoned_cohort_count(1), 5);
+        assert_eq!(run.king_thresholds_consumed(), 2);
+    }
+
     // --- Bloque 4, Commit 39: primera invocación de 5 Dealers. ---
 
     #[test]
