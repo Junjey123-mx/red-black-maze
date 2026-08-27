@@ -241,6 +241,18 @@ impl GameSession {
     /// `mode` viaja con la sesión como su única fuente de verdad de
     /// Portal/Horde (`GameSession::mode`).
     ///
+    /// Bloque 2, Commit 19 — reset de The Royal Flush: como el arma
+    /// (`Weapon::new` -> `WeaponTier::Standard`), el pickup
+    /// (`royal_flush_pickup: None`) y su bandera de aparición
+    /// (`royal_flush_spawned: false`) se construyen aquí desde cero,
+    /// TODO estado de la mejora se reinicia automáticamente en cada
+    /// Retry/cambio de nivel/vuelta al menú/cambio de modo, que
+    /// siempre reconstruyen la sesión entera vía este constructor
+    /// (`App::replace_session_with_level`) — nunca reparando campos a
+    /// mano. La mejora solo es permanente DENTRO de la run activa
+    /// (se conserva a través de Pause y de las transiciones de Hand,
+    /// que no reconstruyen la sesión), y Portal Mode nunca la hereda.
+    ///
     /// `horde_hand_config`/`use_clusters` (Bloque 1, Commit 07) SOLO
     /// se usan cuando `mode == GameMode::Horde`: si el mapa trae menos
     /// Dealers que `horde_hand_config.first_hand_min..=first_hand_max`
@@ -4787,6 +4799,139 @@ e             #
         };
 
         assert_eq!(pos(&first), pos(&second));
+    }
+
+    // --- Bloque 2, Commit 19: lifecycle y reset de la mejora. ---
+
+    /// Reconstruye una `GameSession` con exactamente los mismos
+    /// parámetros que la anterior — el mecanismo REAL de Retry/cambio
+    /// de nivel/menú (`App::replace_session_with_level` siempre llama
+    /// a `GameSession::new`, nunca repara campos a mano).
+    fn rebuilt_like_retry(previous: &GameSession, final_hand_number: usize) -> GameSession {
+        let map = "\
+###########
+#p        #
+#    e    #
+#         #
+#        g#
+###########
+";
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let config = HordeHandConfig {
+            first_hand_min: 1,
+            first_hand_max: 1,
+            final_hand_number,
+        };
+
+        // Mismo `mode` que la sesión previa: Retry/Next Level conservan
+        // el modo (`self.session.mode()`).
+        GameSession::new(level, player, BLOCK_SIZE, 0, previous.mode(), config, false)
+    }
+
+    #[test]
+    fn retry_returns_the_weapon_to_standard_and_clears_the_pickup() {
+        let mut run = new_horde_session();
+
+        run.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        run.player.pos = run.royal_flush_pickup().unwrap().position();
+        assert!(run.collect_nearby_royal_flush_pickup());
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        let fresh = rebuilt_like_retry(&run, 4);
+
+        assert_eq!(fresh.weapon_tier(), WeaponTier::Standard);
+        assert!(fresh.royal_flush_pickup().is_none());
+        assert!(!fresh.royal_flush_spawned());
+    }
+
+    #[test]
+    fn a_new_horde_run_starts_clean_even_after_an_uncollected_spawn() {
+        let mut run = new_horde_session();
+        run.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        assert!(run.royal_flush_spawned());
+
+        let fresh = rebuilt_like_retry(&run, 4);
+
+        assert!(!fresh.royal_flush_spawned());
+        assert!(fresh.royal_flush_pickup().is_none());
+    }
+
+    #[test]
+    fn a_portal_run_never_inherits_the_royal_flush_from_a_previous_horde_run() {
+        let mut horde = new_horde_session();
+        horde.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        horde.player.pos = horde.royal_flush_pickup().unwrap().position();
+        horde.collect_nearby_royal_flush_pickup();
+
+        // Siguiente partida en Portal Mode.
+        let map = "\
+###########
+#p        #
+#    e    #
+#         #
+#        g#
+###########
+";
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("nivel válido");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let mut portal = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
+
+        assert_eq!(portal.weapon_tier(), WeaponTier::Standard);
+        assert!(portal.royal_flush_pickup().is_none());
+
+        // Y ni siquiera un intento explícito de spawn la introduce en
+        // Portal.
+        portal.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        assert!(portal.royal_flush_pickup().is_none());
+    }
+
+    #[test]
+    fn the_upgrade_survives_a_pause_and_a_hand_transition_within_the_same_run() {
+        let mut run = new_horde_session();
+
+        run.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        run.player.pos = run.royal_flush_pickup().unwrap().position();
+        run.collect_nearby_royal_flush_pickup();
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        // "Pausa": muchos segundos reales sin llamar a ningún update.
+        // El tier no cambia.
+        assert_eq!(run.weapon_tier(), WeaponTier::RoyalFlush);
+
+        // Transición de Hand: matar la Hand actual y dejar que la
+        // intermisión avance a la siguiente.
+        for index in 0..run.entities().len() {
+            run.damage_entity(index);
+            run.damage_entity(index);
+        }
+        for _ in 0..300 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+            if run.hand_number() >= 2 {
+                break;
+            }
+        }
+
+        assert!(run.hand_number() >= 2);
+        assert_eq!(
+            run.weapon_tier(),
+            WeaponTier::RoyalFlush,
+            "la mejora se conserva a través de las Hands dentro de la misma run"
+        );
+        // Recogida: el pickup sigue marcado como inactivo, nunca
+        // reaparece.
+        assert!(!run.royal_flush_pickup().unwrap().is_active());
     }
 
     #[test]
