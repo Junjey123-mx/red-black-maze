@@ -73,6 +73,18 @@ struct KingEncounter {
     /// muerte de The Dealer como señal de ruptura de fase en lugar de
     /// `KingHit`. Se recalcula en cada `damage_entity`.
     last_hit_broke_phase: bool,
+
+    /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
+    /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
+    /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
+    /// animación de `Summoning` termina y los Dealers se colocan;
+    /// `None` el resto del tiempo.
+    pending_threshold: Option<usize>,
+
+    /// Tiempo restante (segundos de PARTIDA) de la fase `Summoning`
+    /// actual (Bloque 4, Commit 35). `0.0` fuera de `Summoning`. Solo
+    /// avanza vía `update_king_encounter`.
+    summon_timer: f32,
 }
 
 impl KingEncounter {
@@ -81,6 +93,8 @@ impl KingEncounter {
             phase: KingEncounterPhase::Fighting,
             thresholds_consumed: 0,
             last_hit_broke_phase: false,
+            pending_threshold: None,
+            summon_timer: 0.0,
         }
     }
 }
@@ -152,6 +166,15 @@ const KING_PHASE_THRESHOLDS: [i32; 4] = [800, 600, 400, 200];
 /// pueden aparecer más.
 #[allow(dead_code)]
 const KING_SUMMON_COUNTS: [usize; 4] = [5, 5, 5, 10];
+
+/// Duración congelada de la fase `Summoning` de The King, en segundos
+/// de tiempo de PARTIDA (Bloque 4, Commit 35). La MISMA para los
+/// cuatro umbrales (800/600/400/200). Solo avanza mientras
+/// `update_king_encounter` se llame — que a su vez solo ocurre dentro
+/// de `update_playing` —, así que `Paused`/`Victory`/`Defeat` la
+/// congelan automáticamente igual que el resto de temporizadores de
+/// la sesión.
+const KING_SUMMON_DURATION: f32 = 2.0;
 
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
@@ -592,6 +615,14 @@ impl GameSession {
 
         let distance_field = any_alert.then(|| DistanceField::from_level(&self.level, player_cell));
 
+        /*
+         * Bloque 4, Commit 35: mientras The King invoca (`Summoning`)
+         * queda completamente inmóvil — no se reevalúa su proximidad
+         * ni se le calcula objetivo de persecución. El resto de
+         * entidades (Dealers ya presentes) sigue exactamente igual.
+         */
+        let king_phase = self.king_encounter.phase;
+
         let transitions = self
             .entities
             .iter_mut()
@@ -599,6 +630,10 @@ impl GameSession {
                 entity.advance_corpse_timer(delta_time);
 
                 if entity.is_dead() {
+                    return None;
+                }
+
+                if entity.kind() == EnemyKind::King && king_phase == KingEncounterPhase::Summoning {
                     return None;
                 }
 
@@ -670,6 +705,63 @@ impl GameSession {
         self.entities.retain(|entity| !entity.should_despawn());
 
         transitions
+    }
+
+    /// Avanza el estado por fases del encuentro contra The King
+    /// (Bloque 4). Debe llamarse EXCLUSIVAMENTE desde el update
+    /// jugable (`App::update_playing`) — mismo patrón que
+    /// `process_dealer_attacks`/`update_hand_state` — para que
+    /// Pause/Victory/Defeat congelen el temporizador de invocación
+    /// automáticamente sin ningún caso especial.
+    ///
+    /// Commit 35: mientras la fase es `Summoning`, descuenta
+    /// `summon_timer`; al llegar a `0` la invocación termina y — por
+    /// ahora — el King vuelve siempre a `Fighting` (el spawn real de
+    /// Dealers llega en el Commit 39; el desvío a `Fleeing` en 200 HP,
+    /// en el Commit 45). Un `delta_time` no finito/no positivo se
+    /// ignora, igual que el resto de temporizadores de la sesión.
+    pub(crate) fn update_king_encounter(&mut self, delta_time: f32) {
+        if self.king_encounter.phase != KingEncounterPhase::Summoning {
+            return;
+        }
+
+        if delta_time.is_finite() && delta_time > 0.0 {
+            self.king_encounter.summon_timer =
+                (self.king_encounter.summon_timer - delta_time).max(0.0);
+        }
+
+        if self.king_encounter.summon_timer > 0.0 {
+            return;
+        }
+
+        self.finish_king_summoning();
+    }
+
+    /// Cierra la fase `Summoning` en curso: limpia el temporizador y
+    /// el umbral pendiente y devuelve al King a `Fighting`. El Commit
+    /// 39 añade aquí el spawn de la cohorte; el Commit 45, el desvío a
+    /// `Fleeing` cuando el umbral resuelto es el de 200 HP.
+    fn finish_king_summoning(&mut self) {
+        self.king_encounter.pending_threshold = None;
+        self.king_encounter.summon_timer = 0.0;
+        self.king_encounter.phase = KingEncounterPhase::Fighting;
+    }
+
+    /// `true` mientras el encuentro está en la fase `Summoning`
+    /// temporizada. `App`/rendering lo consultan para el feedback de
+    /// invocación; el King es inmóvil, no ataca y es invulnerable
+    /// mientras es `true`.
+    #[allow(dead_code)]
+    pub(crate) fn king_is_summoning(&self) -> bool {
+        self.king_encounter.phase == KingEncounterPhase::Summoning
+    }
+
+    /// Segundos restantes de la fase `Summoning` actual (`0.0` fuera
+    /// de ella). Introspección para las pruebas del Bloque 4 y, más
+    /// adelante, para la animación de invocación.
+    #[allow(dead_code)]
+    pub(crate) fn king_summon_time_remaining(&self) -> f32 {
+        self.king_encounter.summon_timer
     }
 
     /// Cantidad de Dealers VIVOS ahora mismo — nunca
@@ -1252,6 +1344,18 @@ impl GameSession {
                 self.king_encounter.thresholds_consumed += 1;
                 self.king_encounter.last_hit_broke_phase = true;
 
+                /*
+                 * Bloque 4, Commit 35: cruzar un umbral abre una fase
+                 * `Summoning` temporizada de `KING_SUMMON_DURATION`
+                 * segundos. Durante ella `update_entities`/
+                 * `process_dealer_attacks` dejan al King inmóvil y sin
+                 * atacar; el jugador, el mundo y los Dealers ya
+                 * presentes siguen actualizándose con normalidad.
+                 */
+                self.king_encounter.phase = KingEncounterPhase::Summoning;
+                self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                self.king_encounter.pending_threshold = Some(consumed);
+
                 health - threshold
             } else {
                 damage
@@ -1326,8 +1430,19 @@ impl GameSession {
 
         self.king_attacked_this_frame = false;
 
+        /*
+         * Bloque 4, Commit 35: The King no ataca mientras invoca
+         * (`Summoning`). Los Dealers ya presentes atacan igual que
+         * siempre.
+         */
+        let king_attacks_suppressed = self.king_encounter.phase == KingEncounterPhase::Summoning;
+
         for entity in &mut self.entities {
             if entity.is_dead() {
+                continue;
+            }
+
+            if entity.kind() == EnemyKind::King && king_attacks_suppressed {
                 continue;
             }
 
@@ -6070,6 +6185,87 @@ e             #
 
         session.damage_entity(0);
         assert!(!session.last_hit_broke_king_phase());
+    }
+
+    // --- Bloque 4, Commit 35: fase Summoning temporizada. ---
+
+    /// Lleva `run` hasta el King y le aplica impactos Standard hasta
+    /// cruzar el umbral de índice `threshold_index`, dejando el
+    /// encuentro justo al inicio de esa fase `Summoning`.
+    fn king_at_summon(threshold_index: usize) -> (GameSession, usize) {
+        let (mut run, king) = horde_at_the_king(4);
+
+        for step in 0..=threshold_index {
+            let target = KING_PHASE_THRESHOLDS[step];
+            while run.king_health().map(|(h, _)| h).unwrap_or(0) > target {
+                run.damage_entity(king);
+            }
+            if step < threshold_index {
+                // Cierra esta invocación para poder alcanzar la
+                // siguiente (el gate entre cohortes llega en el
+                // Commit 43).
+                run.update_king_encounter(KING_SUMMON_DURATION);
+                assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+            }
+        }
+
+        (run, king)
+    }
+
+    #[test]
+    fn crossing_a_threshold_opens_a_two_second_summoning_phase() {
+        let (run, _king) = king_at_summon(0);
+
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+        assert!(run.king_is_summoning());
+        assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
+        assert_eq!(run.king_health(), Some((800, 1000)));
+    }
+
+    #[test]
+    fn the_king_is_immobile_and_cannot_attack_while_summoning() {
+        let (mut run, king) = king_at_summon(0);
+
+        // Jugador pegado al King, dentro de rango de ataque.
+        let king_pos = run.entities()[king].position();
+        run.player.pos = king_pos;
+
+        let before = run.entities()[king].position();
+        run.update_entities(0.1, BLOCK_SIZE);
+        let after = run.entities()[king].position();
+        assert_eq!(before.x, after.x);
+        assert_eq!(before.y, after.y);
+
+        let health_before = run.player_health();
+        for _ in 0..200 {
+            run.process_dealer_attacks(0.1, BLOCK_SIZE);
+        }
+        assert_eq!(run.player_health(), health_before);
+        assert!(!run.king_attacked_this_frame());
+    }
+
+    #[test]
+    fn the_summoning_phase_lasts_exactly_two_seconds_then_returns_to_fighting() {
+        let (mut run, _king) = king_at_summon(0);
+
+        run.update_king_encounter(1.0);
+        run.update_king_encounter(0.9);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+
+        run.update_king_encounter(0.2);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        assert_eq!(run.king_summon_time_remaining(), 0.0);
+    }
+
+    #[test]
+    fn a_non_positive_delta_never_advances_the_summon_timer() {
+        let (mut run, _king) = king_at_summon(1);
+
+        run.update_king_encounter(0.0);
+        run.update_king_encounter(-1.0);
+        run.update_king_encounter(f32::NAN);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+        assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
     }
 
     #[test]

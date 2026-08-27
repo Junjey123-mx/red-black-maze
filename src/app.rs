@@ -676,6 +676,16 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * Bloque 4, Commit 35: avanza el estado por fases del
+         * encuentro contra The King (temporizador de `Summoning` y,
+         * en commits posteriores, spawn de cohortes / paso a
+         * `Fleeing`). Vive aquí, dentro de `update_playing` — el
+         * ÚNICO llamador — para que Pause/Victory/Defeat lo congelen
+         * automáticamente, mismo patrón que `process_dealer_attacks`.
+         */
+        self.session.update_king_encounter(window.get_frame_time());
+
+        /*
          * Tarea 45: ataques de Dealer. El temporizador del flash se
          * avanza PRIMERO (con el tiempo real de este cuadro, antes
          * de que un golpe de este MISMO cuadro pueda reiniciarlo),
