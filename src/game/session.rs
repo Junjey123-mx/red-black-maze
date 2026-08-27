@@ -5479,6 +5479,114 @@ e             #
         assert!(run.king_alive());
     }
 
+    // --- Bloque 3, Commit 28: aislamiento Portal / Horde. ---
+
+    #[test]
+    fn portal_mode_keeps_the_classic_game_with_no_horde_mechanics() {
+        // `App::update_playing` NUNCA invoca `update_hand_state` en
+        // Portal Mode (esa es la barrera real), así que aquí se
+        // reproduce ese modo: sin ninguna llamada a la progresión de
+        // Hands.
+        let mut portal = new_test_session_with_one_dealer();
+        assert_eq!(portal.mode(), GameMode::Portal);
+
+        // Los paths que SÍ son mode-gated en la propia sesión rechazan
+        // toda mecánica de Horde.
+        portal.spawn_royal_flush_pickup(1, 1, BLOCK_SIZE);
+        assert!(
+            portal.royal_flush_pickup().is_none(),
+            "Royal Flush ausente en Portal"
+        );
+        assert!(!portal.king_spawned(), "The King ausente en Portal");
+        assert_eq!(portal.king_health(), None, "sin barra de jefe en Portal");
+        assert!(!portal.horde_completed(), "Portal nunca 'completa Horde'");
+        assert_eq!(portal.weapon_tier(), WeaponTier::Standard);
+
+        // Los enemigos iniciales, al morir, permanecen muertos.
+        portal.damage_entity(0);
+        portal.damage_entity(0);
+        for _ in 0..200 {
+            portal.update_entities(0.1, BLOCK_SIZE);
+        }
+        assert_eq!(portal.alive_dealer_count(), 0);
+        assert!(
+            portal
+                .entities()
+                .iter()
+                .all(|e| e.kind() == EnemyKind::Dealer)
+        );
+        assert_eq!(portal.king_health(), None);
+        assert!(!portal.horde_completed());
+    }
+
+    #[test]
+    fn horde_mode_runs_the_full_progression_and_only_wins_after_the_king() {
+        let mut horde = new_horde_session_with_final_hand(4);
+        assert_eq!(horde.mode(), GameMode::Horde);
+
+        // HAND I activa desde el arranque.
+        assert_eq!(horde.hand_number(), 1);
+        assert!(!horde.entities().is_empty());
+
+        // Progresión completa hasta la Final Hand: aparece el King, y
+        // NO se gana por llegar.
+        assert!(drive_horde_to_final_hand(&mut horde, 4));
+        assert!(horde.king_spawned());
+        assert!(horde.king_alive());
+        assert!(
+            horde.king_health().is_some(),
+            "barra de jefe visible durante el combate"
+        );
+        assert!(
+            !horde.horde_completed(),
+            "entrar a la Final Hand no es victoria"
+        );
+
+        // Solo derrotar al King completa Horde.
+        let king = living_king_index(&horde).unwrap();
+        for _ in 0..20 {
+            horde.damage_entity(king);
+        }
+        assert!(horde.horde_completed());
+        assert_eq!(
+            horde.king_health(),
+            None,
+            "barra de jefe oculta tras la muerte"
+        );
+    }
+
+    #[test]
+    fn neither_mode_leaks_its_mechanics_into_a_freshly_built_session_of_the_other() {
+        // Horde con todo activado -> nueva Portal: limpia.
+        let mut horde = new_horde_session_with_final_hand(2);
+        drive_horde_to_final_hand(&mut horde, 2);
+        horde.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        let file = TempLevelFile::write(map_with_one_dealer());
+        let level = Level::load(file.path_str()).expect("nivel válido");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+        let portal = GameSession::new(
+            level,
+            player,
+            BLOCK_SIZE,
+            0,
+            GameMode::Portal,
+            NO_HORDE_CONFIG,
+            false,
+        );
+
+        assert!(portal.royal_flush_pickup().is_none());
+        assert!(!portal.king_spawned());
+        assert!(!portal.horde_completed());
+
+        // Portal -> nueva Horde: arranca su progresión desde HAND I,
+        // sin heredar nada.
+        let fresh_horde = new_horde_session_with_final_hand(4);
+        assert_eq!(fresh_horde.hand_number(), 1);
+        assert!(!fresh_horde.king_spawned());
+        assert!(fresh_horde.royal_flush_pickup().is_none());
+    }
+
     #[test]
     fn not_calling_update_hand_state_freezes_the_intermission_countdown() {
         // Mismo mecanismo exacto que ya prueban las suites de pausa
