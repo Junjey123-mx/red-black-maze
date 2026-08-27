@@ -706,35 +706,64 @@ impl<'aud> App<'aud> {
          * `render_playing`/el HUD necesiten ninguna comprobación de
          * modo adicional por su cuenta.
          */
+        let final_hand_number = self
+            .level_manager
+            .current_horde_hand_config()
+            .final_hand_number;
+
         if self.session.mode() == GameMode::Horde {
             self.session.update_hand_state(
                 window.get_frame_time(),
                 BLOCK_SIZE,
                 self.level_manager.current_dealer_cap(),
                 self.level_manager.current_is_procedural(),
-                self.level_manager
-                    .current_horde_hand_config()
-                    .final_hand_number,
+                final_hand_number,
             );
         }
 
         /*
+         * Horde Mode (Commit 08): victoria por completar la
+         * progresión, no por el portal (ausente, Commit 05). Se
+         * evalúa AQUÍ, DESPUÉS de `update_hand_state` de este mismo
+         * cuadro — a diferencia de `reached_goal` (capturado arriba,
+         * antes de combate), esta condición depende del resultado del
+         * `tick()` de HandOutcome que la llamada de justo encima
+         * puede haber producido en este mismo cuadro.
+         *
+         * `hand_number() >= final_hand_number` es EXACTAMENTE
+         * equivalente a "ya se alcanzó `HandOutcome::FinalHandReached`":
+         * ese es el único camino por el que `hand_number` puede
+         * alcanzar `final_hand_number` (ver `HordeManager::tick`). La
+         * ronda final no spawnea Dealers (Commit 07), así que la
+         * partida termina en Victory en el mismo cuadro en que
+         * comienza, antes de que un `tick()` posterior pudiera volver
+         * a evaluar "Hand vacía" sobre ella — Bloque 3 reemplazará
+         * esta resolución temporal por el combate real contra The
+         * King.
+         */
+        let horde_completed = self.session.mode() == GameMode::Horde
+            && self.session.hand_number() >= final_hand_number;
+
+        let victory_condition_met = reached_goal || horde_completed;
+
+        /*
          * Tarea 46.B: resolución terminal ÚNICA de este cuadro, ahora
-         * que tanto `reached_goal` (recordado arriba, antes de
-         * combate) como el daño de Dealer de ESTE MISMO cuadro (justo
-         * arriba) ya están disponibles. `resolve_playing_terminal_state`
-         * es la ÚNICA regla de decisión — nunca dos comprobaciones
-         * independientes con un `return` intermedio entre ellas — y
-         * garantiza `Defeat` sobre `Victory` cuando ambas condiciones
-         * se cumplen en el mismo cuadro. El `return` detiene aquí
-         * cualquier acción jugable adicional de este cuadro (disparo,
-         * reload, alternar vista) sin necesidad de banderas de estado
-         * nuevas.
+         * que tanto `victory_condition_met` (Portal: `reached_goal`
+         * recordado arriba, antes de combate; Horde: `horde_completed`
+         * recién evaluado) como el daño de Dealer de ESTE MISMO
+         * cuadro (justo arriba) ya están disponibles.
+         * `resolve_playing_terminal_state` es la ÚNICA regla de
+         * decisión — nunca dos comprobaciones independientes con un
+         * `return` intermedio entre ellas — y garantiza `Defeat` sobre
+         * `Victory` cuando ambas condiciones se cumplen en el mismo
+         * cuadro. El `return` detiene aquí cualquier acción jugable
+         * adicional de este cuadro (disparo, reload, alternar vista)
+         * sin necesidad de banderas de estado nuevas.
          */
         let previous_state = self.state;
 
         self.state = previous_state
-            .resolve_playing_terminal_state(self.session.player_health(), reached_goal);
+            .resolve_playing_terminal_state(self.session.player_health(), victory_condition_met);
 
         if self.state != previous_state {
             match self.state {
