@@ -53,11 +53,13 @@ const VISIBILITY_RADIUS_CELLS: f32 = 6.0;
 /// se evita como spawn mientras existan alternativas.
 const VISIBILITY_CONE_COS: f32 = 0.5;
 
-/// Disparos necesarios para eliminar un Dealer
-/// (`game::session::DEALER_DAMAGE_PER_HIT` / `world::entity::
+/// Disparos Standard necesarios para eliminar un Dealer
+/// (`player::WeaponTier::Standard.damage()` / `world::entity::
 /// DEALER_MAX_HEALTH` = 50/100 = 2), duplicado aquí SOLO como
 /// literal de cálculo de presupuesto de munición — mismo patrón ya
-/// documentado en `world::level_generator`.
+/// documentado en `world::level_generator`. El presupuesto se
+/// dimensiona siempre para el arma Standard; The Royal Flush (Bloque
+/// 2) solo REDUCE el consumo al hacer one-shot, nunca lo aumenta.
 const SHOTS_TO_KILL_ONE_DEALER: u32 = 2;
 
 /// Margen por errores de puntería (sección 19), igual que en la

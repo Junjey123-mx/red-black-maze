@@ -56,8 +56,8 @@ const WALKABLE_CELLS_PER_DEALER: f32 = 9.5;
 const MIN_DEALERS: usize = 18;
 const MAX_DEALERS: usize = 30;
 
-/// Daño por disparo aceptado y vida máxima del Dealer
-/// (`game::session::DEALER_DAMAGE_PER_HIT` / `world::entity::
+/// Daño por disparo Standard aceptado y vida máxima del Dealer
+/// (`player::WeaponTier::Standard.damage()` / `world::entity::
 /// DEALER_MAX_HEALTH`), duplicados aquí SOLO como literales de
 /// cálculo de presupuesto de munición — nunca como una segunda
 /// fuente de verdad de esas reglas de combate (el nivel no las lee

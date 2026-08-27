@@ -18,18 +18,6 @@ pub(crate) enum ViewMode {
     World3D,
 }
 
-/// Daño aplicado a un enemigo por cada disparo aceptado del arma
-/// Standard. Con `DEALER_MAX_HEALTH = 100` (definido en
-/// `world::entity`), un Dealer muere tras exactamente dos golpes
-/// Standard — comportamiento idéntico al de antes del Bloque 2.
-///
-/// Bloque 2, Commit 13: el valor deja de ser un literal suelto y pasa
-/// a derivar de `WeaponTier::Standard.damage()`, la fuente única y
-/// reutilizable del daño por tier. `damage_entity` sigue usando este
-/// valor (siempre Standard) hasta el Commit 17, que lo cambia por el
-/// daño del tier ACTIVO.
-const DEALER_DAMAGE_PER_HIT: i32 = WeaponTier::Standard.damage();
-
 /// Munición de reserva que otorga cada `AmmoPickup` recogido
 /// (Tarea 44). Nunca se aplica directamente al cargador — siempre
 /// vía `Weapon::add_reserve_ammo`, que ya respeta el tope.
@@ -951,20 +939,31 @@ impl GameSession {
         cells.len()
     }
 
-    /// Aplica el daño de un golpe de Dealer aceptado a la entidad
-    /// indicada, con verificación segura de límites, y reporta el
-    /// resultado semántico (`EntityDamageOutcome`) para que quien
-    /// interpreta el evento (`App`) pueda distinguir un golpe real de
-    /// un evento sin efecto sin inferirlo de `EntityState`.
+    /// Aplica el daño de un disparo aceptado a la entidad indicada,
+    /// con verificación segura de límites, y reporta el resultado
+    /// semántico (`EntityDamageOutcome`) para que quien interpreta el
+    /// evento (`App`) pueda distinguir un golpe real de un evento sin
+    /// efecto sin inferirlo de `EntityState`.
+    ///
+    /// El daño lo decide el `WeaponTier` ACTIVO (Bloque 2, Commit 17):
+    /// `Standard` inflige 50 (un Dealer de 100 de vida sigue muriendo
+    /// en dos disparos, exactamente como antes del Bloque 2),
+    /// `RoyalFlush` inflige 100 (el mismo Dealer muere de un disparo).
+    /// El mismo input, el mismo raycast, el mismo consumo de munición
+    /// y el mismo enfriamiento — solo cambia este número, y el
+    /// resultado (one-shot o no) emerge de salud del enemigo vs daño
+    /// del arma, sin ninguna condición especial por tipo de enemigo.
     ///
     /// Un `entity_index` fuera de rango produce `EntityDamageOutcome::None`
-    /// sin entrar en pánico. La cantidad de daño y la invariante de
-    /// salud/estado son responsabilidad exclusiva de
-    /// `Entity::apply_damage`; este método solo coordina el acceso
-    /// indexado seguro.
+    /// sin entrar en pánico. La invariante de salud/estado es
+    /// responsabilidad exclusiva de `Entity::apply_damage`; este
+    /// método solo coordina el acceso indexado seguro y la lectura del
+    /// tier.
     pub(crate) fn damage_entity(&mut self, entity_index: usize) -> EntityDamageOutcome {
+        let damage = self.weapon.tier().damage();
+
         match self.entities.get_mut(entity_index) {
-            Some(entity) => entity.apply_damage(DEALER_DAMAGE_PER_HIT),
+            Some(entity) => entity.apply_damage(damage),
 
             None => EntityDamageOutcome::None,
         }
@@ -1710,8 +1709,8 @@ mod tests {
 
         move_player_near_dealer_and_alert(&mut session, 0, 20.0);
 
-        // Vida real del Dealer (100) requiere dos golpes de 50 para
-        // morir (`DEALER_DAMAGE_PER_HIT`).
+        // Vida real del Dealer (100) requiere dos golpes Standard de
+        // 50 para morir (`WeaponTier::Standard.damage()`).
         session.damage_entity(0);
         session.damage_entity(0);
         assert_eq!(session.entities()[0].state(), EntityState::Dead);
@@ -4727,6 +4726,54 @@ e             #
         // Un intento explícito extra nunca coloca otra.
         session.spawn_royal_flush_pickup(1, 1, BLOCK_SIZE);
         assert_eq!(session.royal_flush_pickup().unwrap().position(), position);
+    }
+
+    // --- Bloque 2, Commit 17: daño de The Royal Flush por el hitscan
+    // existente. ---
+
+    #[test]
+    fn standard_weapon_needs_two_hits_to_kill_a_dealer() {
+        let mut session = new_horde_session();
+
+        assert_eq!(session.weapon_tier(), WeaponTier::Standard);
+
+        assert_eq!(session.damage_entity(0), EntityDamageOutcome::Hit);
+        assert_eq!(session.entities()[0].state(), EntityState::Hit);
+
+        assert_eq!(session.damage_entity(0), EntityDamageOutcome::Killed);
+        assert_eq!(session.entities()[0].state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn royal_flush_one_shots_a_dealer_through_the_same_damage_path() {
+        let mut session = new_horde_session();
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        session.player.pos = session.royal_flush_pickup().unwrap().position();
+        assert!(session.collect_nearby_royal_flush_pickup());
+        assert_eq!(session.weapon_tier(), WeaponTier::RoyalFlush);
+
+        // Un único `damage_entity` (mismo método, mismo input) mata al
+        // Dealer de 100 de vida.
+        assert_eq!(session.damage_entity(0), EntityDamageOutcome::Killed);
+        assert_eq!(session.entities()[0].state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn royal_flush_never_consumes_extra_ammo_to_deal_more_damage() {
+        let mut session = new_horde_session();
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+        session.player.pos = session.royal_flush_pickup().unwrap().position();
+        session.collect_nearby_royal_flush_pickup();
+
+        let magazine_before = session.weapon_ammo();
+        let reserve_before = session.weapon_reserve_ammo();
+
+        session.damage_entity(0);
+
+        assert_eq!(session.weapon_ammo(), magazine_before);
+        assert_eq!(session.weapon_reserve_ammo(), reserve_before);
     }
 
     #[test]
