@@ -1,5 +1,5 @@
 use crate::audio::{
-    AudioManager, MusicTrack, SoundEffect, enemy_death_sound, enemy_hit_sound,
+    AudioManager, MusicTrack, SoundEffect, enemy_death_sound, enemy_hit_sound, king_impact_sound,
     music_track_for_theme, weapon_fire_sound,
 };
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
@@ -956,18 +956,22 @@ impl<'aud> App<'aud> {
                             .unwrap_or(EnemyKind::Dealer);
 
                         /*
-                         * Bloque 4, Commit 34: si este disparo rompió
-                         * uno de los umbrales de fase de The King
-                         * (800/600/400/200), el ÚNICO feedback de
-                         * impacto es el mismo sonido de muerte de The
-                         * Dealer (`SoundEffect::EnemyDeath`) — la señal
-                         * de que "cayó otro bloque de 200 HP" — nunca
-                         * también `KingHit` para ese mismo impacto. Un
-                         * impacto normal al King sigue en `KingHit`, y
-                         * su muerte real sigue en `KingDeath`.
+                         * Bloque 5, Commit 53: cada disparo válido
+                         * produce EXACTAMENTE un sonido de impacto, o
+                         * ninguno. Para The King la decisión vive en
+                         * `king_impact_sound` (autoridad única): rotura
+                         * de umbral -> el `EnemyDeath` de The Dealer y
+                         * nunca además `KingHit`; impacto normal ->
+                         * `KingHit`; muerte real -> `KingDeath`; daño
+                         * rechazado por `Summoning`/gate -> silencio.
+                         * `KingSummon` es un evento aparte (Commit 52).
                          */
-                        if kind == EnemyKind::King && self.session.last_hit_broke_king_phase() {
-                            self.audio.play_sound(SoundEffect::EnemyDeath);
+                        if kind == EnemyKind::King {
+                            if let Some(sfx) =
+                                king_impact_sound(outcome, self.session.last_hit_broke_king_phase())
+                            {
+                                self.audio.play_sound(sfx);
+                            }
                         } else {
                             match outcome {
                                 EntityDamageOutcome::Hit => {

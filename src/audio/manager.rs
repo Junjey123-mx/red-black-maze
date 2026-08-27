@@ -4,7 +4,7 @@ use std::path::Path;
 use raylib::prelude::*;
 
 use crate::player::WeaponTier;
-use crate::world::{EnemyKind, LevelTheme};
+use crate::world::{EnemyKind, EntityDamageOutcome, LevelTheme};
 
 /// Identidad tipada de una de las cuatro pistas de música de fondo
 /// (Tarea 46.5). `App` selecciona la pista activa por este valor
@@ -244,6 +244,35 @@ pub(crate) fn enemy_death_sound(kind: EnemyKind) -> SoundEffect {
     match kind {
         EnemyKind::Dealer => SoundEffect::EnemyDeath,
         EnemyKind::King => SoundEffect::KingDeath,
+    }
+}
+
+/// SFX de impacto (o su ausencia) para un disparo YA resuelto contra
+/// The King (Bloque 5, Commit 53). Autoridad ÚNICA de esta decisión:
+/// `App` la consulta en vez de encadenar condiciones propias, de modo
+/// que cada disparo válido produce EXACTAMENTE un sonido de impacto, o
+/// ninguno:
+///
+/// - `broke_phase` (el disparo cruzó 800/600/400/200) -> el mismo
+///   `EnemyDeath` de The Dealer, y NUNCA además `KingHit`;
+/// - impacto normal no letal -> `KingHit`;
+/// - muerte real de The King -> `KingDeath`;
+/// - daño rechazado por `Summoning`/gate (`None`) -> ningún SFX.
+///
+/// `KingSummon` no aparece aquí: es el evento de invocación, no un
+/// sonido de impacto de arma (ver `SoundEffect::KingSummon`).
+pub(crate) fn king_impact_sound(
+    outcome: EntityDamageOutcome,
+    broke_phase: bool,
+) -> Option<SoundEffect> {
+    if broke_phase {
+        return Some(SoundEffect::EnemyDeath);
+    }
+
+    match outcome {
+        EntityDamageOutcome::Hit => Some(SoundEffect::KingHit),
+        EntityDamageOutcome::Killed => Some(SoundEffect::KingDeath),
+        EntityDamageOutcome::None => None,
     }
 }
 
@@ -809,6 +838,43 @@ mod tests {
             sfx_path(SoundEffect::KingSummon),
             "assets/audio/sfx/king_summon.wav"
         );
+    }
+
+    // --- Bloque 5, Commit 53: un solo SFX de impacto por disparo. ---
+
+    #[test]
+    fn a_normal_king_hit_uses_the_king_hit_cue_alone() {
+        assert_eq!(
+            king_impact_sound(EntityDamageOutcome::Hit, false),
+            Some(SoundEffect::KingHit)
+        );
+    }
+
+    #[test]
+    fn a_phase_breaking_king_hit_uses_dealer_death_and_never_king_hit() {
+        // Aunque el outcome es `Hit` (el King no muere), el cue es
+        // `EnemyDeath`, nunca `KingHit`.
+        assert_eq!(
+            king_impact_sound(EntityDamageOutcome::Hit, true),
+            Some(SoundEffect::EnemyDeath)
+        );
+        assert_eq!(
+            king_impact_sound(EntityDamageOutcome::Killed, true),
+            Some(SoundEffect::EnemyDeath)
+        );
+    }
+
+    #[test]
+    fn a_real_king_death_uses_the_king_death_cue() {
+        assert_eq!(
+            king_impact_sound(EntityDamageOutcome::Killed, false),
+            Some(SoundEffect::KingDeath)
+        );
+    }
+
+    #[test]
+    fn protected_or_rejected_king_damage_produces_no_impact_sound() {
+        assert_eq!(king_impact_sound(EntityDamageOutcome::None, false), None);
     }
 
     #[test]
