@@ -45,6 +45,37 @@ pub(crate) enum KingEncounterPhase {
     Fleeing,
 }
 
+/// Ciclo de vida de la MÚSICA del encuentro contra The King (Bloque 5,
+/// Commit 56). Una sola representación coherente, en lugar de booleans
+/// sueltos: el encuentro decide QUÉ estado corresponde y `App` lo
+/// traduce a llamadas del `AudioManager` (que sigue siendo el único
+/// responsable de la reproducción real).
+///
+/// Progresión estrictamente hacia adelante durante una run:
+///
+/// ```text
+/// LevelMusic  ──(primera invocación, umbral 800)──▶ FirstSummonSilence
+/// FirstSummonSilence  ──(termina la animación de 800)──▶ FinalBattle
+/// FinalBattle  ──(permanece hasta que la run se reconstruye)
+/// ```
+///
+/// - `LevelMusic`: la pista normal del nivel sigue sonando — incluye
+///   toda la aparición de The King y la pelea de 1000→801 HP.
+/// - `FirstSummonSilence`: la pista del nivel se detiene y NADA de
+///   música de fondo suena durante los 2.0 s de la primera invocación;
+///   solo se oyen los SFX de ruptura/invocación.
+/// - `FinalBattle`: `final_battle.mp3` suena de forma continua a
+///   través de 600/400/200 y de toda la persecución `Fleeing`, sin
+///   reiniciarse ni detenerse hasta Victory/Defeat o un rebuild.
+///
+/// Portal Mode nunca sale de `LevelMusic` (no hay King ni umbrales).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BossMusicState {
+    LevelMusic,
+    FirstSummonSilence,
+    FinalBattle,
+}
+
 /// Estado del encuentro contra The King (Bloque 4). Agrupa la fase y
 /// —en commits posteriores— los umbrales ya consumidos, el
 /// temporizador de invocación y la cohorte activa, en vez de
@@ -94,6 +125,13 @@ struct KingEncounter {
     /// una vez por invocación (800/600/400/200) y nunca por cuadro,
     /// desde rendering ni desde el temporizador.
     summon_cue_pending: bool,
+
+    /// Estado del ciclo de vida musical del encuentro (Bloque 5,
+    /// Commit 56). Arranca en `BossMusicState::LevelMusic`; el
+    /// encuentro lo avanza a `FirstSummonSilence` al empezar la
+    /// primera invocación (umbral 800) y a `FinalBattle` cuando esa
+    /// animación termina. Nunca retrocede dentro de una run.
+    music: BossMusicState,
 }
 
 impl KingEncounter {
@@ -105,6 +143,7 @@ impl KingEncounter {
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
+            music: BossMusicState::LevelMusic,
         }
     }
 }
@@ -824,6 +863,16 @@ impl GameSession {
         } else {
             KingEncounterPhase::Fighting
         };
+
+        /*
+         * Bloque 5, Commit 56: al terminar la PRIMERA invocación
+         * (umbral 800) el silencio da paso a `final_battle.mp3`, que
+         * a partir de aquí acompaña 600/400/200 y toda la persecución
+         * sin volver a cambiar.
+         */
+        if resolved_threshold == Some(0) {
+            self.king_encounter.music = BossMusicState::FinalBattle;
+        }
     }
 
     /// `true` si The King está en su fase final de huida permanente
@@ -957,6 +1006,16 @@ impl GameSession {
     #[allow(dead_code)]
     pub(crate) fn king_phase(&self) -> KingEncounterPhase {
         self.king_encounter.phase
+    }
+
+    /// Estado del ciclo de vida musical del encuentro (Bloque 5,
+    /// Commit 56). `App` lo traduce cada cuadro a llamadas del
+    /// `AudioManager`; el encuentro es la única autoridad sobre cuándo
+    /// cambia. En Portal Mode, o antes de la primera invocación,
+    /// siempre es `BossMusicState::LevelMusic`.
+    #[allow(dead_code)]
+    pub(crate) fn boss_music_state(&self) -> BossMusicState {
+        self.king_encounter.music
     }
 
     /// `true` mientras haya un King VIVO en el mundo (nunca cuenta un
@@ -1592,6 +1651,17 @@ impl GameSession {
                     self.king_encounter.phase = KingEncounterPhase::Summoning;
                     self.king_encounter.summon_timer = KING_SUMMON_DURATION;
                     self.king_encounter.summon_cue_pending = true;
+                }
+
+                /*
+                 * Bloque 5, Commit 56: la PRIMERA invocación (umbral
+                 * 800, índice 0 — nunca bloqueada por una cohorte
+                 * previa) apaga la música del nivel. Los umbrales
+                 * posteriores no tocan el estado musical: para
+                 * entonces ya es `FinalBattle` y así permanece.
+                 */
+                if consumed == 0 {
+                    self.king_encounter.music = BossMusicState::FirstSummonSilence;
                 }
 
                 health - threshold
@@ -7472,6 +7542,97 @@ e             #
             run.entities().iter().all(|e| e.summon_cohort().is_none()),
             "sin minions sueltos tras la victoria"
         );
+    }
+
+    // --- Bloque 5, Commit 56: modelo de estado musical del boss. ---
+
+    #[test]
+    fn a_fresh_run_reports_level_music_for_the_boss() {
+        assert_eq!(
+            new_horde_session().boss_music_state(),
+            BossMusicState::LevelMusic
+        );
+        assert_eq!(
+            new_test_session_with_one_dealer().boss_music_state(),
+            BossMusicState::LevelMusic
+        );
+    }
+
+    #[test]
+    fn the_king_appearing_and_the_opening_fight_keep_level_music() {
+        let (mut run, king) = horde_at_the_king(4);
+        assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+
+        // 1000 -> 850: sigue música de nivel.
+        for _ in 0..3 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+        assert_eq!(run.king_health(), Some((850, 1000)));
+    }
+
+    #[test]
+    fn the_first_summon_silences_level_music_then_starts_the_final_battle() {
+        let (mut run, _king) = king_at_summon(0);
+
+        // Durante los 2.0 s de la primera invocación: silencio.
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+        run.update_king_encounter(1.0, BLOCK_SIZE);
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+
+        // Termina la animación -> final battle.
+        run.update_king_encounter(1.5, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn later_summons_and_the_flee_phase_never_leave_the_final_battle_state() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        // Recorre 600/400/200 + Fleeing + muerte: nunca sale de
+        // FinalBattle.
+        for _ in 0..600 {
+            assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+            if !run.king_alive() {
+                break;
+            }
+            if run.king_is_summoning() {
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+                continue;
+            }
+            let summoned: Vec<usize> = run
+                .entities()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.summon_cohort().is_some() && !e.is_dead())
+                .map(|(i, _)| i)
+                .collect();
+            if summoned.is_empty() {
+                run.damage_entity(king);
+            } else {
+                for i in summoned {
+                    run.damage_entity(i);
+                    run.damage_entity(i);
+                }
+                run.update_king_encounter(0.0, BLOCK_SIZE);
+            }
+        }
+        assert!(!run.king_alive());
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn portal_mode_never_leaves_level_music() {
+        let mut portal = new_test_session_with_one_dealer();
+        for _ in 0..300 {
+            portal.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert_eq!(portal.boss_music_state(), BossMusicState::LevelMusic);
     }
 
     // --- Bloque 5, Commit 52: cue de audio de invocación. ---
