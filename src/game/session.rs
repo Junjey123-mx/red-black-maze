@@ -5,7 +5,7 @@ use raylib::prelude::Vector2;
 use crate::player::{Player, Weapon, WeaponState, WeaponTier};
 use crate::world::{
     AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, Entity, EntityDamageOutcome, EntityState,
-    EntityStateTransition, HealthPickup, HordeHandConfig, Level,
+    EntityStateTransition, HealthPickup, HordeHandConfig, Level, RoyalFlushPickup,
 };
 
 use super::GameMode;
@@ -177,6 +177,23 @@ pub(crate) struct GameSession {
     health_pickups: Vec<HealthPickup>,
     hit_flash: HitFlashState,
 
+    /// The Royal Flush de esta run (Bloque 2, Commit 14), o `None`
+    /// mientras todavía no se ha colocado.
+    ///
+    /// `Some(pickup)` con `pickup.is_active()` mientras está en el
+    /// suelo esperando a ser recogida; `Some(pickup)` con
+    /// `!is_active()` una vez recogida (rendering ya no la dibuja).
+    /// Nunca vuelve a `None` ni se sustituye: `royal_flush_spawned`
+    /// garantiza una sola aparición por run.
+    royal_flush_pickup: Option<RoyalFlushPickup>,
+
+    /// `true` en cuanto The Royal Flush se ha colocado alguna vez en
+    /// esta run — recogida o no. Impide una segunda aparición aunque
+    /// la intermisión vuelva a evaluar la condición de spawn. Una run
+    /// nueva reconstruye la sesión entera, así que arranca en `false`
+    /// sin ningún reset explícito.
+    royal_flush_spawned: bool,
+
     /// Sistema de "Dealer Hands": HAND I/II/III..., cadáveres aparte
     /// (esos viven en `Entity`/`entities`, ver `update_entities`).
     /// Pertenece a la sesión — nunca a `AudioManager`/rendering — y
@@ -345,6 +362,8 @@ impl GameSession {
             hand_seed,
             emergency_ammo_spawn_count: 0,
             hit_flash: HitFlashState::new(),
+            royal_flush_pickup: None,
+            royal_flush_spawned: false,
             mode,
         }
     }
@@ -1067,6 +1086,98 @@ impl GameSession {
         collected
     }
 
+    /// The Royal Flush de esta run, si ya se ha colocado (Bloque 2,
+    /// Commit 14): `None` mientras todavía no ha aparecido. Rendering
+    /// decide por sí mismo, vía `RoyalFlushPickup::is_active`, si
+    /// dibujarla.
+    ///
+    /// El Commit 16 (world sprite de la mejora) es el primer
+    /// consumidor real; hasta entonces el accesor existe pero nadie
+    /// lo lee.
+    #[allow(dead_code)]
+    pub(crate) fn royal_flush_pickup(&self) -> Option<&RoyalFlushPickup> {
+        self.royal_flush_pickup.as_ref()
+    }
+
+    /// Coloca The Royal Flush en la celda `(row, column)`, UNA sola
+    /// vez por run.
+    ///
+    /// No-op si ya se colocó antes (`royal_flush_spawned`), recogida o
+    /// no, o si la sesión no es Horde — la mejora nunca existe en
+    /// Portal Mode. Reutiliza el mismo centrado de celda que el resto
+    /// de pickups (`RoyalFlushPickup::at_cell`); NO introduce
+    /// inventario, munición propia ni cambia el arma equipada (eso
+    /// ocurre solo al recogerla, en `collect_nearby_royal_flush_pickup`).
+    ///
+    /// El Commit 15 decide DÓNDE y CUÁNDO llamarlo (intermisión previa
+    /// a la penúltima Hand); este método solo garantiza la invariante
+    /// de "como mucho una aparición".
+    #[allow(dead_code)]
+    pub(crate) fn spawn_royal_flush_pickup(
+        &mut self,
+        row: usize,
+        column: usize,
+        block_size: usize,
+    ) {
+        if self.royal_flush_spawned || self.mode != GameMode::Horde {
+            return;
+        }
+
+        self.royal_flush_spawned = true;
+
+        self.royal_flush_pickup = Some(RoyalFlushPickup::at_cell(row, column, block_size));
+    }
+
+    /// `true` si The Royal Flush ya se ha colocado alguna vez en esta
+    /// run (recogida o no) — la condición que impide una segunda
+    /// aparición.
+    #[allow(dead_code)]
+    pub(crate) fn royal_flush_spawned(&self) -> bool {
+        self.royal_flush_spawned
+    }
+
+    /// Recoge The Royal Flush si está activa y dentro de
+    /// `PICKUP_RADIUS` de la posición actual del jugador, ascendiendo
+    /// el arma equipada a `WeaponTier::RoyalFlush`.
+    ///
+    /// Debe llamarse EXCLUSIVAMENTE desde el update jugable
+    /// (`App::update_playing`) — mismo motivo/patrón exacto que
+    /// `collect_nearby_ammo_pickups`/`collect_nearby_health_pickups` —
+    /// para que la pausa congele la recolección sin ningún caso
+    /// especial nuevo.
+    ///
+    /// El mismo criterio espacial (`PICKUP_RADIUS`) que la munición y
+    /// la vida: nada de recoger a través de una pared. Al consumirse,
+    /// `RoyalFlushPickup::deactivate` la marca recogida (rendering deja
+    /// de dibujarla) y `Weapon::set_tier` cambia el tier de la ÚNICA
+    /// arma equipada — sin tocar cargador, reserva ni estado.
+    ///
+    /// Retorna `true` EXACTAMENTE en el cuadro en que la mejora se
+    /// recoge: el único evento semántico que `App` usa para solicitar
+    /// el SFX de recogida (Commit 18), nunca por simple proximidad a
+    /// una mejora ya recogida o todavía no colocada.
+    pub(crate) fn collect_nearby_royal_flush_pickup(&mut self) -> bool {
+        let player_position = self.player.pos;
+
+        let Some(pickup) = self.royal_flush_pickup.as_mut() else {
+            return false;
+        };
+
+        if !pickup.is_active() {
+            return false;
+        }
+
+        if !pickup_in_range(player_position, pickup.position(), PICKUP_RADIUS) {
+            return false;
+        }
+
+        pickup.deactivate();
+
+        self.weapon.set_tier(WeaponTier::RoyalFlush);
+
+        true
+    }
+
     /// Avanza la animación de antorcha según el tiempo transcurrido
     /// desde la última actualización.
     pub(crate) fn update_torch_animation(&mut self, delta_time: f32) {
@@ -1087,6 +1198,14 @@ impl GameSession {
     /// Estado visual actualmente activo del arma.
     pub(crate) fn weapon_state(&self) -> WeaponState {
         self.weapon.state()
+    }
+
+    /// Nivel del arma equipada (Bloque 2). `Standard` hasta que se
+    /// recoja The Royal Flush en esta run; rendering y audio lo LEEN
+    /// para elegir sprites/SFX (Commits 16-18).
+    #[allow(dead_code)]
+    pub(crate) fn weapon_tier(&self) -> WeaponTier {
+        self.weapon.tier()
     }
 
     /// Progreso normalizado de la recarga en curso, o `None` si el
@@ -4320,6 +4439,131 @@ e             #
         };
 
         assert_eq!(positions(&first), positions(&second));
+    }
+
+    // --- Bloque 2, Commit 14: pickup de The Royal Flush. ---
+
+    /// Sesión Horde en el mapa abierto de una celda-Dealer, con una
+    /// Final Hand reservada (`final_hand_number = 2`).
+    fn new_horde_session() -> GameSession {
+        let map = "\
+#######
+#p    #
+#  e  #
+#    g#
+#######
+";
+
+        let file = TempLevelFile::write(map);
+        let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
+        let player = Player::from_level(&level, BLOCK_SIZE);
+
+        let config = HordeHandConfig {
+            first_hand_min: 1,
+            first_hand_max: 1,
+            final_hand_number: 2,
+        };
+
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false)
+    }
+
+    #[test]
+    fn a_fresh_session_has_no_royal_flush_and_a_standard_weapon() {
+        let session = new_horde_session();
+
+        assert!(session.royal_flush_pickup().is_none());
+        assert!(!session.royal_flush_spawned());
+        assert_eq!(session.weapon_tier(), WeaponTier::Standard);
+    }
+
+    #[test]
+    fn spawning_the_royal_flush_places_an_active_pickup_once() {
+        let mut session = new_horde_session();
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        let pickup = session.royal_flush_pickup().expect("debe haberse colocado");
+        assert!(pickup.is_active());
+        assert!(session.royal_flush_spawned());
+
+        let first_position = pickup.position();
+
+        // Un segundo intento nunca sustituye ni mueve la mejora.
+        session.spawn_royal_flush_pickup(2, 1, BLOCK_SIZE);
+
+        assert_eq!(
+            session.royal_flush_pickup().unwrap().position(),
+            first_position
+        );
+    }
+
+    #[test]
+    fn portal_mode_never_spawns_the_royal_flush() {
+        let mut session = new_test_session_with_one_dealer(); // Portal.
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        assert!(session.royal_flush_pickup().is_none());
+        assert!(!session.royal_flush_spawned());
+    }
+
+    #[test]
+    fn collecting_the_royal_flush_upgrades_the_single_equipped_weapon() {
+        let mut session = new_horde_session();
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        let magazine_before = session.weapon_ammo();
+        let reserve_before = session.weapon_reserve_ammo();
+
+        // Fuera de rango: nada ocurre, la mejora sigue en el suelo.
+        session.player.pos = Vector2::new(4.5 * BLOCK_SIZE as f32, 2.5 * BLOCK_SIZE as f32);
+        assert!(!session.collect_nearby_royal_flush_pickup());
+        assert!(session.royal_flush_pickup().unwrap().is_active());
+        assert_eq!(session.weapon_tier(), WeaponTier::Standard);
+
+        // Sobre la mejora: se recoge exactamente una vez.
+        session.player.pos = session.royal_flush_pickup().unwrap().position();
+        assert!(session.collect_nearby_royal_flush_pickup());
+
+        assert_eq!(session.weapon_tier(), WeaponTier::RoyalFlush);
+        assert!(!session.royal_flush_pickup().unwrap().is_active());
+
+        // Sin inventario ni munición propia: cargador y reserva
+        // intactos.
+        assert_eq!(session.weapon_ammo(), magazine_before);
+        assert_eq!(session.weapon_reserve_ammo(), reserve_before);
+
+        // Ningún cuadro posterior vuelve a reportar el evento.
+        for _ in 0..5 {
+            assert!(!session.collect_nearby_royal_flush_pickup());
+        }
+    }
+
+    #[test]
+    fn the_royal_flush_persists_until_collected() {
+        let mut session = new_horde_session();
+
+        session.spawn_royal_flush_pickup(1, 3, BLOCK_SIZE);
+
+        // El jugador deambula lejos durante muchos cuadros: la mejora
+        // nunca desaparece por sí sola.
+        session.player.pos = Vector2::new(1.5 * BLOCK_SIZE as f32, 1.5 * BLOCK_SIZE as f32);
+
+        for _ in 0..600 {
+            assert!(!session.collect_nearby_royal_flush_pickup());
+        }
+
+        assert!(session.royal_flush_pickup().unwrap().is_active());
+        assert_eq!(session.weapon_tier(), WeaponTier::Standard);
+    }
+
+    #[test]
+    fn collecting_with_no_royal_flush_present_is_a_no_op() {
+        let mut session = new_horde_session();
+
+        assert!(!session.collect_nearby_royal_flush_pickup());
+        assert_eq!(session.weapon_tier(), WeaponTier::Standard);
     }
 
     #[test]

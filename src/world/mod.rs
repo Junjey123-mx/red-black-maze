@@ -7,6 +7,7 @@ mod level_generator;
 mod level_manager;
 mod pathfinding;
 mod rng;
+mod royal_flush_pickup;
 mod tile;
 
 /// `can_occupy` y `Level`/`LevelError` se re-exportan como `pub`
@@ -29,4 +30,5 @@ pub(crate) use level_manager::{HordeHandConfig, LevelTheme};
 pub use level_manager::{LevelManager, LevelManagerError};
 pub(crate) use pathfinding::DistanceField;
 pub(crate) use rng::Rng;
+pub(crate) use royal_flush_pickup::RoyalFlushPickup;
 pub(crate) use tile::Tile;

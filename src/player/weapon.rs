@@ -22,13 +22,7 @@ pub(crate) enum WeaponState {
 /// `Standard` es el valor por defecto de cualquier `Weapon::new()`,
 /// así que toda sesión (y todo Retry/cambio de nivel/menú, que
 /// reconstruyen la sesión entera) arranca sin la mejora.
-/*
- * `RoyalFlush` y los consumidores del tier (daño, sprites, SFX) se
- * conectan en los commits 13-18 de este mismo bloque; hasta entonces
- * la variante y los accesores existen pero nadie los usa todavía.
- */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub(crate) enum WeaponTier {
     #[default]
     Standard,
@@ -131,7 +125,6 @@ impl Weapon {
     /// de la run actual. Lo LEEN otros módulos (renderer, hitscan,
     /// audio) para elegir sprites/daño/SFX; ninguno de ellos altera
     /// el estado interno del arma a través de este valor.
-    #[allow(dead_code)]
     pub(crate) fn tier(&self) -> WeaponTier {
         self.tier
     }
@@ -144,7 +137,6 @@ impl Weapon {
     /// cargador/reserva/estado ni el enfriamiento — solo cambia qué
     /// tier está activo para la MISMA arma. Idempotente: volver a
     /// fijar el tier ya activo no tiene efecto observable.
-    #[allow(dead_code)]
     pub(crate) fn set_tier(&mut self, tier: WeaponTier) {
         self.tier = tier;
     }

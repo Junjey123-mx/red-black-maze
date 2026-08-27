@@ -579,6 +579,19 @@ impl<'aud> App<'aud> {
         }
 
         /*
+         * The Royal Flush (Bloque 2, Commit 14): mismo patrón exacto
+         * que las recolecciones de arriba — vive aquí, dentro de
+         * `update_playing` (el ÚNICO llamador), para que
+         * Pause/Victory/Defeat la congelen sin ningún caso especial.
+         * `collect_nearby_royal_flush_pickup` decide por sí sola si
+         * hay una mejora activa en rango y, de haberla, asciende el
+         * `WeaponTier` de la única arma equipada. El SFX de recogida
+         * se conecta en el Commit 18; por ahora la recogida es
+         * silenciosa.
+         */
+        let _royal_flush_collected = self.session.collect_nearby_royal_flush_pickup();
+
+        /*
          * Emergency Ammo Respawn: anti-softlock, no regeneración
          * pasiva. Vive aquí (dentro de `update_playing`, el ÚNICO
          * llamador) por el mismo motivo que la recolección de
