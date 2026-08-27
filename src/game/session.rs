@@ -8,6 +8,7 @@ use crate::world::{
     EntityStateTransition, HealthPickup, Level,
 };
 
+use super::GameMode;
 use super::hand::{self, HandHudMessage, HandState};
 
 /// Modos de visualización disponibles.
@@ -179,6 +180,15 @@ pub(crate) struct GameSession {
     /// sucesiva reciba una semilla distinta y determinista, en vez de
     /// repetir siempre las mismas dos celdas.
     emergency_ammo_spawn_count: u32,
+
+    /// Modo elegido para esta partida (Portal o Horde). Fuente de
+    /// verdad ÚNICA leída por `App`: ninguna otra bandera booleana
+    /// (`is_horde`, `portal_enabled`, ...) duplica esta información
+    /// en ningún otro lugar de `GameSession`. Todavía no condiciona
+    /// ningún sistema de juego — eso llega en un commit posterior;
+    /// por ahora solo viaja con la sesión para que `App` pueda
+    /// preservarlo correctamente en Retry/Next Level.
+    mode: GameMode,
 }
 
 impl GameSession {
@@ -201,7 +211,17 @@ impl GameSession {
     /// semilla, así que reconstruir la sesión (Retry, cambio de
     /// nivel) con la MISMA semilla y la MISMA HAND I siempre produce
     /// exactamente el mismo punto de partida.
-    pub(crate) fn new(level: Level, player: Player, block_size: usize, hand_seed: u64) -> Self {
+    ///
+    /// `mode` viaja con la sesión como su única fuente de verdad de
+    /// Portal/Horde (`GameSession::mode`); todavía no condiciona
+    /// ningún sistema de juego de este constructor.
+    pub(crate) fn new(
+        level: Level,
+        player: Player,
+        block_size: usize,
+        hand_seed: u64,
+        mode: GameMode,
+    ) -> Self {
         let entities: Vec<Entity> = level
             .enemy_spawns()
             .iter()
@@ -235,7 +255,14 @@ impl GameSession {
             hand_seed,
             emergency_ammo_spawn_count: 0,
             hit_flash: HitFlashState::new(),
+            mode,
         }
+    }
+
+    /// Modo de juego (Portal u Horde) con el que se construyó esta
+    /// sesión.
+    pub(crate) fn mode(&self) -> GameMode {
+        self.mode
     }
 
     /// Entidades activas de la sesión actual (los Dealers
@@ -1118,7 +1145,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Sesión de prueba con un único Dealer en (fila 2, columna 3).
@@ -1143,7 +1170,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Sesión de prueba con dos Dealers, en (fila 2, columna 3) y
@@ -1168,7 +1195,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Coloca al jugador a `offset` píxeles del Dealer en
@@ -1423,7 +1450,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     #[test]
@@ -1577,7 +1604,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Sesión de prueba con tres pickups de munición, todos
@@ -1598,7 +1625,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     // --- Tarea 44: pickups de munición. ---
@@ -1856,7 +1883,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Coloca al jugador exactamente sobre el Health Pickup de
@@ -1934,7 +1961,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         session.player.apply_damage(5);
         assert_eq!(session.player_health(), 95);
@@ -2074,7 +2101,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         assert_eq!(session.health_pickups().len(), 0);
 
@@ -2129,7 +2156,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        GameSession::new(level, player, BLOCK_SIZE, 0)
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal)
     }
 
     /// Dispara y recarga hasta agotar TODA la munición del jugador
@@ -2236,7 +2263,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         drain_all_ammo(&mut session);
 
@@ -2329,7 +2356,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         // Consume el único ammo pickup existente para poder llegar a
         // la condición de softlock real (el health pickup queda
@@ -2524,7 +2551,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut first_session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut first_session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         first_session.player.pos = Vector2::new(168.0, 72.0);
         first_session.collect_nearby_ammo_pickups();
@@ -2540,7 +2567,8 @@ mod tests {
 
         let player_again = Player::from_level(&level_again, BLOCK_SIZE);
 
-        let second_session = GameSession::new(level_again, player_again, BLOCK_SIZE, 0);
+        let second_session =
+            GameSession::new(level_again, player_again, BLOCK_SIZE, 0, GameMode::Portal);
 
         assert!(second_session.ammo_pickups()[0].is_active());
         assert_eq!(second_session.weapon_reserve_ammo(), 18);
@@ -2746,7 +2774,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         assert_eq!(session.entities().len(), corpse_count + 1);
 
@@ -2900,7 +2928,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         session.damage_entity(0);
         session.damage_entity(0);
@@ -3092,7 +3120,7 @@ mod tests {
 
         let player = Player::from_level(&level, BLOCK_SIZE);
 
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         let cell_center = Vector2::new(6.0 * 48.0 + 24.0, 3.0 * 48.0 + 24.0);
 
@@ -3245,7 +3273,7 @@ mod tests {
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         // Jugador desplazado hacia la esquina de SU celda más alejada
         // de por dónde llega el Dealer (que entra desde arriba-
@@ -3283,7 +3311,7 @@ e           #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         assert_eq!(session.entities().len(), 2);
 
@@ -3319,7 +3347,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         assert_eq!(session.entities().len(), 4);
 
@@ -3360,7 +3388,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         for _ in 0..400 {
             session.update_entities(0.1, BLOCK_SIZE);
@@ -3392,7 +3420,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         // Confirma que la distancia euclidiana real (celdas
         // diagonalmente adyacentes) excede el rango de ataque por
@@ -3433,7 +3461,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         let cell_center = session.player.pos;
         session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
@@ -3485,7 +3513,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         // HAND I no tiene Dealers (0 marcadores 'e'): fuerza
         // inmediatamente la transición a HAND II.
@@ -3543,7 +3571,7 @@ e             #
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
-        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0);
+        let mut session = GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Portal);
 
         let cell_center = session.player.pos;
         session.player.pos = Vector2::new(cell_center.x + 17.0, cell_center.y - 17.0);
@@ -3556,5 +3584,34 @@ e             #
         assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
 
         let _ = first_hit_step;
+    }
+
+    // --- GameMode: propagación a GameSession. ---
+
+    #[test]
+    fn a_session_reports_exactly_the_mode_it_was_constructed_with() {
+        let map = "\
+#######
+#p   g#
+#######
+";
+
+        let portal_file = TempLevelFile::write(map);
+        let portal_level =
+            Level::load(portal_file.path_str()).expect("el nivel de prueba debe cargar");
+        let portal_player = Player::from_level(&portal_level, BLOCK_SIZE);
+        let portal_session =
+            GameSession::new(portal_level, portal_player, BLOCK_SIZE, 0, GameMode::Portal);
+
+        assert_eq!(portal_session.mode(), GameMode::Portal);
+
+        let horde_file = TempLevelFile::write(map);
+        let horde_level =
+            Level::load(horde_file.path_str()).expect("el nivel de prueba debe cargar");
+        let horde_player = Player::from_level(&horde_level, BLOCK_SIZE);
+        let horde_session =
+            GameSession::new(horde_level, horde_player, BLOCK_SIZE, 0, GameMode::Horde);
+
+        assert_eq!(horde_session.mode(), GameMode::Horde);
     }
 }

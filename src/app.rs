@@ -1,6 +1,6 @@
 use crate::audio::{AudioManager, MusicTrack, SoundEffect, music_track_for_theme};
 use crate::config::{BLOCK_SIZE, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, MAP_RAYS, TARGET_FPS};
-use crate::game::{GameSession, GameState, HandHudMessage, ViewMode};
+use crate::game::{GameMode, GameSession, GameState, HandHudMessage, ViewMode};
 use crate::input::controller::process_events;
 use crate::player::Player;
 use crate::raycasting::{HitscanHit, HitscanTarget, cast_hitscan};
@@ -422,7 +422,7 @@ impl<'aud> App<'aud> {
             }
         };
 
-        self.replace_session_with_level(level);
+        self.replace_session_with_level(level, self.level_select.selected_mode());
     }
 
     fn update_playing(&mut self, window: &RaylibHandle) {
@@ -1067,9 +1067,18 @@ impl<'aud> App<'aud> {
     /// `VictoryScreen::selected_action` (nunca `NextLevel` cuando no
     /// hay nivel siguiente: eso ya es `None` antes de llegar aquí).
     fn perform_victory_action(&mut self, action: VictoryAction) {
+        /*
+         * Next Level/Retry preservan el modo de la partida que
+         * termina — nunca la selección de Level Select, que pudo
+         * haber cambiado desde entonces (o ni haberse vuelto a
+         * visitar). Leído ANTES de cualquier `match` para que ambas
+         * ramas usen exactamente el mismo valor.
+         */
+        let mode = self.session.mode();
+
         match action {
             VictoryAction::NextLevel => match self.level_manager.next() {
-                Ok(Some(level)) => self.replace_session_with_level(level),
+                Ok(Some(level)) => self.replace_session_with_level(level, mode),
 
                 // Nivel final: no existe ambigüedad porque la UI ya
                 // deshabilita esta acción, pero se maneja de forma
@@ -1083,7 +1092,7 @@ impl<'aud> App<'aud> {
             },
 
             VictoryAction::Retry => match self.level_manager.restart() {
-                Ok(level) => self.replace_session_with_level(level),
+                Ok(level) => self.replace_session_with_level(level, mode),
 
                 Err(error) => {
                     eprintln!("Error al reiniciar el nivel: {error}");
@@ -1185,9 +1194,14 @@ impl<'aud> App<'aud> {
     /// sesión muerta intacta en memoria sin actualizarla, igual que
     /// `VictoryAction::MainMenu`.
     fn perform_defeat_action(&mut self, action: DefeatMenuItem) {
+        // Mismo motivo exacto que `perform_victory_action`: se
+        // preserva el modo de la partida que terminó, no la
+        // selección (posiblemente obsoleta) de Level Select.
+        let mode = self.session.mode();
+
         match action {
             DefeatMenuItem::Retry => match self.level_manager.restart() {
-                Ok(level) => self.replace_session_with_level(level),
+                Ok(level) => self.replace_session_with_level(level, mode),
 
                 Err(error) => {
                     eprintln!("Error al reiniciar el nivel: {error}");
@@ -1229,12 +1243,20 @@ impl<'aud> App<'aud> {
     /// aleatoria en cada generación, pero su pista es siempre la
     /// misma) — de ahí la rama explícita antes de caer al mapeo
     /// tema->pista que ya usan los tres niveles estáticos.
-    fn replace_session_with_level(&mut self, level: Level) {
+    ///
+    /// `mode` es explícito en la firma (nunca inferido de `level`,
+    /// que no conoce Portal/Horde) para que cada llamador decida por
+    /// sí mismo la procedencia correcta: `start_selected_level` pasa
+    /// la selección FRESCA de Level Select (`GameMode` "reinicia" en
+    /// cada nueva selección), mientras que Retry/Next Level pasan
+    /// `self.session.mode()` de la partida que terminó (el modo se
+    /// "conserva" en vez de reiniciarse).
+    fn replace_session_with_level(&mut self, level: Level, mode: GameMode) {
         let player = Player::from_level(&level, BLOCK_SIZE);
 
         let hand_seed = self.level_manager.current_hand_seed();
 
-        self.session = GameSession::new(level, player, BLOCK_SIZE, hand_seed);
+        self.session = GameSession::new(level, player, BLOCK_SIZE, hand_seed, mode);
 
         self.state = GameState::Playing;
 
@@ -1685,7 +1707,7 @@ pub fn run() {
 
     let mut app = App::new(
         level_manager,
-        GameSession::new(level, player, BLOCK_SIZE, 0),
+        GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::default()),
         texture_manager,
         welcome,
         level_select,
