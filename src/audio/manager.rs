@@ -938,6 +938,23 @@ mod tests {
         assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
     }
 
+    // --- Bloque 5, Commit 68: continuidad en 600/400/200. ---
+
+    #[test]
+    fn repeated_final_battle_requests_across_all_later_summons_never_reselect() {
+        // Simula `App::sync_boss_music` durante 600/400/200 + Fleeing:
+        // pide `FinalBattle` en cada cuadro. La selección jamás cambia
+        // y `set_music` retorna antes de tocar el stream -> sin
+        // reinicio, sin stop, sin seek a cero.
+        let mut audio = AudioManager::new(None);
+        audio.set_music(MusicTrack::FinalBattle);
+
+        for _ in 0..1_000 {
+            audio.set_music(MusicTrack::FinalBattle);
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+        }
+    }
+
     // --- Bloque 5, Commit 65: handoff a Victory/Defeat. ---
 
     #[test]

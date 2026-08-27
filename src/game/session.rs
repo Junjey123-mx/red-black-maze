@@ -7960,4 +7960,114 @@ e             #
             assert!(!run.take_king_summon_cue());
         }
     }
+
+    // --- Bloque 5, Commit 68: invocaciones posteriores. ---
+
+    /// Lleva el encuentro hasta el inicio de la invocación del umbral
+    /// `index` (>=1) con la música ya en `FinalBattle`, limpiando cada
+    /// cohorte previa por el camino.
+    fn king_at_later_summon(index: usize) -> (GameSession, usize) {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        let _ = run.take_king_summon_cue();
+
+        for step in 1..=index {
+            clear_king_summon_gate(&mut run);
+            let target = KING_PHASE_THRESHOLDS[step];
+            let mut guard = 0;
+            while run.king_health().map(|(h, _)| h).unwrap_or(0) > target {
+                run.damage_entity(king);
+                guard += 1;
+                assert!(guard < 200);
+            }
+            if step < index {
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+                let _ = run.take_king_summon_cue();
+            }
+        }
+        (run, king)
+    }
+
+    #[test]
+    fn the_six_hundred_summon_keeps_final_battle_and_emits_one_cue() {
+        let (mut run, _king) = king_at_later_summon(1);
+        assert!(run.king_is_summoning());
+        assert_eq!(run.king_active_summon_index(), Some(1));
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        let mut cues = if run.take_king_summon_cue() { 1 } else { 0 };
+        while run.king_is_summoning() {
+            assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            if run.take_king_summon_cue() {
+                cues += 1;
+            }
+        }
+        assert_eq!(cues, 1);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn the_four_hundred_summon_keeps_final_battle_and_emits_one_cue() {
+        let (mut run, _king) = king_at_later_summon(2);
+        assert_eq!(run.king_active_summon_index(), Some(2));
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        let mut cues = if run.take_king_summon_cue() { 1 } else { 0 };
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+            if run.take_king_summon_cue() {
+                cues += 1;
+            }
+        }
+        assert_eq!(cues, 1);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+    }
+
+    #[test]
+    fn the_two_hundred_summon_keeps_final_battle_then_leads_into_fleeing() {
+        let (mut run, _king) = king_at_later_summon(3);
+        assert_eq!(run.king_active_summon_index(), Some(3));
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+
+        let mut cues = if run.take_king_summon_cue() { 1 } else { 0 };
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+            if run.take_king_summon_cue() {
+                cues += 1;
+            }
+        }
+        assert_eq!(cues, 1);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+        assert_eq!(run.living_summoned_cohort_count(3), 10);
+    }
+
+    #[test]
+    fn a_later_threshold_shot_does_not_also_register_a_king_hit_feedback() {
+        // El disparo que rompe 600 marca ruptura de fase; `App` lo
+        // traduce a EnemyDeath (una vez) y NUNCA además KingHit —
+        // `king_impact_sound(Hit, true)` == EnemyDeath.
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        clear_king_summon_gate(&mut run);
+
+        let mut broke = false;
+        let mut guard = 0;
+        while run.king_health().map(|(h, _)| h).unwrap_or(0) > 600 {
+            let outcome = run.damage_entity(king);
+            if run.last_hit_broke_king_phase() {
+                broke = true;
+                assert_eq!(
+                    crate::audio::king_impact_sound(outcome, true),
+                    Some(crate::audio::SoundEffect::EnemyDeath)
+                );
+            }
+            guard += 1;
+            assert!(guard < 100);
+        }
+        assert!(broke);
+    }
 }
