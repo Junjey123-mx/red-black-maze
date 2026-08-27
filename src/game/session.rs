@@ -1415,13 +1415,15 @@ impl GameSession {
             let pickup_seed = spawn_seed.wrapping_add(1);
 
             /*
-             * La munición de Hand se coloca CERCA del jugador y, a ser
-             * posible, en celdas que ya tiene delante
-             * (`select_accessible_ammo_cells`), en vez de empujarla
-             * lejos y fuera de vista como a los Dealers: el jugador se
-             * quejaba de tener que cruzar el mapa para recargar.
+             * La munición de Hand se REPARTE de forma diversa
+             * (`select_diverse_ammo_cells`): la mitad en celdas
+             * cercanas y fuera de vista inmediata — accesibles con un
+             * rodeo corto y sin mucho riesgo — y la otra mitad en
+             * cualquier celda transitable del mapa, con separación
+             * entre pickups para que no aparezcan amontonados como
+             * antes.
              */
-            let pickup_cells = hand::select_accessible_ammo_cells(
+            let pickup_cells = hand::select_diverse_ammo_cells(
                 &self.level,
                 self.player.pos,
                 self.player.a,

@@ -523,23 +523,77 @@ pub(crate) fn select_spawn_cells(
     }
 }
 
-/// Distancia navegable máxima (pasos de `DistanceField`) preferida
-/// para un `AmmoPickup` inyectado por el sistema de Hands, de la más
-/// cercana a la más laxa. A diferencia de `select_spawn_cells` — que
-/// EMPUJA a los Dealers lejos y fuera de vista — la munición debe
-/// quedar al alcance inmediato del jugador: pocas celdas de distancia
-/// y, dentro de eso, PRIORIZANDO las celdas que ya tiene delante.
-const ACCESSIBLE_AMMO_MAX_DISTANCE_FALLBACKS: [u32; 3] = [3, 6, u32::MAX];
+/// Banda de distancia navegable de la mitad "accesible pero fuera de
+/// vista" de la munición de Hand: lo bastante cerca para recogerla
+/// con un rodeo corto y sin mucho peligro, pero NO delante del
+/// jugador — tiene que girar o avanzar un poco para encontrarla. Se
+/// relaja si el mapa no ofrece candidatos en la banda estricta.
+const ACCESSIBLE_AMMO_DISTANCE_BANDS: [(u32, u32); 3] = [(2, 5), (1, 9), (1, u32::MAX)];
 
-/// Recolecta hasta `count` celdas TRANSITABLES y no ocupadas para
-/// munición de Hand, priorizando cercanía y visibilidad respecto al
-/// jugador (lo contrario de `select_spawn_cells`): primero las celdas
-/// dentro de una banda navegable corta Y dentro del cono de visión
-/// aproximado, luego las cercanas fuera de vista, y solo si el mapa
-/// no da para más se relaja la distancia. Nunca la celda del jugador,
-/// nunca una pared, nunca una celda ya ocupada. Determinista para una
-/// misma `seed`.
-pub(crate) fn select_accessible_ammo_cells(
+/// Separación navegable (distancia Chebyshev en celdas) mínima
+/// DESEADA entre dos `AmmoPickup` de la misma tanda, para que no
+/// aparezcan amontonados. Se relaja progresivamente hasta `0` si el
+/// mapa no da para tanto.
+const MIN_AMMO_SEPARATION_CELLS: i32 = 3;
+
+/// Distancia Chebyshev (en celdas de cuadrícula) entre dos celdas.
+fn cell_chebyshev(a: (usize, usize), b: (usize, usize)) -> i32 {
+    let dr = (a.0 as i32 - b.0 as i32).abs();
+    let dc = (a.1 as i32 - b.1 as i32).abs();
+    dr.max(dc)
+}
+
+/// Añade a `chosen` hasta `want` celdas de `pool` (ya barajado),
+/// prefiriendo mantener al menos `MIN_AMMO_SEPARATION_CELLS` de
+/// separación con TODAS las ya elegidas; si no llega, afloja la
+/// separación exigida hasta `0`. Nunca repite una celda ya elegida.
+fn take_spaced(pool: &[(usize, usize)], want: usize, chosen: &mut Vec<(usize, usize)>) {
+    if want == 0 {
+        return;
+    }
+
+    let target = chosen.len() + want;
+
+    for min_sep in (0..=MIN_AMMO_SEPARATION_CELLS).rev() {
+        for &cell in pool {
+            if chosen.len() >= target {
+                return;
+            }
+
+            if chosen.contains(&cell) {
+                continue;
+            }
+
+            if chosen
+                .iter()
+                .all(|&other| cell_chebyshev(other, cell) >= min_sep)
+            {
+                chosen.push(cell);
+            }
+        }
+
+        if chosen.len() >= target {
+            return;
+        }
+    }
+}
+
+/// Recolecta hasta `count` celdas TRANSITABLES, alcanzables y no
+/// ocupadas para la munición de una Hand, repartiéndola de forma
+/// DIVERSA en vez de amontonarla:
+///
+/// - la mitad (`count.div_ceil(2)`) en celdas CERCANAS y fuera del
+///   cono de visión inmediato del jugador — accesibles con un rodeo
+///   corto y de bajo riesgo;
+/// - la otra mitad en CUALQUIER celda transitable del mapa, sin que
+///   importe la distancia (fomenta explorar y separa la tanda).
+///
+/// Dentro de cada grupo se procura mantener separación
+/// (`MIN_AMMO_SEPARATION_CELLS`) entre pickups, relajándola solo si el
+/// mapa es demasiado pequeño. Nunca la celda del jugador, nunca una
+/// pared, nunca una celda ya ocupada. Determinista para una misma
+/// `seed`.
+pub(crate) fn select_diverse_ammo_cells(
     level: &Level,
     player_position: Vector2,
     player_facing: f32,
@@ -561,57 +615,86 @@ pub(crate) fn select_accessible_ammo_cells(
     let height = level.height();
     let width = level.width();
 
-    for &max_distance in &ACCESSIBLE_AMMO_MAX_DISTANCE_FALLBACKS {
-        let mut visible = Vec::new();
-        let mut not_visible = Vec::new();
+    let is_eligible = |cell: (usize, usize)| {
+        level.is_walkable(cell.0, cell.1)
+            && cell != player_cell
+            && !occupied.contains(&cell)
+            && distances.distance_at(cell.0, cell.1).is_some()
+    };
+
+    // --- Grupo 1: cercano, alcanzable, fuera de vista inmediata. ---
+    let near_target = count.div_ceil(2);
+    let mut near_pool: Vec<(usize, usize)> = Vec::new();
+
+    for &(low, high) in &ACCESSIBLE_AMMO_DISTANCE_BANDS {
+        near_pool.clear();
 
         for row in 0..height {
             for column in 0..width {
                 let cell = (row, column);
 
-                if !level.is_walkable(row, column) {
+                if !is_eligible(cell) {
                     continue;
                 }
 
-                if cell == player_cell || occupied.contains(&cell) {
-                    continue;
-                }
+                let distance = distances.distance_at(row, column).unwrap_or(0);
 
-                let Some(distance) = distances.distance_at(row, column) else {
-                    continue;
-                };
-
-                if distance == 0 || distance > max_distance {
+                if distance < low.max(1) || distance > high {
                     continue;
                 }
 
                 if is_immediately_visible(row, column, player_position, player_facing, block_size) {
-                    visible.push(cell);
-                } else {
-                    not_visible.push(cell);
+                    continue;
                 }
+
+                near_pool.push(cell);
             }
         }
 
-        let total_candidates = visible.len() + not_visible.len();
-
-        if total_candidates >= count || max_distance == u32::MAX {
-            visible.sort();
-            not_visible.sort();
-
-            rng.shuffle(&mut visible);
-            rng.shuffle(&mut not_visible);
-
-            // Munición a la vista PRIMERO; las cercanas fuera de vista
-            // solo completan lo que falte.
-            let mut ordered = visible;
-            ordered.extend(not_visible);
-
-            return ordered.into_iter().take(count).collect();
+        if near_pool.len() >= near_target || high == u32::MAX {
+            break;
         }
     }
 
-    Vec::new()
+    near_pool.sort();
+    rng.shuffle(&mut near_pool);
+
+    // --- Grupo 2: cualquier celda transitable del mapa. ---
+    let mut any_pool: Vec<(usize, usize)> = Vec::new();
+
+    for row in 0..height {
+        for column in 0..width {
+            let cell = (row, column);
+
+            if is_eligible(cell) {
+                any_pool.push(cell);
+            }
+        }
+    }
+
+    any_pool.sort();
+    rng.shuffle(&mut any_pool);
+
+    // --- Selección espaciada: primero el grupo cercano, luego el
+    //     aleatorio, y si aún falta (mapa diminuto) se completa con lo
+    //     que quede sin exigir separación. ---
+    let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(count);
+
+    take_spaced(&near_pool, near_target, &mut chosen);
+    take_spaced(&any_pool, count - chosen.len(), &mut chosen);
+
+    if chosen.len() < count {
+        for &cell in any_pool.iter().chain(near_pool.iter()) {
+            if chosen.len() >= count {
+                break;
+            }
+            if !chosen.contains(&cell) {
+                chosen.push(cell);
+            }
+        }
+    }
+
+    chosen
 }
 
 /// Coloca hasta `count` posiciones agrupadas en pequeños racimos (1-2
@@ -905,7 +988,12 @@ pub(crate) fn select_emergency_ammo_cells(
 
             rng.shuffle(&mut candidates);
 
-            return candidates.into_iter().take(count).collect();
+            // Reparte los pickups de emergencia sin amontonarlos
+            // (misma regla que la munición de Hand), aunque sigan
+            // todos dentro de la banda cercana.
+            let mut chosen = Vec::with_capacity(count);
+            take_spaced(&candidates, count, &mut chosen);
+            return chosen;
         }
     }
 
@@ -1398,7 +1486,48 @@ mod tests {
     }
 
     #[test]
-    fn accessible_ammo_cells_land_close_to_the_player_and_prefer_the_forward_view() {
+    fn diverse_ammo_splits_between_near_out_of_view_and_anywhere() {
+        let level = test_level(); // sala abierta 13x7 interior
+        let occupied: HashSet<(usize, usize)> = HashSet::new();
+
+        let player_cell = (4, 6);
+        let player_position = Vector2::new(
+            player_cell.1 as f32 * 48.0 + 24.0,
+            player_cell.0 as f32 * 48.0 + 24.0,
+        );
+        let facing = 0.0; // mirando hacia +x
+
+        let distances = DistanceField::from_level(&level, player_cell);
+
+        let cells = select_diverse_ammo_cells(&level, player_position, facing, 48, &occupied, 4, 7);
+        assert_eq!(cells.len(), 4);
+
+        // Ninguna es la del jugador y todas son alcanzables.
+        for &cell in &cells {
+            assert_ne!(cell, player_cell);
+            assert!(distances.distance_at(cell.0, cell.1).is_some());
+        }
+
+        // Grupo cercano (los primeros `div_ceil(4/2)` = 2): fuera del
+        // cono de visión inmediato y a pocos pasos.
+        for &(row, column) in cells.iter().take(2) {
+            assert!(
+                !is_immediately_visible(row, column, player_position, facing, 48),
+                "la munición 'accesible' no debe aparecer delante del jugador"
+            );
+            let d = distances.distance_at(row, column).unwrap();
+            assert!((1..=12).contains(&d), "distancia {d} fuera de lo cercano");
+        }
+
+        // Determinista.
+        assert_eq!(
+            select_diverse_ammo_cells(&level, player_position, facing, 48, &occupied, 4, 7),
+            cells
+        );
+    }
+
+    #[test]
+    fn diverse_ammo_cells_are_spread_apart_not_clustered() {
         let level = test_level();
         let occupied: HashSet<(usize, usize)> = HashSet::new();
 
@@ -1407,46 +1536,26 @@ mod tests {
             player_cell.1 as f32 * 48.0 + 24.0,
             player_cell.0 as f32 * 48.0 + 24.0,
         );
-        // Mirando hacia +x (columnas crecientes).
-        let facing = 0.0;
 
-        let distances = DistanceField::from_level(&level, player_cell);
+        let cells = select_diverse_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 3);
+        assert_eq!(cells.len(), 4);
 
-        let cells =
-            select_accessible_ammo_cells(&level, player_position, facing, 48, &occupied, 3, 7);
-        assert_eq!(cells.len(), 3);
-
-        let mut any_visible = false;
-        for &(row, column) in &cells {
-            let distance = distances
-                .distance_at(row, column)
-                .expect("celda alcanzable");
-            // Cercana: nunca la celda del jugador, siempre a pocos pasos.
-            assert!(
-                (1..=6).contains(&distance),
-                "distancia {distance} demasiado lejos"
-            );
-            assert_ne!((row, column), player_cell);
-            if is_immediately_visible(row, column, player_position, facing, 48) {
-                any_visible = true;
+        // En este mapa abierto la separación mínima se puede respetar:
+        // ningún par de pickups pegado.
+        for i in 0..cells.len() {
+            for j in (i + 1)..cells.len() {
+                assert!(
+                    cell_chebyshev(cells[i], cells[j]) >= MIN_AMMO_SEPARATION_CELLS,
+                    "pickups {:?} y {:?} demasiado juntos",
+                    cells[i],
+                    cells[j]
+                );
             }
         }
-        // El mapa abierto siempre ofrece celdas dentro del cono: al
-        // menos una de las elegidas debe estar a la vista.
-        assert!(
-            any_visible,
-            "la munición debería aparecer a la vista del jugador"
-        );
-
-        // Determinista.
-        assert_eq!(
-            select_accessible_ammo_cells(&level, player_position, facing, 48, &occupied, 3, 7),
-            cells
-        );
     }
 
     #[test]
-    fn accessible_ammo_cells_never_reuse_an_occupied_cell() {
+    fn diverse_ammo_cells_never_reuse_an_occupied_or_player_cell() {
         let level = test_level();
         let player_cell = (3, 3);
         let player_position = Vector2::new(
@@ -1457,12 +1566,16 @@ mod tests {
         let mut occupied: HashSet<(usize, usize)> = HashSet::new();
         occupied.insert((3, 4));
         occupied.insert((4, 3));
+        occupied.insert((5, 5));
 
-        let cells = select_accessible_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 1);
+        let cells = select_diverse_ammo_cells(&level, player_position, 0.0, 48, &occupied, 4, 1);
         for cell in &cells {
             assert!(!occupied.contains(cell));
             assert_ne!(*cell, player_cell);
         }
+
+        let unique: HashSet<(usize, usize)> = cells.iter().copied().collect();
+        assert_eq!(unique.len(), cells.len(), "sin duplicados");
     }
 
     // --- Emergency Ammo Respawn: selección de posiciones. ---
