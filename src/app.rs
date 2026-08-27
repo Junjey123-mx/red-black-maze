@@ -1492,19 +1492,6 @@ impl<'aud> App<'aud> {
         }
     }
 
-    /// Textos del aviso de invocación de The King para el cuadro
-    /// actual, o `None` si el encuentro no está invocando (Bloque 5,
-    /// Commit 54). Los tres primeros umbrales (800/600/400) anuncian
-    /// 5 Dealers; el último (200) recibe su propio texto en el Commit
-    /// 55. `king_active_summon_index` ya es `None` fuera de `Summoning`
-    /// y en Portal Mode, así que este método hereda ese aislamiento.
-    fn king_summon_warning_lines(&self) -> Option<(&'static str, &'static str)> {
-        match self.session.king_active_summon_index() {
-            Some(0..=2) => Some(("THE KING CALLS HIS HAND!", "5 DEALERS JOIN THE HAND")),
-            _ => None,
-        }
-    }
-
     fn render_playing(&self, framebuffer: &mut Framebuffer) {
         /*
          * Horde Mode (sección 5): la meta nunca se dibuja, en
@@ -1726,7 +1713,9 @@ impl<'aud> App<'aud> {
              * modal: se pinta sobre la escena ya renderizada y el
              * jugador sigue moviéndose durante la animación.
              */
-            if let Some((line_one, line_two)) = self.king_summon_warning_lines() {
+            if let Some((line_one, line_two)) =
+                king_summon_warning_lines(self.session.king_active_summon_index())
+            {
                 render_king_summon_warning(framebuffer, line_one, line_two);
             }
         }
@@ -1798,6 +1787,24 @@ fn roman_numeral(mut value: usize) -> String {
     }
 
     result
+}
+
+/// Textos del aviso de invocación de The King para el índice de
+/// umbral actualmente en `Summoning` (Bloque 5, Commits 54/55), o
+/// `None` cuando el encuentro no está invocando.
+///
+/// Los tres primeros umbrales (800/600/400 -> índices 0..=2) anuncian
+/// la llegada de 5 Dealers; el último (200 -> índice 3) escala a
+/// "FINAL HAND" y 10 Dealers, el aviso que precede a la fase
+/// `Fleeing`. `GameSession::king_active_summon_index` ya devuelve
+/// `None` fuera de `Summoning` y en Portal Mode, así que esta función
+/// hereda ese aislamiento sin condiciones propias de modo.
+fn king_summon_warning_lines(summon_index: Option<usize>) -> Option<(&'static str, &'static str)> {
+    match summon_index {
+        Some(0..=2) => Some(("THE KING CALLS HIS HAND!", "5 DEALERS JOIN THE HAND")),
+        Some(3) => Some(("THE KING CALLS HIS FINAL HAND!", "10 DEALERS JOIN THE HAND")),
+        _ => None,
+    }
 }
 
 /// Punto de entrada de la aplicación.
@@ -2000,5 +2007,43 @@ pub fn run() {
         app.render(&mut framebuffer);
 
         framebuffer.swap_buffers(&mut window, &raylib_thread);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Bloque 5, Commits 54/55: avisos de invocación. ---
+
+    #[test]
+    fn no_summon_warning_when_the_king_is_not_summoning() {
+        assert_eq!(king_summon_warning_lines(None), None);
+    }
+
+    #[test]
+    fn the_first_three_summons_announce_five_dealers() {
+        for index in 0..=2 {
+            assert_eq!(
+                king_summon_warning_lines(Some(index)),
+                Some(("THE KING CALLS HIS HAND!", "5 DEALERS JOIN THE HAND"))
+            );
+        }
+    }
+
+    #[test]
+    fn the_final_summon_announces_ten_dealers_and_a_final_hand() {
+        assert_eq!(
+            king_summon_warning_lines(Some(3)),
+            Some(("THE KING CALLS HIS FINAL HAND!", "10 DEALERS JOIN THE HAND"))
+        );
+    }
+
+    #[test]
+    fn the_final_summon_warning_is_distinct_from_the_earlier_ones() {
+        assert_ne!(
+            king_summon_warning_lines(Some(2)),
+            king_summon_warning_lines(Some(3))
+        );
     }
 }
