@@ -1768,6 +1768,11 @@ pub fn run() {
         return;
     }
 
+    if let Err(error) = texture_manager.load_king_textures() {
+        eprintln!("Error al cargar las texturas de The King: {error}");
+        return;
+    }
+
     /*
      * La ventana se muestra al doble de la resolución lógica del
      * framebuffer. `Framebuffer::swap_buffers` ya dibuja su textura

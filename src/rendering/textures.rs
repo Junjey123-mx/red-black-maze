@@ -269,6 +269,30 @@ const DEALER_TEXTURES: [(&str, &str); 4] = [
     ),
 ];
 
+/// Catálogo congelado de las texturas de The King (Bloque 3, Commit
+/// 21): mismo patrón que `DEALER_TEXTURES`. The King no tiene sprite
+/// `Alert` dedicado — reutiliza `king_idle` para `Alert`, igual que
+/// permite el diseño del jefe — así que solo hay tres assets.
+///
+/// Como los Dealers, estas texturas SÍ pasan por
+/// `generate_themed_variants`: The King es "The Dealer ascendido", así
+/// que sus acentos rojos siguen la paleta del nivel; el negro, el oro
+/// de la corona y el rostro claro se conservan sin cambios.
+const KING_TEXTURES: [(&str, &str); 3] = [
+    (
+        "entity-king-idle",
+        "assets/textures/sprites/enemies/king_idle.png",
+    ),
+    (
+        "entity-king-hit",
+        "assets/textures/sprites/enemies/king_hit.png",
+    ),
+    (
+        "entity-king-dead",
+        "assets/textures/sprites/enemies/king_dead.png",
+    ),
+];
+
 /// Administra la carga única y el acceso a los recursos de
 /// textura utilizados por el renderer.
 pub(crate) struct TextureManager {
@@ -565,6 +589,19 @@ impl TextureManager {
         Ok(())
     }
 
+    /// Carga, una única vez, las tres texturas de The King (Bloque 3,
+    /// Commit 21) junto con sus tres variantes temáticas cada una —
+    /// MISMO pipeline exacto que `load_entity_textures` para el Dealer.
+    pub(crate) fn load_king_textures(&mut self) -> Result<(), TextureError> {
+        for (key, path) in KING_TEXTURES {
+            self.load(key, path)?;
+
+            self.generate_themed_variants(key);
+        }
+
+        Ok(())
+    }
+
     /// Variante temática ya cargada correspondiente a la identidad
     /// visual y al estado de comportamiento de la entidad
     /// solicitada, para `theme`.
@@ -583,6 +620,13 @@ impl TextureManager {
             (EntitySprite::Dealer, EntityState::Alert) => "entity-dealer-alert",
             (EntitySprite::Dealer, EntityState::Hit) => "entity-dealer-hit",
             (EntitySprite::Dealer, EntityState::Dead) => "entity-dealer-dead",
+
+            // The King no tiene sprite `Alert` propio: reutiliza
+            // `king_idle` mientras persigue, exactamente como permite
+            // el diseño del jefe.
+            (EntitySprite::King, EntityState::Idle | EntityState::Alert) => "entity-king-idle",
+            (EntitySprite::King, EntityState::Hit) => "entity-king-hit",
+            (EntitySprite::King, EntityState::Dead) => "entity-king-dead",
         };
 
         self.get(&Self::themed_key(key, theme))
@@ -1410,5 +1454,100 @@ mod tests {
             "health_pickup.png debe contener el brillo marfil neutro del proyecto"
         );
         assert!(saw_transparent);
+    }
+
+    // --- Bloque 3, Commit 21: texturas de The King. ---
+
+    #[test]
+    fn loading_king_textures_resolves_every_state_in_every_theme() {
+        let mut manager = TextureManager::new();
+        manager
+            .load_king_textures()
+            .expect("las texturas de The King del proyecto deben cargar");
+
+        for theme in TextureManager::THEMES {
+            for state in [
+                EntityState::Idle,
+                EntityState::Alert,
+                EntityState::Hit,
+                EntityState::Dead,
+            ] {
+                assert!(
+                    manager
+                        .themed_entity_texture(EntitySprite::King, state, theme)
+                        .is_some(),
+                    "falta la variante {theme:?}/{state:?} de The King"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn king_alert_reuses_the_idle_sprite_like_the_boss_design_allows() {
+        let mut manager = TextureManager::new();
+        manager.load_king_textures().expect("The King debe cargar");
+
+        let idle = manager
+            .themed_entity_texture(
+                EntitySprite::King,
+                EntityState::Idle,
+                LevelTheme::CrimsonEntrance,
+            )
+            .unwrap();
+        let alert = manager
+            .themed_entity_texture(
+                EntitySprite::King,
+                EntityState::Alert,
+                LevelTheme::CrimsonEntrance,
+            )
+            .unwrap();
+
+        assert_eq!(idle.path, alert.path);
+    }
+
+    #[test]
+    fn king_hit_and_dead_are_distinct_dedicated_sprites() {
+        let mut manager = TextureManager::new();
+        manager.load_king_textures().expect("The King debe cargar");
+
+        let theme = LevelTheme::BlackClub;
+        let idle = manager
+            .themed_entity_texture(EntitySprite::King, EntityState::Idle, theme)
+            .unwrap()
+            .path
+            .clone();
+        let hit = manager
+            .themed_entity_texture(EntitySprite::King, EntityState::Hit, theme)
+            .unwrap()
+            .path
+            .clone();
+        let dead = manager
+            .themed_entity_texture(EntitySprite::King, EntityState::Dead, theme)
+            .unwrap()
+            .path
+            .clone();
+
+        assert_ne!(idle, hit);
+        assert_ne!(idle, dead);
+        assert_ne!(hit, dead);
+        // Las variantes temáticas se etiquetan por su clave interna
+        // (`entity-king-hit#BlackClub`), no por la ruta del archivo.
+        assert!(hit.contains("entity-king-hit"));
+        assert!(dead.contains("entity-king-dead"));
+    }
+
+    #[test]
+    fn adding_the_king_does_not_disturb_dealer_texture_resolution() {
+        let mut manager = TextureManager::new();
+        manager.load_entity_textures().expect("Dealer debe cargar");
+        manager.load_king_textures().expect("The King debe cargar");
+
+        for theme in TextureManager::THEMES {
+            assert!(
+                manager
+                    .themed_entity_texture(EntitySprite::Dealer, EntityState::Alert, theme)
+                    .is_some()
+            );
+        }
     }
 }

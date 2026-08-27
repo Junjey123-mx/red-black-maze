@@ -24,6 +24,8 @@ pub(crate) use entity::{
     DEALER_ATTACK_RANGE_CELLS, Entity, EntityDamageOutcome, EntitySprite, EntityState,
     EntityStateTransition,
 };
+// `EnemyKind` se re-exporta en el Commit 24, cuando `game::session`
+// pasa a spawnear a The King y a distinguirlo del Dealer.
 pub(crate) use health_pickup::HealthPickup;
 pub use level::{Level, LevelError};
 pub(crate) use level_manager::{HordeHandConfig, LevelTheme};

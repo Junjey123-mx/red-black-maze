@@ -24,6 +24,22 @@ pub(crate) enum EntityState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntitySprite {
     Dealer,
+    King,
+}
+
+/// Tipo de enemigo dentro del MISMO sistema de entidades (Bloque 3,
+/// Commit 21).
+///
+/// No es un sistema paralelo: `Entity` sigue siendo una sola struct
+/// con un solo pipeline de estado/daño/render/cleanup. El `kind` solo
+/// selecciona los VALORES de dominio del enemigo (vida, radio de
+/// impacto, y — en commits posteriores — velocidad de persecución,
+/// rango/cooldown/daño de ataque) y su conjunto de sprites. The King
+/// es "The Dealer ascendido a jefe", no una criatura nueva.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnemyKind {
+    Dealer,
+    King,
 }
 
 /// Transición real de `EntityState` observada durante una llamada a
@@ -56,6 +72,14 @@ pub(crate) enum EntityDamageOutcome {
 /// Vida máxima inicial de un Dealer.
 const DEALER_MAX_HEALTH: i32 = 100;
 
+/// Vida máxima inicial de The King (Bloque 3, Commit 21).
+///
+/// Con `WeaponTier::Standard.damage() = 50` son exactamente 20
+/// impactos Standard; con `WeaponTier::RoyalFlush.damage() = 100`,
+/// exactamente 10. El resultado emerge de vida vs daño del arma, sin
+/// ninguna condición especial por tipo de enemigo.
+const KING_MAX_HEALTH: i32 = 1000;
+
 /// Radio de impacto del Dealer, en unidades de mundo (píxeles).
 ///
 /// Es geometría de mundo, no presentación: se eligió
@@ -63,6 +87,11 @@ const DEALER_MAX_HEALTH: i32 = 100;
 /// que el círculo de impacto quede claramente contenido dentro de
 /// la celda de aparición.
 const DEALER_HIT_RADIUS: f32 = 12.0;
+
+/// Radio de impacto de The King (Bloque 3, Commit 21): algo mayor
+/// que el del Dealer — el jefe es un blanco más grande — pero sigue
+/// contenido dentro de su celda de aparición (`< BLOCK_SIZE / 2`).
+const KING_HIT_RADIUS: f32 = 18.0;
 
 /// Duración visual del estado `Hit` tras un golpe no letal.
 ///
@@ -140,6 +169,7 @@ pub(crate) struct Entity {
     health: i32,
     state: EntityState,
     sprite: EntitySprite,
+    kind: EnemyKind,
     hit_radius: f32,
     hit_time_remaining: f32,
 
@@ -174,11 +204,50 @@ impl Entity {
             health: DEALER_MAX_HEALTH,
             state: EntityState::Idle,
             sprite: EntitySprite::Dealer,
+            kind: EnemyKind::Dealer,
             hit_radius: DEALER_HIT_RADIUS,
             hit_time_remaining: 0.0,
             attack_cooldown_remaining: 0.0,
             corpse_elapsed: 0.0,
         }
+    }
+
+    /// Crea a The King centrado exactamente en la celda `(row,
+    /// column)`, con `KING_MAX_HEALTH`, estado `Idle` y su radio de
+    /// impacto de jefe (Bloque 3, Commit 21).
+    ///
+    /// Misma struct, mismo pipeline de estado/daño/render/cleanup que
+    /// `dealer_at_cell`; solo cambian los valores y el `kind`/`sprite`.
+    ///
+    /// `GameSession` lo invoca al spawnear la Final Hand (Commit 24).
+    #[allow(dead_code)]
+    pub(crate) fn king_at_cell(row: usize, column: usize, block_size: usize) -> Self {
+        let half_block = block_size as f32 / 2.0;
+
+        let x = column as f32 * block_size as f32 + half_block;
+
+        let y = row as f32 * block_size as f32 + half_block;
+
+        Self {
+            position: Vector2::new(x, y),
+            health: KING_MAX_HEALTH,
+            state: EntityState::Idle,
+            sprite: EntitySprite::King,
+            kind: EnemyKind::King,
+            hit_radius: KING_HIT_RADIUS,
+            hit_time_remaining: 0.0,
+            attack_cooldown_remaining: 0.0,
+            corpse_elapsed: 0.0,
+        }
+    }
+
+    /// Tipo de enemigo (Dealer o King). Fuente de verdad de los
+    /// valores de dominio específicos del enemigo. Lo consumen
+    /// `GameSession` (spawn de la Final Hand, barra de vida del jefe)
+    /// y el audio del jefe en commits posteriores de este bloque.
+    #[allow(dead_code)]
+    pub(crate) fn kind(&self) -> EnemyKind {
+        self.kind
     }
 
     /// Posición actual en el mundo, en píxeles.
@@ -627,6 +696,88 @@ mod tests {
 
         assert_eq!(entity.state(), EntityState::Dead);
         assert!(entity.is_dead());
+    }
+
+    // --- Bloque 3, Commit 21: The King como entidad. ---
+
+    #[test]
+    fn king_starts_centered_with_boss_identity_and_one_thousand_health() {
+        let king = Entity::king_at_cell(2, 3, 48);
+
+        assert!((king.position().x - (3.0 * 48.0 + 24.0)).abs() < f32::EPSILON);
+        assert!((king.position().y - (2.0 * 48.0 + 24.0)).abs() < f32::EPSILON);
+        assert_eq!(king.health(), 1000);
+        assert_eq!(king.state(), EntityState::Idle);
+        assert_eq!(king.sprite(), EntitySprite::King);
+        assert_eq!(king.kind(), EnemyKind::King);
+        assert!(!king.is_dead());
+    }
+
+    #[test]
+    fn king_hit_radius_is_positive_and_contained_in_its_cell() {
+        let king = Entity::king_at_cell(0, 0, 48);
+
+        assert!(king.hit_radius() > 0.0);
+        assert!(king.hit_radius() < 48.0 / 2.0);
+        // El jefe es un blanco mayor que un Dealer.
+        assert!(king.hit_radius() > Entity::dealer_at_cell(0, 0, 48).hit_radius());
+    }
+
+    #[test]
+    fn king_takes_twenty_standard_hits_to_die() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        for shot in 1..=19 {
+            assert_eq!(king.apply_damage(50), EntityDamageOutcome::Hit);
+            assert_eq!(king.health(), 1000 - shot * 50);
+            assert!(!king.is_dead());
+        }
+
+        assert_eq!(king.apply_damage(50), EntityDamageOutcome::Killed);
+        assert_eq!(king.health(), 0);
+        assert_eq!(king.state(), EntityState::Dead);
+    }
+
+    #[test]
+    fn king_takes_ten_royal_flush_hits_to_die() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        for shot in 1..=9 {
+            assert_eq!(king.apply_damage(100), EntityDamageOutcome::Hit);
+            assert_eq!(king.health(), 1000 - shot * 100);
+        }
+
+        assert_eq!(king.apply_damage(100), EntityDamageOutcome::Killed);
+        assert!(king.is_dead());
+    }
+
+    #[test]
+    fn king_first_hit_leaves_it_at_950_and_in_hit_state() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        king.apply_damage(50);
+
+        assert_eq!(king.health(), 950);
+        assert_eq!(king.state(), EntityState::Hit);
+    }
+
+    #[test]
+    fn dead_king_stays_dead_and_despawns_like_any_corpse() {
+        let mut king = Entity::king_at_cell(0, 0, 48);
+
+        for _ in 0..20 {
+            king.apply_damage(50);
+        }
+        assert!(king.is_dead());
+
+        king.advance_corpse_timer(CORPSE_DESPAWN_SECONDS);
+        assert!(king.should_despawn());
+    }
+
+    #[test]
+    fn adding_the_king_does_not_change_dealer_health() {
+        assert_eq!(Entity::dealer_at_cell(0, 0, 48).health(), 100);
+        assert_eq!(Entity::dealer_at_cell(0, 0, 48).kind(), EnemyKind::Dealer);
     }
 
     // --- EntityDamageOutcome ---
