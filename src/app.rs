@@ -1501,6 +1501,7 @@ impl<'aud> App<'aud> {
                     self.session.entities(),
                     self.session.ammo_pickups(),
                     self.session.health_pickups(),
+                    self.session.royal_flush_pickup(),
                     &wall_depth_buffer,
                     theme,
                     show_goal,
@@ -1519,6 +1520,7 @@ impl<'aud> App<'aud> {
                     &self.textures,
                     self.session.weapon_state(),
                     theme,
+                    self.session.weapon_tier(),
                     self.session.weapon_reload_progress(),
                 );
 
@@ -1738,6 +1740,16 @@ pub fn run() {
 
     if let Err(error) = texture_manager.load_weapon_textures() {
         eprintln!("Error al cargar las texturas del arma: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_royal_weapon_textures() {
+        eprintln!("Error al cargar las texturas de The Royal Flush: {error}");
+        return;
+    }
+
+    if let Err(error) = texture_manager.load_royal_flush_pickup_texture() {
+        eprintln!("Error al cargar la textura del pickup de The Royal Flush: {error}");
         return;
     }
 

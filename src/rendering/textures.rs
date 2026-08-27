@@ -5,7 +5,7 @@ use raylib::core::error::InvalidImageError;
 use raylib::prelude::{Color, Image};
 
 use super::palette::{ThemePalette, palette_for_theme, remap_accent_pixel};
-use crate::player::WeaponState;
+use crate::player::{WeaponState, WeaponTier};
 use crate::world::{EntitySprite, EntityState, LevelTheme};
 
 /// Recurso de textura decodificado y retenido en memoria de CPU,
@@ -211,6 +211,37 @@ const WEAPON_TEXTURES: [(&str, &str); 3] = [
     ("weapon-fire", "assets/textures/weapon/weapon_fire.png"),
     ("weapon-recoil", "assets/textures/weapon/weapon_recoil.png"),
 ];
+
+/// Catálogo congelado de las tres texturas de The Royal Flush en
+/// primera persona (Bloque 2, Commit 16), una por cada `WeaponState`
+/// visible — misma correspondencia estado -> clave que el arma
+/// Standard, con su propio conjunto de assets dorados.
+///
+/// A diferencia de `WEAPON_TEXTURES`, estas NO pasan por
+/// `generate_themed_variants`: la identidad negro+oro de The Royal
+/// Flush es permanente y NO se recolorea por `LevelTheme` (Crimson/
+/// Black Club/House of Cards) — el dorado es la señal universal de
+/// "conseguiste el arma especial".
+const ROYAL_WEAPON_TEXTURES: [(&str, &str); 3] = [
+    (
+        "royal-weapon-idle",
+        "assets/textures/weapon/royal_weapon_idle.png",
+    ),
+    (
+        "royal-weapon-fire",
+        "assets/textures/weapon/royal_weapon_fire.png",
+    ),
+    (
+        "royal-weapon-recoil",
+        "assets/textures/weapon/royal_weapon_recoil.png",
+    ),
+];
+
+/// Clave/ruta del billboard de mundo de The Royal Flush (Bloque 2,
+/// Commit 16). Tampoco pasa por variantes temáticas: dorada en los
+/// cuatro niveles.
+const ROYAL_FLUSH_PICKUP_TEXTURE_KEY: &str = "sprite-royal-flush-pickup";
+const ROYAL_FLUSH_PICKUP_TEXTURE_PATH: &str = "assets/textures/sprites/royal_flush_pickup.png";
 
 /// Catálogo centralizado y congelado de las cuatro texturas de
 /// estado del Dealer: clave interna -> ruta del recurso.
@@ -445,30 +476,78 @@ impl TextureManager {
         Ok(())
     }
 
-    /// Variante temática ya cargada correspondiente al estado visual
-    /// del arma solicitado, para `theme`.
+    /// Carga, una única vez, las tres texturas de The Royal Flush en
+    /// primera persona (Bloque 2, Commit 16).
     ///
-    /// Resuelve únicamente el mapeo estado -> textura ya cargada;
-    /// no controla ni conoce el temporizado de la máquina de
-    /// estados.
+    /// Reutiliza la MISMA API genérica `load` que el arma Standard,
+    /// pero SIN `generate_themed_variants`: la paleta negro+oro es
+    /// permanente y no se recolorea por nivel.
+    pub(crate) fn load_royal_weapon_textures(&mut self) -> Result<(), TextureError> {
+        for (key, path) in ROYAL_WEAPON_TEXTURES {
+            self.load(key, path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Carga, una única vez, el billboard de mundo de The Royal Flush
+    /// (Bloque 2, Commit 16), también sin variantes temáticas.
+    pub(crate) fn load_royal_flush_pickup_texture(&mut self) -> Result<(), TextureError> {
+        self.load(
+            ROYAL_FLUSH_PICKUP_TEXTURE_KEY,
+            ROYAL_FLUSH_PICKUP_TEXTURE_PATH,
+        )
+    }
+
+    /// Textura ya cargada del billboard de mundo de The Royal Flush,
+    /// si está disponible. No temática: la misma textura dorada en
+    /// todos los niveles.
+    pub(crate) fn royal_flush_pickup_texture(&self) -> Option<&TextureAsset> {
+        self.get(ROYAL_FLUSH_PICKUP_TEXTURE_KEY)
+    }
+
+    /// Textura ya cargada correspondiente al estado visual del arma
+    /// solicitado, para el `theme` y el `tier` activos.
+    ///
+    /// Resuelve únicamente el mapeo (estado, tier) -> textura ya
+    /// cargada; no controla ni conoce el temporizado de la máquina de
+    /// estados. Para `WeaponTier::Standard` devuelve la variante
+    /// temática del arma base (comportamiento idéntico al de antes del
+    /// Bloque 2). Para `WeaponTier::RoyalFlush` devuelve el sprite
+    /// dorado dedicado, NO temático — misma pipeline de render,
+    /// distinto conjunto de assets.
     pub(crate) fn themed_weapon_texture(
         &self,
         state: WeaponState,
         theme: LevelTheme,
+        tier: WeaponTier,
     ) -> Option<&TextureAsset> {
-        let key = match state {
-            /*
-             * `Reload` reutiliza la textura de `Idle`: Tarea 38.C
-             * prioriza la recarga funcional + HUD sobre una animación
-             * dedicada, y explícitamente prohíbe cargar un nuevo PNG
-             * de arma. No hay ninguna textura "weapon-reload".
-             */
-            WeaponState::Idle | WeaponState::Reload => "weapon-idle",
-            WeaponState::Fire => "weapon-fire",
-            WeaponState::Recoil => "weapon-recoil",
-        };
+        /*
+         * `Reload` reutiliza la textura de `Idle` en ambos tiers:
+         * Tarea 38.C prioriza la recarga funcional + HUD sobre una
+         * animación dedicada. No hay ninguna textura "*-reload".
+         */
+        match tier {
+            WeaponTier::Standard => {
+                let key = match state {
+                    WeaponState::Idle | WeaponState::Reload => "weapon-idle",
+                    WeaponState::Fire => "weapon-fire",
+                    WeaponState::Recoil => "weapon-recoil",
+                };
 
-        self.get(&Self::themed_key(key, theme))
+                self.get(&Self::themed_key(key, theme))
+            }
+
+            WeaponTier::RoyalFlush => {
+                let key = match state {
+                    WeaponState::Idle | WeaponState::Reload => "royal-weapon-idle",
+                    WeaponState::Fire => "royal-weapon-fire",
+                    WeaponState::Recoil => "royal-weapon-recoil",
+                };
+
+                self.get(key)
+            }
+        }
     }
 
     /// Carga, una única vez, las cuatro texturas de estado del
@@ -625,6 +704,98 @@ mod tests {
         assert!(crimson.is_some());
         assert!(black_club.is_some());
         assert!(house.is_some());
+    }
+
+    // --- Bloque 2, Commit 16: sprites de The Royal Flush. ---
+
+    #[test]
+    fn standard_tier_still_selects_the_themed_base_weapon_sprites() {
+        let mut manager = TextureManager::new();
+        manager
+            .load_weapon_textures()
+            .expect("arma Standard debe cargar");
+
+        for theme in TextureManager::THEMES {
+            for state in [WeaponState::Idle, WeaponState::Fire, WeaponState::Recoil] {
+                let standard = manager
+                    .themed_weapon_texture(state, theme, WeaponTier::Standard)
+                    .expect("el arma Standard debe resolver en todos los temas");
+
+                // Es exactamente la variante temática de la clave base.
+                let expected_key = match state {
+                    WeaponState::Fire => "weapon-fire",
+                    WeaponState::Recoil => "weapon-recoil",
+                    _ => "weapon-idle",
+                };
+                let expected = manager
+                    .get(&TextureManager::themed_key(expected_key, theme))
+                    .unwrap();
+                assert_eq!(standard.path, expected.path);
+            }
+        }
+    }
+
+    #[test]
+    fn royal_flush_tier_selects_dedicated_non_themed_sprites() {
+        let mut manager = TextureManager::new();
+        manager
+            .load_weapon_textures()
+            .expect("arma Standard debe cargar");
+        manager
+            .load_royal_weapon_textures()
+            .expect("The Royal Flush debe cargar");
+
+        // El mismo sprite dorado en los tres temas: paleta congelada,
+        // nunca recoloreada por nivel.
+        let idle_crimson = manager
+            .themed_weapon_texture(
+                WeaponState::Idle,
+                LevelTheme::CrimsonEntrance,
+                WeaponTier::RoyalFlush,
+            )
+            .expect("royal idle debe resolver");
+        let idle_house = manager
+            .themed_weapon_texture(
+                WeaponState::Idle,
+                LevelTheme::HouseOfCards,
+                WeaponTier::RoyalFlush,
+            )
+            .expect("royal idle debe resolver");
+
+        assert_eq!(idle_crimson.path, idle_house.path);
+        assert!(idle_crimson.path.contains("royal_weapon_idle"));
+
+        // Reload reutiliza el sprite idle, igual que el arma Standard.
+        let reload = manager
+            .themed_weapon_texture(
+                WeaponState::Reload,
+                LevelTheme::BlackClub,
+                WeaponTier::RoyalFlush,
+            )
+            .expect("royal reload debe resolver al idle");
+        assert_eq!(reload.path, idle_crimson.path);
+
+        // Fire y Recoil tienen sprite propio.
+        let fire = manager
+            .themed_weapon_texture(
+                WeaponState::Fire,
+                LevelTheme::BlackClub,
+                WeaponTier::RoyalFlush,
+            )
+            .unwrap();
+        assert!(fire.path.contains("royal_weapon_fire"));
+    }
+
+    #[test]
+    fn royal_flush_world_pickup_texture_loads_and_is_shared_across_levels() {
+        let mut manager = TextureManager::new();
+        assert!(manager.royal_flush_pickup_texture().is_none());
+
+        manager
+            .load_royal_flush_pickup_texture()
+            .expect("el billboard de The Royal Flush debe cargar");
+
+        assert!(manager.royal_flush_pickup_texture().is_some());
     }
 
     #[test]

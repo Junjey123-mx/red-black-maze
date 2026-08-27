@@ -1,6 +1,6 @@
 use super::framebuffer::Framebuffer;
 use super::textures::TextureManager;
-use crate::player::WeaponState;
+use crate::player::{WeaponState, WeaponTier};
 use crate::world::LevelTheme;
 
 /// Escala entera de dibujo del arma en primera persona, con
@@ -85,6 +85,11 @@ pub(crate) fn reload_offset(progress: f32) -> (i32, i32) {
 /// solo lo LEE para elegir la textura correspondiente, nunca
 /// modifica el estado del arma.
 ///
+/// `tier` (Bloque 2, Commit 16) selecciona el conjunto de sprites:
+/// `Standard` usa el arma base temática, `RoyalFlush` el sprite
+/// dorado dedicado — todo lo demás (posición, escala, escalado
+/// entero, `reload_offset`, transiciones) es idéntico para ambos.
+///
 /// `reload_progress` (Tarea 43) es `Weapon::reload_progress()` ya
 /// leído por el llamador: `Some(progreso)` mientras
 /// `WeaponState::Reload` está activo, `None` en cualquier otro
@@ -96,9 +101,10 @@ pub(crate) fn render_weapon(
     textures: &TextureManager,
     state: WeaponState,
     theme: LevelTheme,
+    tier: WeaponTier,
     reload_progress: Option<f32>,
 ) {
-    let Some(texture) = textures.themed_weapon_texture(state, theme) else {
+    let Some(texture) = textures.themed_weapon_texture(state, theme, tier) else {
         return;
     };
 

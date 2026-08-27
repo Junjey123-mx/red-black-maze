@@ -1153,12 +1153,7 @@ impl GameSession {
     /// The Royal Flush de esta run, si ya se ha colocado (Bloque 2,
     /// Commit 14): `None` mientras todavía no ha aparecido. Rendering
     /// decide por sí mismo, vía `RoyalFlushPickup::is_active`, si
-    /// dibujarla.
-    ///
-    /// El Commit 16 (world sprite de la mejora) es el primer
-    /// consumidor real; hasta entonces el accesor existe pero nadie
-    /// lo lee.
-    #[allow(dead_code)]
+    /// dibujarla (`rendering::render_world_sprites`).
     pub(crate) fn royal_flush_pickup(&self) -> Option<&RoyalFlushPickup> {
         self.royal_flush_pickup.as_ref()
     }
@@ -1266,9 +1261,9 @@ impl GameSession {
     }
 
     /// Nivel del arma equipada (Bloque 2). `Standard` hasta que se
-    /// recoja The Royal Flush en esta run; rendering y audio lo LEEN
-    /// para elegir sprites/SFX (Commits 16-18).
-    #[allow(dead_code)]
+    /// recoja The Royal Flush en esta run; rendering lo LEE para
+    /// elegir sprites (`render_weapon`) y audio para elegir el SFX de
+    /// disparo (Commit 18).
     pub(crate) fn weapon_tier(&self) -> WeaponTier {
         self.weapon.tier()
     }

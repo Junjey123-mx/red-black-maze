@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use super::framebuffer::Framebuffer;
 use super::textures::{TextureAsset, TextureManager};
 use crate::player::Player;
-use crate::world::{AmmoPickup, Entity, HealthPickup, Level, LevelTheme};
+use crate::world::{AmmoPickup, Entity, HealthPickup, Level, LevelTheme, RoyalFlushPickup};
 
 /// Distancia mínima segura para evitar dividir por (casi) cero al
 /// calcular el ángulo/dirección hacia el sprite.
@@ -231,6 +231,11 @@ const AMMO_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.5;
 /// escala arbitraria.
 const HEALTH_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.5;
 
+/// Tamaño de mundo del billboard de The Royal Flush (Bloque 2,
+/// Commit 16): algo mayor que munición/vida para que se lea como un
+/// objeto importante, sin llegar al tamaño de un Dealer o la meta.
+const ROYAL_FLUSH_PICKUP_WORLD_SIZE_FACTOR: f32 = 0.6;
+
 /// Dibuja todos los sprites billboard de la escena actual (meta y
 /// antorchas), ordenados de más lejano a más cercano y ocluidos
 /// contra `wall_depth_buffer` de este mismo cuadro.
@@ -253,6 +258,7 @@ pub(crate) fn render_world_sprites(
     entities: &[Entity],
     ammo_pickups: &[AmmoPickup],
     health_pickups: &[HealthPickup],
+    royal_flush_pickup: Option<&RoyalFlushPickup>,
     wall_depth_buffer: &[f32],
     theme: LevelTheme,
     show_goal: bool,
@@ -346,6 +352,24 @@ pub(crate) fn render_world_sprites(
                 world_position: pickup.position(),
                 texture,
                 world_size: block_size as f32 * HEALTH_PICKUP_WORLD_SIZE_FACTOR,
+            });
+        }
+    }
+
+    /*
+     * The Royal Flush (Bloque 2, Commit 16): mismo pipeline exacto
+     * que el resto de pickups (proyección/orden/oclusión), solo el
+     * billboard activo se dibuja. NO temático: la textura dorada es
+     * la misma en los cuatro niveles.
+     */
+    if let (Some(pickup), Some(texture)) =
+        (royal_flush_pickup, textures.royal_flush_pickup_texture())
+    {
+        if pickup.is_active() {
+            items.push(BillboardItem {
+                world_position: pickup.position(),
+                texture,
+                world_size: block_size as f32 * ROYAL_FLUSH_PICKUP_WORLD_SIZE_FACTOR,
             });
         }
     }
