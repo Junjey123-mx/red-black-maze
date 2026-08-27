@@ -7357,4 +7357,82 @@ e             #
         assert!(!run.king_alive());
         assert_eq!(run.king_thresholds_consumed(), 4);
     }
+
+    // --- Bloque 4, Commit 50: cobertura del sistema de fases. ---
+
+    #[test]
+    fn portal_mode_never_touches_the_king_phase_system() {
+        let mut portal = new_test_session_with_one_dealer();
+        assert_eq!(portal.mode(), GameMode::Portal);
+
+        for _ in 0..500 {
+            for i in 0..portal.entities().len() {
+                portal.damage_entity(i);
+            }
+            portal.update_entities(0.1, BLOCK_SIZE);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+
+            assert_eq!(portal.king_phase(), KingEncounterPhase::Fighting);
+            assert!(!portal.king_is_summoning());
+            assert!(!portal.king_is_fleeing());
+            assert_eq!(portal.king_thresholds_consumed(), 0);
+            assert_eq!(portal.king_summon_animation_scale(), 1.0);
+            assert!(
+                portal
+                    .entities()
+                    .iter()
+                    .all(|e| e.summon_cohort().is_none())
+            );
+        }
+        assert!(!portal.horde_completed());
+    }
+
+    #[test]
+    fn retry_rebuilds_every_king_phase_flag() {
+        let (run, king) = king_after_first_cohort();
+        // Deja el encuentro a media pelea: umbral consumido, cohorte
+        // viva, King a 800, incluso empujado a un gate pendiente.
+        let (mut run, king) = drive_king_to_summon(run, king, 1);
+        run.update_king_encounter(0.5, BLOCK_SIZE);
+        assert_ne!(run.king_thresholds_consumed(), 0);
+        assert!(run.entities().iter().any(|e| e.summon_cohort().is_some()));
+        let _ = king;
+
+        let fresh = rebuilt_like_retry(&run, 4);
+
+        assert_eq!(fresh.king_phase(), KingEncounterPhase::Fighting);
+        assert!(!fresh.king_is_summoning());
+        assert!(!fresh.king_is_fleeing());
+        assert_eq!(fresh.king_thresholds_consumed(), 0);
+        assert_eq!(fresh.king_summon_time_remaining(), 0.0);
+        assert_eq!(fresh.king_summon_animation_scale(), 1.0);
+        assert!(!fresh.last_hit_broke_king_phase());
+        assert_eq!(fresh.living_summoned_cohort_count(0), 0);
+        assert!(fresh.entities().iter().all(|e| e.summon_cohort().is_none()));
+        assert!(!fresh.king_spawned());
+    }
+
+    #[test]
+    fn the_full_phased_king_fight_runs_end_to_end() {
+        let (run, king) = horde_at_the_king_big(4);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+
+        // 1000 -> 800 -> (5) -> 600 -> (5) -> 400 -> (5) -> 200 -> (10)
+        // -> Fleeing -> muerte -> cohortes limpias -> victoria.
+        let (mut run, king) = drive_king_to_summon(run, king, 3);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+        assert_eq!(run.living_summoned_cohort_count(3), 10);
+        assert_eq!(run.king_thresholds_consumed(), 4);
+
+        for _ in 0..4 {
+            run.damage_entity(king);
+        }
+        assert!(!run.king_alive());
+        assert!(run.horde_completed());
+        assert!(
+            run.entities().iter().all(|e| e.summon_cohort().is_none()),
+            "sin minions sueltos tras la victoria"
+        );
+    }
 }
