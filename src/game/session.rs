@@ -1330,6 +1330,18 @@ impl GameSession {
     /// una igualdad frágil, así que un disparo rápido o mejorado no
     /// puede atravesar un umbral ni reactivar uno ya consumido.
     fn damage_king(&mut self, entity_index: usize, damage: i32) -> EntityDamageOutcome {
+        /*
+         * Bloque 4, Commit 36: The King es invulnerable mientras
+         * invoca. El disparo se rechaza por completo — sin cambio de
+         * vida, sin estado `Hit`, sin feedback ni SFX de impacto y sin
+         * consumir otro umbral — para que el jugador no pueda saltarse
+         * la invocación disparando a través de la transición. No es HP
+         * artificial: simplemente no se aplica daño.
+         */
+        if self.king_encounter.phase == KingEncounterPhase::Summoning {
+            return EntityDamageOutcome::None;
+        }
+
         let health = match self.entities.get(entity_index) {
             Some(entity) => entity.health(),
             None => return EntityDamageOutcome::None,
@@ -5607,10 +5619,12 @@ e             #
 
         let king = living_king_index(&run).expect("el King debe estar vivo");
 
-        // 19 impactos Standard (50): el King sobrevive, sin victoria.
-        for _ in 0..19 {
-            run.damage_entity(king);
-        }
+        // 19 impactos Standard (50) a través de las 4 invocaciones: el
+        // King sobrevive, sin victoria.
+        assert_eq!(
+            hit_king_through_phases(&mut run, king, 19),
+            EntityDamageOutcome::Hit
+        );
         assert!(run.king_alive());
         assert!(!run.horde_completed());
 
@@ -5626,9 +5640,7 @@ e             #
         drive_horde_to_final_hand(&mut run, 4);
 
         let king = living_king_index(&run).unwrap();
-        for _ in 0..20 {
-            run.damage_entity(king);
-        }
+        hit_king_through_phases(&mut run, king, 20);
         assert!(run.horde_completed());
 
         // Sigue "jugando" muchos cuadros: la intermisión no vuelve a
@@ -5676,10 +5688,13 @@ e             #
         assert_eq!(run.king_health(), Some((1000, 1000)));
 
         let king = living_king_index(&run).unwrap();
-        for shots in 1..20 {
-            run.damage_entity(king);
-            assert_eq!(run.king_health(), Some((1000 - shots * 50, 1000)));
-        }
+
+        // 19 impactos a través de las invocaciones: la barra sigue
+        // visible con vida > 0.
+        hit_king_through_phases(&mut run, king, 19);
+        assert!(run.king_alive());
+        let (current, max) = run.king_health().expect("barra visible con el King vivo");
+        assert!(current > 0 && max == 1000);
 
         run.damage_entity(king); // impacto 20 -> muerto
         assert_eq!(run.king_health(), None, "King muerto -> barra oculta");
@@ -5705,10 +5720,10 @@ e             #
 
         // Deja al King a medio matar y la Final Hand en curso.
         let king = living_king_index(&run).unwrap();
-        for _ in 0..5 {
+        for _ in 0..3 {
             run.damage_entity(king);
         }
-        assert_eq!(run.king_health(), Some((750, 1000)));
+        assert_eq!(run.king_health(), Some((850, 1000)));
         assert!(run.king_spawned());
         assert!(!run.horde_completed());
 
@@ -5734,9 +5749,7 @@ e             #
         let mut run = new_horde_session_with_final_hand(4);
         drive_horde_to_final_hand(&mut run, 4);
         let king = living_king_index(&run).unwrap();
-        for _ in 0..20 {
-            run.damage_entity(king);
-        }
+        hit_king_through_phases(&mut run, king, 20);
         assert!(run.horde_completed());
         assert_eq!(run.weapon_tier(), WeaponTier::Standard);
 
@@ -5852,9 +5865,7 @@ e             #
 
         // Solo derrotar al King completa Horde.
         let king = living_king_index(&horde).unwrap();
-        for _ in 0..20 {
-            horde.damage_entity(king);
-        }
+        hit_king_through_phases(&mut horde, king, 20);
         assert!(horde.horde_completed());
         assert_eq!(
             horde.king_health(),
@@ -5907,6 +5918,60 @@ e             #
         (run, king)
     }
 
+    /// Condensa lo que `App` hace cuadro a cuadro contra The King:
+    /// aplica `hits` disparos, y en cuanto entra en `Summoning` drena
+    /// el temporizador de invocación (2 s) y — cuando ya existen
+    /// cohortes (Commit 43+) — despacha los Dealers invocados que
+    /// aún bloquean el siguiente umbral. Devuelve el
+    /// `EntityDamageOutcome` del último disparo aplicado.
+    fn hit_king_through_phases(
+        run: &mut GameSession,
+        king: usize,
+        hits: usize,
+    ) -> EntityDamageOutcome {
+        let mut last = EntityDamageOutcome::None;
+
+        for _ in 0..hits {
+            clear_king_summon_gate(run);
+            last = run.damage_entity(king);
+        }
+
+        clear_king_summon_gate(run);
+
+        last
+    }
+
+    /// Drena una fase `Summoning` en curso y elimina cualquier Dealer
+    /// invocado por el jefe que siga vivo (para que el gate entre
+    /// cohortes del Commit 43 no detenga el avance en las pruebas que
+    /// solo miden el combate del propio King).
+    fn clear_king_summon_gate(run: &mut GameSession) {
+        for _ in 0..4 {
+            if run.king_is_summoning() {
+                run.update_king_encounter(KING_SUMMON_DURATION);
+            }
+
+            let summoned: Vec<usize> = run
+                .entities()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.kind() == EnemyKind::Dealer && !e.is_dead())
+                .map(|(i, _)| i)
+                .collect();
+
+            if summoned.is_empty() && !run.king_is_summoning() {
+                break;
+            }
+
+            for index in summoned {
+                run.damage_entity(index);
+                run.damage_entity(index);
+            }
+
+            run.update_king_encounter(KING_SUMMON_DURATION);
+        }
+    }
+
     #[test]
     fn twenty_standard_hits_defeat_the_king_and_nineteen_do_not() {
         let (mut run, king) = horde_at_the_king(4);
@@ -5920,11 +5985,13 @@ e             #
             "1 impacto Standard -> 950"
         );
 
-        for _ in 0..18 {
-            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
-        }
+        // 18 impactos más (19 en total) a través de las 4
+        // invocaciones: el King sobrevive.
+        assert_eq!(
+            hit_king_through_phases(&mut run, king, 18),
+            EntityDamageOutcome::Hit
+        );
         assert!(run.king_alive(), "19 impactos Standard: el King sigue vivo");
-        assert_eq!(run.king_health(), Some((50, 1000)));
 
         assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
         assert!(!run.king_alive());
@@ -5943,11 +6010,12 @@ e             #
             "1 impacto Royal -> 900"
         );
 
-        for _ in 0..8 {
-            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
-        }
+        // 8 impactos más (9 en total) a través de las invocaciones.
+        assert_eq!(
+            hit_king_through_phases(&mut run, king, 8),
+            EntityDamageOutcome::Hit
+        );
         assert!(run.king_alive(), "9 impactos Royal: el King sigue vivo");
-        assert_eq!(run.king_health(), Some((100, 1000)));
 
         assert_eq!(run.damage_entity(king), EntityDamageOutcome::Killed);
         assert!(!run.king_alive());
@@ -5986,9 +6054,7 @@ e             #
         let (mut run, king) = horde_at_the_king(4);
         let hand_at_boss = run.hand_number();
 
-        for _ in 0..20 {
-            run.damage_entity(king);
-        }
+        hit_king_through_phases(&mut run, king, 20);
         assert!(run.horde_completed());
 
         // Sigue "corriendo" muchos cuadros: ninguna Hand nueva, el
@@ -6110,8 +6176,9 @@ e             #
         assert_eq!(run.king_health(), Some((800, 1000)));
         assert_eq!(run.king_thresholds_consumed(), 1);
 
-        // El quinto impacto ya cruza por debajo de 800 sin volver a
-        // consumir el umbral.
+        // Tras la invocación de 800, el quinto impacto ya cruza por
+        // debajo de 800 sin volver a consumir el umbral.
+        clear_king_summon_gate(&mut run);
         run.damage_entity(king);
         assert_eq!(run.king_health(), Some((750, 1000)));
         assert_eq!(run.king_thresholds_consumed(), 1);
@@ -6128,6 +6195,7 @@ e             #
                     seen.push(t);
                 }
             }
+            clear_king_summon_gate(&mut run);
         }
         assert_eq!(seen, vec![800, 600, 400, 200]);
         assert_eq!(run.king_thresholds_consumed(), 4);
@@ -6148,7 +6216,9 @@ e             #
         assert_eq!(run.king_health(), Some((800, 1000)));
         assert_eq!(run.king_thresholds_consumed(), 1);
 
-        // Desde 800: 700, luego cruza 600 -> clamp a 600.
+        // Desde 800 (tras resolver la invocación): 700, luego cruza
+        // 600 -> clamp a 600.
+        clear_king_summon_gate(&mut run);
         run.damage_entity(king); // 700
         run.damage_entity(king); // 600
         assert_eq!(run.king_health(), Some((600, 1000)));
@@ -6268,18 +6338,61 @@ e             #
         assert!((run.king_summon_time_remaining() - 2.0).abs() < f32::EPSILON);
     }
 
+    // --- Bloque 4, Commit 36: invulnerabilidad durante Summoning. ---
+
+    #[test]
+    fn the_king_takes_no_damage_while_summoning() {
+        let (mut run, king) = king_at_summon(0);
+        assert_eq!(run.king_health(), Some((800, 1000)));
+        let consumed_before = run.king_thresholds_consumed();
+
+        // Estabiliza el estado del King (post-invocación no hay update
+        // que lo mueva; da igual el valor exacto, lo que importa es
+        // que los disparos rechazados no lo cambien).
+        let state_before = run.entities()[king].state();
+
+        for _ in 0..10 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+        }
+
+        assert_eq!(run.king_health(), Some((800, 1000)));
+        assert_eq!(run.entities()[king].state(), state_before);
+        assert_eq!(run.king_thresholds_consumed(), consumed_before);
+        assert!(!run.last_hit_broke_king_phase());
+    }
+
+    #[test]
+    fn king_damage_resumes_the_instant_the_summoning_phase_ends() {
+        let (mut run, king) = king_at_summon(0);
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+
+        run.update_king_encounter(KING_SUMMON_DURATION);
+        assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
+
+        assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+        assert_eq!(run.king_health(), Some((750, 1000)));
+    }
+
     #[test]
     fn king_threshold_detection_does_not_depend_on_frame_rate() {
         // Reaplicar daño en "cuadros" arbitrariamente pequeños o
         // grandes no cambia el resultado: la detección es por cruce
         // de vida, no por tiempo.
         let (mut run, king) = horde_at_the_king(4);
-        for _ in 0..200 {
+        for _ in 0..400 {
             if !run.king_alive() {
                 break;
             }
             run.damage_entity(king);
+            // Cuadros diminutos: la invocación tarda lo mismo, y la
+            // detección de umbral sigue dependiendo solo del cruce de
+            // vida.
             run.update_entities(0.001, BLOCK_SIZE);
+            run.update_king_encounter(0.001);
+            if run.king_is_summoning() {
+                run.update_king_encounter(KING_SUMMON_DURATION);
+            }
         }
         assert!(!run.king_alive());
         assert_eq!(run.king_thresholds_consumed(), 4);
