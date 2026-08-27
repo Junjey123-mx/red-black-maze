@@ -67,6 +67,19 @@ impl EnemyKind {
             EnemyKind::King => KING_PURSUIT_SPEED,
         }
     }
+
+    /// Enfriamiento entre ataques aceptados del tipo de enemigo, en
+    /// segundos (Bloque 3, Commit 23).
+    ///
+    /// The King golpea más fuerte pero más despacio: 1.5 s frente a
+    /// los 0.9 s del Dealer. Mismo temporizado por-entidad, mismo
+    /// gating; solo cambia el valor.
+    fn attack_cooldown(self) -> f32 {
+        match self {
+            EnemyKind::Dealer => DEALER_ATTACK_COOLDOWN,
+            EnemyKind::King => KING_ATTACK_COOLDOWN,
+        }
+    }
 }
 
 /// Transición real de `EntityState` observada durante una llamada a
@@ -188,6 +201,10 @@ pub(crate) const DEALER_ATTACK_RANGE_CELLS: f32 = 0.75;
 /// Cooldown entre ataques aceptados de un mismo Dealer, en segundos.
 const DEALER_ATTACK_COOLDOWN: f32 = 0.9;
 
+/// Cooldown entre ataques aceptados de The King, en segundos (Bloque
+/// 3, Commit 23): un ataque pesado y lento — valor fijo, no un rango.
+const KING_ATTACK_COOLDOWN: f32 = 1.5;
+
 /// Tarea "Dealer Hands": segundos de tiempo de PARTIDA (nunca reloj
 /// absoluto — se congela automáticamente durante `Paused`, exactamente
 /// como el resto de temporizadores de esta entidad) que un cadáver
@@ -281,9 +298,8 @@ impl Entity {
 
     /// Tipo de enemigo (Dealer o King). Fuente de verdad de los
     /// valores de dominio específicos del enemigo. Lo consumen
-    /// `GameSession` (spawn de la Final Hand, barra de vida del jefe)
-    /// y el audio del jefe en commits posteriores de este bloque.
-    #[allow(dead_code)]
+    /// `GameSession` (daño de ataque por tipo, spawn de la Final Hand,
+    /// barra de vida del jefe) y el audio del jefe.
     pub(crate) fn kind(&self) -> EnemyKind {
         self.kind
     }
@@ -391,7 +407,7 @@ impl Entity {
              * `DEALER_ATTACK_COOLDOWN` completo tras cada golpe
              * aceptado contra ese Dealer.
              */
-            self.attack_cooldown_remaining = DEALER_ATTACK_COOLDOWN;
+            self.attack_cooldown_remaining = self.kind.attack_cooldown();
 
             EntityDamageOutcome::Hit
         }
@@ -567,7 +583,7 @@ impl Entity {
             return false;
         }
 
-        self.attack_cooldown_remaining = DEALER_ATTACK_COOLDOWN;
+        self.attack_cooldown_remaining = self.kind.attack_cooldown();
 
         true
     }
@@ -911,6 +927,73 @@ mod tests {
 
         // 75 px/s * 0.1 s = 7.5 px, exactamente como antes del Bloque 3.
         assert!(((dealer.position().x - start.x) - 7.5).abs() < 1e-3);
+    }
+
+    // --- Bloque 3, Commit 23: ataque pesado de The King. ---
+
+    /// Pone a The King en `Alert`, dentro de rango, listo para atacar.
+    fn alert_king_in_range() -> (Entity, Vector2) {
+        let mut king = Entity::king_at_cell(0, 0, BLOCK_SIZE);
+        let player = Vector2::new(king.position().x + 10.0, king.position().y);
+        king.update(player, 0.016, BLOCK_SIZE, None);
+        assert_eq!(king.state(), EntityState::Alert);
+        (king, player)
+    }
+
+    #[test]
+    fn king_attack_respects_its_slower_cooldown() {
+        let (mut king, player) = alert_king_in_range();
+
+        assert!(king.attempt_attack(player, 0.016, BLOCK_SIZE));
+
+        // A 0.9 s (el cooldown de un Dealer) The King TODAVÍA no puede
+        // volver a atacar.
+        assert!(!king.attempt_attack(player, 0.9, BLOCK_SIZE));
+
+        // Justo antes de 1.5 s (0.9 + 0.58 = 1.48): sigue bloqueado.
+        assert!(!king.attempt_attack(player, 0.58, BLOCK_SIZE));
+
+        // Pasa de 1.5 s: ya puede.
+        assert!(king.attempt_attack(player, 0.05, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn king_attack_never_lands_every_frame() {
+        let (mut king, player) = alert_king_in_range();
+
+        let mut accepted = 0;
+        // ~1.6 s simulados en cuadros de 0.016 s: con cooldown 1.5 s,
+        // como mucho 2 ataques, jamás 100.
+        for _ in 0..100 {
+            if king.attempt_attack(player, 0.016, BLOCK_SIZE) {
+                accepted += 1;
+            }
+        }
+        assert!((1..=2).contains(&accepted));
+    }
+
+    #[test]
+    fn a_hit_king_gets_the_full_king_cooldown_before_it_can_attack_again() {
+        let (mut king, player) = alert_king_in_range();
+
+        king.apply_damage(50); // -> Hit, recarga cooldown al valor de King
+        king.update(player, 0.20, BLOCK_SIZE, None); // expira Hit -> Alert
+        assert_eq!(king.state(), EntityState::Alert);
+
+        // 0.9 s no bastan (cooldown de King es 1.5 s).
+        assert!(!king.attempt_attack(player, 0.9, BLOCK_SIZE));
+        assert!(king.attempt_attack(player, 0.6, BLOCK_SIZE));
+    }
+
+    #[test]
+    fn dealer_attack_cooldown_is_unchanged_by_the_king_values() {
+        let (mut dealer, player) = alert_dealer_in_range();
+
+        assert!(dealer.attempt_attack(player, 0.016, BLOCK_SIZE));
+        assert!(!dealer.attempt_attack(player, 0.9 - 0.016, BLOCK_SIZE));
+        // A 0.9 s exactos vuelve a estar disponible: comportamiento
+        // idéntico al de antes del Bloque 3.
+        assert!(dealer.attempt_attack(player, 0.016, BLOCK_SIZE));
     }
 
     // --- EntityDamageOutcome ---

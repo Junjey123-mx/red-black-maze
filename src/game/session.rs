@@ -4,8 +4,8 @@ use raylib::prelude::Vector2;
 
 use crate::player::{Player, Weapon, WeaponState, WeaponTier};
 use crate::world::{
-    AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, Entity, EntityDamageOutcome, EntityState,
-    EntityStateTransition, HealthPickup, HordeHandConfig, Level, RoyalFlushPickup,
+    AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, EnemyKind, Entity, EntityDamageOutcome,
+    EntityState, EntityStateTransition, HealthPickup, HordeHandConfig, Level, RoyalFlushPickup,
 };
 
 use super::GameMode;
@@ -59,6 +59,11 @@ const FINAL_HAND_SUPPLY_DEALER_EQUIVALENT: usize = 10;
 /// rango, cooldown) viven en `world::Entity::attempt_attack`; esta
 /// capa solo decide CUÁNTO daño corresponde a un ataque aceptado.
 const DEALER_ATTACK_DAMAGE: i32 = 10;
+
+/// Daño que un ataque ACEPTADO de The King inflige al jugador (Bloque
+/// 3, Commit 23). El doble del Dealer: con `PLAYER_MAX_HEALTH = 100`,
+/// cinco golpes limpios del jefe acaban con el jugador.
+const KING_ATTACK_DAMAGE: i32 = 20;
 
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
@@ -1028,7 +1033,20 @@ impl GameSession {
             }
 
             if entity.attempt_attack(player_position, delta_time, block_size) {
-                total_damage += self.player.apply_damage(DEALER_ATTACK_DAMAGE);
+                /*
+                 * Bloque 3, Commit 23: el daño de un ataque aceptado
+                 * lo decide el tipo de enemigo. The King golpea por
+                 * 20 (`KING_ATTACK_DAMAGE`), un Dealer por 10
+                 * (`DEALER_ATTACK_DAMAGE`, sin cambio). Mismo pipeline
+                 * de rango/cooldown/saturación/feedback — solo el
+                 * número cambia, sin sistema de combate paralelo.
+                 */
+                let attack_damage = match entity.kind() {
+                    EnemyKind::King => KING_ATTACK_DAMAGE,
+                    EnemyKind::Dealer => DEALER_ATTACK_DAMAGE,
+                };
+
+                total_damage += self.player.apply_damage(attack_damage);
             }
         }
 
@@ -1641,6 +1659,61 @@ mod tests {
         assert_eq!(damage, 10);
         assert_eq!(session.player_health(), 90);
         assert!(session.is_hit_flash_active());
+    }
+
+    // --- Bloque 3, Commit 23: ataque pesado de The King a través del
+    // mismo pipeline. ---
+
+    #[test]
+    fn a_king_attack_deals_twenty_and_a_dealer_still_deals_ten() {
+        let mut session = new_test_session_with_one_dealer();
+
+        // Sustituye al Dealer por un King en la misma celda: mismo
+        // pipeline de ataque, solo cambia el `kind`.
+        let cell = session.entities()[0].position();
+        session.entities.clear();
+        session.entities.push(Entity::king_at_cell(
+            cell.y as usize / BLOCK_SIZE,
+            cell.x as usize / BLOCK_SIZE,
+            BLOCK_SIZE,
+        ));
+
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+        assert_eq!(session.player_health(), 100);
+
+        let damage = session.process_dealer_attacks(0.016, BLOCK_SIZE);
+
+        assert_eq!(damage, 20, "The King golpea por 20");
+        assert_eq!(session.player_health(), 80);
+        assert!(session.is_hit_flash_active());
+
+        // Un Dealer normal, en cambio, sigue golpeando por 10.
+        let mut dealer_session = new_test_session_with_one_dealer();
+        move_player_near_dealer_and_alert(&mut dealer_session, 0, 20.0);
+        assert_eq!(dealer_session.process_dealer_attacks(0.016, BLOCK_SIZE), 10);
+    }
+
+    #[test]
+    fn the_king_attack_cooldown_is_frozen_by_not_calling_process_dealer_attacks() {
+        let mut session = new_test_session_with_one_dealer();
+        let cell = session.entities()[0].position();
+        session.entities.clear();
+        session.entities.push(Entity::king_at_cell(
+            cell.y as usize / BLOCK_SIZE,
+            cell.x as usize / BLOCK_SIZE,
+            BLOCK_SIZE,
+        ));
+        move_player_near_dealer_and_alert(&mut session, 0, 20.0);
+
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 20);
+
+        // "Pausa": no se vuelve a llamar durante 10 s reales. Al
+        // reanudar con un delta pequeño el cooldown (1.5 s) sigue
+        // activo — no se "saltó" por la pausa.
+        assert_eq!(session.process_dealer_attacks(0.016, BLOCK_SIZE), 0);
+        // Un delta que solo completa ~0.9 s: todavía bloqueado.
+        assert_eq!(session.process_dealer_attacks(0.88, BLOCK_SIZE), 0);
+        assert_eq!(session.player_health(), 80);
     }
 
     #[test]
