@@ -5234,15 +5234,20 @@ e             #
     }
 
     fn new_horde_session_with_final_hand(final_hand_number: usize) -> GameSession {
-        let map = "\
+        new_horde_session_on_map(
+            "\
 ###########
 #p        #
 #    e    #
 #         #
 #        g#
 ###########
-";
+",
+            final_hand_number,
+        )
+    }
 
+    fn new_horde_session_on_map(map: &str, final_hand_number: usize) -> GameSession {
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el nivel de prueba debe cargar");
         let player = Player::from_level(&level, BLOCK_SIZE);
@@ -5254,6 +5259,30 @@ e             #
         };
 
         GameSession::new(level, player, BLOCK_SIZE, 0, GameMode::Horde, config, false)
+    }
+
+    /// Sala grande y abierta: espacio de sobra para las cuatro
+    /// cohortes (hasta 25 Dealers) sin que la selección de celdas
+    /// quede limitada por el tamaño del mapa.
+    fn horde_at_the_king_big(final_hand_number: usize) -> (GameSession, usize) {
+        let map = "\
+######################
+#p                   #
+#                    #
+#                    #
+#                    #
+#         e          #
+#                    #
+#                    #
+#                    #
+#                    #
+#                   g#
+######################
+";
+        let mut run = new_horde_session_on_map(map, final_hand_number);
+        assert!(drive_horde_to_final_hand(&mut run, final_hand_number));
+        let king = living_king_index(&run).expect("King vivo en la Final Hand");
+        (run, king)
     }
 
     #[test]
@@ -6413,8 +6442,15 @@ e             #
     /// cruzar el umbral de índice `threshold_index`, dejando el
     /// encuentro justo al inicio de esa fase `Summoning`.
     fn king_at_summon(threshold_index: usize) -> (GameSession, usize) {
-        let (mut run, king) = horde_at_the_king(4);
+        let (run, king) = horde_at_the_king(4);
+        drive_king_to_summon(run, king, threshold_index)
+    }
 
+    fn drive_king_to_summon(
+        mut run: GameSession,
+        king: usize,
+        threshold_index: usize,
+    ) -> (GameSession, usize) {
         for step in 0..=threshold_index {
             // Abre el gate: limpia cualquier cohorte previa viva y
             // drena su invocación si estaba en curso.
@@ -6566,6 +6602,60 @@ e             #
         assert_eq!(run.process_dealer_attacks(0.5, BLOCK_SIZE), 0);
         let third = run.process_dealer_attacks(0.5, BLOCK_SIZE);
         assert_eq!(third, first);
+    }
+
+    // --- Bloque 4, Commit 44: invocación final de 10 Dealers (200). ---
+
+    #[test]
+    fn the_two_hundred_threshold_summons_ten_dealers_and_there_is_no_fifth_wave() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 3);
+        assert_eq!(run.king_health(), Some((200, 1000)));
+        assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
+        assert!((run.king_summon_time_remaining() - KING_SUMMON_DURATION).abs() < f32::EPSILON);
+
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.living_summoned_cohort_count(3), 10, "10, no 5");
+        assert_eq!(run.king_thresholds_consumed(), 4);
+
+        // No existe un quinto umbral: seguir disparando hasta matarlo
+        // nunca vuelve a invocar.
+        while run.king_alive() {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_thresholds_consumed(), 4);
+        // La cohorte final sigue siendo de 10 (nada la amplió).
+        assert!(run.living_summoned_cohort_count(3) <= 10);
+    }
+
+    #[test]
+    fn a_full_king_fight_summons_at_most_twenty_five_dealers() {
+        let (mut run, king) = horde_at_the_king_big(4);
+
+        let mut ever_spawned = 0usize;
+        let mut last_seen = std::collections::HashMap::new();
+        for _ in 0..2000 {
+            if !run.king_alive() {
+                break;
+            }
+            run.damage_entity(king);
+            clear_king_summon_gate(&mut run);
+
+            for cohort in 0..4 {
+                let n = run
+                    .entities()
+                    .iter()
+                    .filter(|e| e.summon_cohort() == Some(cohort))
+                    .count();
+                let prev = last_seen.insert(cohort, n).unwrap_or(0);
+                if n > prev {
+                    ever_spawned += n - prev;
+                }
+            }
+        }
+
+        assert!(!run.king_alive());
+        assert_eq!(ever_spawned, 25, "5 + 5 + 5 + 10 exactos");
     }
 
     // --- Bloque 4, Commit 43: gate entre cohortes. ---
