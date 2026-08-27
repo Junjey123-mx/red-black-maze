@@ -40,12 +40,20 @@ pub(crate) enum MusicTrack {
     /// al entrar a `GameState::Defeat`, nunca a través de
     /// `LevelTheme`.
     Defeat,
+
+    /// Bloque 5: `final_battle.mp3` — dark electro swing de combate/
+    /// persecución del jefe. NUNCA se deriva de `LevelTheme` ni suena
+    /// al aparecer The King: el encuentro (`GameSession`) la solicita
+    /// explícitamente al terminar la PRIMERA animación de invocación
+    /// (umbral 800) y la mantiene, en loop nativo, durante 600/400/200
+    /// y toda la persecución `Fleeing`. Portal Mode nunca la alcanza.
+    FinalBattle,
 }
 
 /// Enumeración completa de `MusicTrack`, usada para cargar el
 /// catálogo completo y para las pruebas puras de cobertura del
 /// catálogo. Mantener en sincronía con la definición del enum.
-const ALL_MUSIC_TRACKS: [MusicTrack; 7] = [
+const ALL_MUSIC_TRACKS: [MusicTrack; 8] = [
     MusicTrack::Menu,
     MusicTrack::CrimsonEntrance,
     MusicTrack::BlackClub,
@@ -53,6 +61,7 @@ const ALL_MUSIC_TRACKS: [MusicTrack; 7] = [
     MusicTrack::TheDealersTrueMaze,
     MusicTrack::Victory,
     MusicTrack::Defeat,
+    MusicTrack::FinalBattle,
 ];
 
 /// Única ubicación del catálogo ruta<->pista. Ningún otro módulo
@@ -66,6 +75,7 @@ fn music_path(track: MusicTrack) -> &'static str {
         MusicTrack::TheDealersTrueMaze => "assets/audio/music/the_dealers_true_maze.mp3",
         MusicTrack::Victory => "assets/audio/music/victory.mp3",
         MusicTrack::Defeat => "assets/audio/music/defeat.mp3",
+        MusicTrack::FinalBattle => "assets/audio/music/final_battle.mp3",
     }
 }
 
@@ -635,8 +645,8 @@ mod tests {
     // --- Catálogo de música: pruebas puras, sin `RaylibAudio`. ---
 
     #[test]
-    fn catalog_contains_exactly_seven_music_tracks() {
-        assert_eq!(ALL_MUSIC_TRACKS.len(), 7);
+    fn catalog_contains_exactly_eight_music_tracks() {
+        assert_eq!(ALL_MUSIC_TRACKS.len(), 8);
     }
 
     #[test]
@@ -666,6 +676,23 @@ mod tests {
             music_path(MusicTrack::Defeat),
             "assets/audio/music/defeat.mp3"
         );
+        assert_eq!(
+            music_path(MusicTrack::FinalBattle),
+            "assets/audio/music/final_battle.mp3"
+        );
+    }
+
+    #[test]
+    fn the_final_battle_track_is_never_reachable_through_a_level_theme() {
+        // Bloque 5: solo el encuentro contra The King la solicita,
+        // nunca el tema visual del nivel.
+        for theme in [
+            LevelTheme::CrimsonEntrance,
+            LevelTheme::BlackClub,
+            LevelTheme::HouseOfCards,
+        ] {
+            assert_ne!(music_track_for_theme(theme), MusicTrack::FinalBattle);
+        }
     }
 
     #[test]
