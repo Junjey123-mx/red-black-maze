@@ -549,6 +549,18 @@ impl<'aud> AudioManager<'aud> {
         self.current_track.and_then(|track| self.music.get(&track))
     }
 
+    /// Pista de fondo actualmente seleccionada (sonando o en pausa),
+    /// o `None` tras `stop_music`/antes de la primera selección
+    /// (Bloque 5, Commit 62). Introspección para verificar que las
+    /// invocaciones 600/400/200 NO reinician ni detienen
+    /// `final_battle.mp3`: si `current_track` no cambia y `set_music`
+    /// hace no-op sobre la pista activa, el stream nativo sigue
+    /// exactamente donde estaba.
+    #[allow(dead_code)]
+    pub(crate) fn current_track(&self) -> Option<MusicTrack> {
+        self.current_track
+    }
+
     /// Selecciona `track` como la pista activa (Tarea 46.5, sección
     /// 13): única forma de cambiar QUÉ suena. No-op si `track` ya es
     /// la pista activa — evita reiniciar el stream en llamadas
@@ -883,6 +895,47 @@ mod tests {
             sfx_path(SoundEffect::KingSummon),
             "assets/audio/sfx/king_summon.wav"
         );
+    }
+
+    // --- Bloque 5, Commit 62: continuidad de final_battle.mp3. ---
+
+    #[test]
+    fn selecting_the_active_track_again_is_a_no_op_that_never_reselects() {
+        // `AudioManager::new(None)`: dispositivo de audio deshabilitado
+        // — `current_track` sigue siendo la única fuente de verdad de
+        // QUÉ pista está activa, sin necesitar streams reales.
+        let mut audio = AudioManager::new(None);
+
+        audio.set_music(MusicTrack::FinalBattle);
+        assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+
+        // Simula 600/400/200 pidiendo la MISMA pista una y otra vez:
+        // nunca cambia la selección (y `set_music` retorna antes de
+        // tocar ningún stream).
+        for _ in 0..300 {
+            audio.set_music(MusicTrack::FinalBattle);
+            assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
+        }
+    }
+
+    #[test]
+    fn stop_music_clears_the_active_track_and_is_idempotent() {
+        let mut audio = AudioManager::new(None);
+
+        audio.set_music(MusicTrack::CrimsonEntrance);
+        assert!(audio.current_track().is_some());
+
+        audio.stop_music();
+        assert_eq!(audio.current_track(), None);
+
+        // Llamarlo repetidamente (ventana de silencio de la primera
+        // invocación) es un no-op seguro.
+        audio.stop_music();
+        assert_eq!(audio.current_track(), None);
+
+        // Y tras el silencio, `set_music` vuelve a arrancar limpio.
+        audio.set_music(MusicTrack::FinalBattle);
+        assert_eq!(audio.current_track(), Some(MusicTrack::FinalBattle));
     }
 
     // --- Bloque 5, Commit 53: un solo SFX de impacto por disparo. ---
