@@ -7859,4 +7859,105 @@ e             #
         let mut fresh = new_horde_session();
         assert!(!fresh.take_king_summon_cue());
     }
+
+    // --- Bloque 5, Commit 67: primera transición musical, extremo a
+    //     extremo. ---
+
+    #[test]
+    fn the_king_spawns_and_fights_the_opening_phase_entirely_under_level_music() {
+        let (mut run, king) = horde_at_the_king(4);
+
+        // Aparición: música de nivel, sin silencio ni cue pendiente.
+        assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+        assert!(!run.king_is_summoning());
+        assert!(!run.take_king_summon_cue());
+
+        // Toda la franja 1000..801 (hasta 850): sigue música de nivel
+        // y ningún evento de invocación.
+        for _ in 0..3 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::Hit);
+            assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+            assert!(!run.king_is_summoning());
+            assert!(!run.take_king_summon_cue());
+        }
+        assert_eq!(run.king_health(), Some((850, 1000)));
+    }
+
+    #[test]
+    fn crossing_800_stops_level_music_exactly_once() {
+        let (mut run, king) = king_at_summon(0);
+        assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+
+        // Muchos cuadros de invocación: el estado "detener música de
+        // nivel" es estable, nunca oscila de vuelta a LevelMusic.
+        for _ in 0..15 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            assert_ne!(run.boss_music_state(), BossMusicState::LevelMusic);
+        }
+        let _ = king;
+    }
+
+    #[test]
+    fn final_battle_is_not_active_during_the_first_summon_and_starts_once_after_it() {
+        let (mut run, _king) = king_at_summon(0);
+
+        // Durante la ventana: nunca FinalBattle.
+        let mut steps = 0;
+        while run.king_is_summoning() {
+            assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+            run.update_king_encounter(0.25, BLOCK_SIZE);
+            steps += 1;
+            assert!(steps < 20);
+        }
+
+        // Justo después: FinalBattle, y permanece (no "arranca" otra
+        // vez en cuadros siguientes — el estado ya no cambia).
+        assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+        for _ in 0..20 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            assert_eq!(run.boss_music_state(), BossMusicState::FinalBattle);
+        }
+    }
+
+    #[test]
+    fn the_first_summon_emits_exactly_one_summon_cue() {
+        let (mut run, _king) = king_at_summon(0);
+
+        let mut cues = if run.take_king_summon_cue() { 1 } else { 0 };
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            if run.take_king_summon_cue() {
+                cues += 1;
+            }
+        }
+        assert_eq!(cues, 1);
+    }
+
+    #[test]
+    fn the_first_music_transition_cannot_fire_early_or_from_the_spawn_alone() {
+        let (mut run, king) = horde_at_the_king(4);
+
+        // Cientos de cuadros con el King recién aparecido y sin
+        // dispararle: jamás sale de LevelMusic.
+        for _ in 0..300 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+        }
+
+        // Un solo impacto (no cruza 800): sigue LevelMusic.
+        run.damage_entity(king);
+        assert_eq!(run.boss_music_state(), BossMusicState::LevelMusic);
+    }
+
+    #[test]
+    fn protected_damage_during_the_first_summon_never_advances_the_music() {
+        let (mut run, king) = king_at_summon(0);
+        let _ = run.take_king_summon_cue();
+
+        for _ in 0..10 {
+            assert_eq!(run.damage_entity(king), EntityDamageOutcome::None);
+            assert_eq!(run.boss_music_state(), BossMusicState::FirstSummonSilence);
+            assert!(!run.take_king_summon_cue());
+        }
+    }
 }
