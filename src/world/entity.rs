@@ -118,7 +118,11 @@ const DEALER_MAX_HEALTH: i32 = 100;
 /// impactos Standard; con `WeaponTier::RoyalFlush.damage() = 100`,
 /// exactamente 10. El resultado emerge de vida vs daño del arma, sin
 /// ninguna condición especial por tipo de enemigo.
-const KING_MAX_HEALTH: i32 = 1000;
+///
+/// `pub(crate)` para que la barra de vida del jefe (Bloque 3, Commit
+/// 25) derive su relleno de `king.health() / KING_MAX_HEALTH` sin una
+/// segunda copia del valor.
+pub(crate) const KING_MAX_HEALTH: i32 = 1000;
 
 /// Radio de impacto del Dealer, en unidades de mundo (píxeles).
 ///

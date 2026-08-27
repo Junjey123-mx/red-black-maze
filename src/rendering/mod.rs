@@ -12,7 +12,9 @@ pub mod map_2d;
 pub mod world_3d;
 
 pub(crate) use hit_flash::render_hit_flash_overlay;
-pub(crate) use hud::{render_fps, render_hand_message, render_horde_progress, render_hud};
+pub(crate) use hud::{
+    render_fps, render_hand_message, render_horde_progress, render_hud, render_king_health_bar,
+};
 pub(crate) use minimap::render_minimap;
 /// Tarea 41: expuesto fuera de `rendering` para que
 /// `ui::level_select` pueda resolver el acento cromático de cada

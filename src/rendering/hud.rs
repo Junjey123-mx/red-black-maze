@@ -369,6 +369,12 @@ fn letter_glyph_rows(character: char) -> [u8; 7] {
         'I' => [
             0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
         ],
+
+        // 'K' añadido para la barra de vida de The King (Bloque 3,
+        // Commit 25) — mismo bitmap 5x7 que el resto de esta fuente.
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
         'L' => [
             0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
         ],
@@ -611,6 +617,121 @@ pub(crate) fn render_horde_progress(
     );
 }
 
+/// Escala de la etiqueta "THE KING" de la barra de vida del jefe —
+/// la misma que los mensajes de Hand, para que se lea con claridad
+/// desde el centro de la pantalla durante el combate final.
+const KING_BAR_LABEL_SCALE: i32 = HAND_MESSAGE_SCALE;
+
+/// Margen superior de la etiqueta "THE KING", anclada arriba-centro.
+const KING_BAR_TOP_MARGIN: i32 = 20;
+
+/// Separación vertical (píxeles ya escalados) entre la etiqueta y la
+/// barra en sí.
+const KING_BAR_LABEL_GAP: i32 = 6;
+
+/// Alto lógico (sin escalar) de la barra de vida del jefe.
+const KING_BAR_HEIGHT: i32 = 6;
+
+/// Escala de dibujo de la barra (cada píxel lógico -> este cuadrado).
+const KING_BAR_SCALE: i32 = 3;
+
+/// Fracción del ancho del framebuffer que ocupa la barra completa.
+const KING_BAR_WIDTH_FRACTION: i32 = 2; // ancho = framebuffer_width / 2
+
+/// Grosor (píxeles ya escalados) del marco marfil de la barra.
+const KING_BAR_BORDER: i32 = KING_BAR_SCALE;
+
+/// Rojo intenso del relleno de vida del jefe (identidad de The King,
+/// independiente del `LevelTheme`).
+const KING_BAR_FILL: Color = Color::new(184, 26, 34, 255);
+
+/// Fondo del tramo ya perdido de la barra.
+const KING_BAR_EMPTY: Color = Color::new(44, 20, 22, 255);
+
+/// Dibuja la barra de vida de The King: la etiqueta "THE KING"
+/// centrada arriba y, justo debajo, una barra cuyo relleno rojo
+/// representa `current_health / max_health`.
+///
+/// Presentación pura: recibe la vida ya leída por el llamador
+/// (`App`, a partir de `GameSession::king_health`) — no conoce
+/// `Entity`/`GameMode`. Es responsabilidad de `App` invocarla SOLO
+/// durante el combate contra el jefe en Horde Mode (nunca en Portal,
+/// nunca sin un King vivo), igual que el resto del HUD de Horde.
+///
+/// No sustituye el HUD de vida del jugador (abajo-izquierda): vive
+/// arriba-centro, en su propia franja.
+pub(crate) fn render_king_health_bar(
+    framebuffer: &mut Framebuffer,
+    current_health: i32,
+    max_health: i32,
+) {
+    let framebuffer_width = framebuffer.width();
+    let framebuffer_height = framebuffer.height();
+
+    if framebuffer_width <= 0 || framebuffer_height <= 0 || max_health <= 0 {
+        return;
+    }
+
+    // --- Etiqueta "THE KING", centrada arriba. ---
+    let label = "THE KING";
+    let label_width = hand_message_width(label, KING_BAR_LABEL_SCALE);
+    let label_x = (framebuffer_width - label_width) / 2;
+
+    draw_mixed_text(
+        framebuffer,
+        label,
+        label_x,
+        KING_BAR_TOP_MARGIN,
+        KING_BAR_LABEL_SCALE,
+        HAND_MESSAGE_COLOR,
+    );
+
+    // --- Barra. ---
+    let label_row_height = 7 * KING_BAR_LABEL_SCALE;
+    let bar_top = KING_BAR_TOP_MARGIN + label_row_height + KING_BAR_LABEL_GAP;
+
+    let bar_width = (framebuffer_width / KING_BAR_WIDTH_FRACTION).max(2 * KING_BAR_BORDER + 2);
+    let bar_height = KING_BAR_HEIGHT * KING_BAR_SCALE;
+    let bar_left = (framebuffer_width - bar_width) / 2;
+
+    let fill_fraction = (current_health.max(0) as f32 / max_health as f32).clamp(0.0, 1.0);
+
+    let inner_left = bar_left + KING_BAR_BORDER;
+    let inner_top = bar_top + KING_BAR_BORDER;
+    let inner_width = (bar_width - 2 * KING_BAR_BORDER).max(0);
+    let inner_height = (bar_height - 2 * KING_BAR_BORDER).max(0);
+
+    let filled_width = (inner_width as f32 * fill_fraction).round() as i32;
+
+    for y in bar_top..bar_top + bar_height {
+        if y < 0 || y >= framebuffer_height {
+            continue;
+        }
+
+        for x in bar_left..bar_left + bar_width {
+            if x < 0 || x >= framebuffer_width {
+                continue;
+            }
+
+            let in_border = y < inner_top
+                || y >= inner_top + inner_height
+                || x < inner_left
+                || x >= inner_left + inner_width;
+
+            let color = if in_border {
+                HUD_IVORY
+            } else if x - inner_left < filled_width {
+                KING_BAR_FILL
+            } else {
+                KING_BAR_EMPTY
+            };
+
+            framebuffer.set_current_color(color);
+            framebuffer.point(x, y);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,5 +759,39 @@ mod tests {
     #[test]
     fn values_above_ninety_nine_grow_naturally() {
         assert_eq!(digits_of(123, AMMO_MIN_DIGITS), vec![1, 2, 3]);
+    }
+
+    // --- Bloque 3, Commit 25: barra de vida de The King. ---
+
+    #[test]
+    fn the_king_letters_all_resolve_to_a_glyph() {
+        for character in "THE KING".chars() {
+            if character == ' ' {
+                continue;
+            }
+            assert_ne!(
+                letter_glyph_rows(character),
+                [0u8; 7],
+                "falta el glifo para '{character}'"
+            );
+        }
+    }
+
+    #[test]
+    fn king_bar_label_width_is_positive_and_measurable() {
+        assert!(hand_message_width("THE KING", KING_BAR_LABEL_SCALE) > 0);
+    }
+
+    #[test]
+    fn king_bar_fill_fraction_tracks_health_out_of_the_configured_maximum() {
+        // Misma fórmula pura que usa `render_king_health_bar` para el
+        // ancho del relleno.
+        let fraction =
+            |current: i32, max: i32| (current.max(0) as f32 / max as f32).clamp(0.0, 1.0);
+
+        assert!((fraction(1000, 1000) - 1.0).abs() < 1e-6);
+        assert!((fraction(500, 1000) - 0.5).abs() < 1e-6);
+        assert!((fraction(0, 1000) - 0.0).abs() < 1e-6);
+        assert!((fraction(-20, 1000) - 0.0).abs() < 1e-6);
     }
 }

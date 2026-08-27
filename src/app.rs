@@ -14,7 +14,7 @@ use crate::rendering::map_2d::{
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
     render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress, render_hud,
-    render_minimap, render_weapon, render_world_sprites,
+    render_king_health_bar, render_minimap, render_weapon, render_world_sprites,
 };
 use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
@@ -1567,19 +1567,30 @@ impl<'aud> App<'aud> {
                  * fuente de verdad que decide cuándo termina una Hand.
                  */
                 if self.session.mode() == GameMode::Horde {
-                    let final_hand_number = self
-                        .level_manager
-                        .current_horde_hand_config()
-                        .final_hand_number;
+                    /*
+                     * Bloque 3, Commit 25: durante el combate contra
+                     * The King la barra del jefe sustituye al contador
+                     * "HAND N/M — ENEMIES" — el jefe ya no es una Hand
+                     * numerada de Dealers. Fuera de ese combate el HUD
+                     * de progreso normal sigue igual.
+                     */
+                    if let Some((current, max)) = self.session.king_health() {
+                        render_king_health_bar(framebuffer, current, max);
+                    } else {
+                        let final_hand_number = self
+                            .level_manager
+                            .current_horde_hand_config()
+                            .final_hand_number;
 
-                    let last_normal_hand = final_hand_number.saturating_sub(1).max(1);
+                        let last_normal_hand = final_hand_number.saturating_sub(1).max(1);
 
-                    render_horde_progress(
-                        framebuffer,
-                        self.session.hand_number(),
-                        last_normal_hand,
-                        self.session.alive_dealer_count(),
-                    );
+                        render_horde_progress(
+                            framebuffer,
+                            self.session.hand_number(),
+                            last_normal_hand,
+                            self.session.alive_dealer_count(),
+                        );
+                    }
                 }
             }
         }

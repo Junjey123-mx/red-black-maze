@@ -5,7 +5,8 @@ use raylib::prelude::Vector2;
 use crate::player::{Player, Weapon, WeaponState, WeaponTier};
 use crate::world::{
     AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, EnemyKind, Entity, EntityDamageOutcome,
-    EntityState, EntityStateTransition, HealthPickup, HordeHandConfig, Level, RoyalFlushPickup,
+    EntityState, EntityStateTransition, HealthPickup, HordeHandConfig, KING_MAX_HEALTH, Level,
+    RoyalFlushPickup,
 };
 
 use super::GameMode;
@@ -591,15 +592,16 @@ impl GameSession {
             .any(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
     }
 
-    /// Puntos de vida actuales de The King, si hay uno en el mundo
-    /// (vivo o recién muerto). `None` mientras no ha aparecido o ya
-    /// despawneó su cadáver. Bloque 3, Commit 25 (barra de vida).
-    #[allow(dead_code)]
-    pub(crate) fn king_health(&self) -> Option<i32> {
+    /// Vida `(actual, máxima)` de The King mientras haya uno VIVO en
+    /// el mundo; `None` en cualquier otro caso (no ha aparecido, ya
+    /// murió, o su cadáver ya despawneó). Bloque 3, Commit 25: la
+    /// barra de vida del jefe deriva su relleno de aquí y solo se
+    /// dibuja cuando esto es `Some`.
+    pub(crate) fn king_health(&self) -> Option<(i32, i32)> {
         self.entities
             .iter()
-            .find(|entity| entity.kind() == EnemyKind::King)
-            .map(|king| king.health())
+            .find(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
+            .map(|king| (king.health(), KING_MAX_HEALTH))
     }
 
     /// Condición de victoria de Horde Mode (Bloque 3, Commit 24 —
@@ -5289,6 +5291,38 @@ e             #
                 .all(|e| e.kind() == EnemyKind::Dealer)
         );
         assert!(!portal.horde_completed());
+    }
+
+    // --- Bloque 3, Commit 25: barra de vida del jefe. ---
+
+    #[test]
+    fn king_health_is_none_until_the_boss_is_alive_and_none_again_once_it_dies() {
+        let mut run = new_horde_session_with_final_hand(4);
+
+        assert_eq!(run.king_health(), None, "sin King -> sin barra");
+
+        drive_horde_to_final_hand(&mut run, 4);
+        assert_eq!(run.king_health(), Some((1000, 1000)));
+
+        let king = living_king_index(&run).unwrap();
+        for shots in 1..20 {
+            run.damage_entity(king);
+            assert_eq!(run.king_health(), Some((1000 - shots * 50, 1000)));
+        }
+
+        run.damage_entity(king); // impacto 20 -> muerto
+        assert_eq!(run.king_health(), None, "King muerto -> barra oculta");
+    }
+
+    #[test]
+    fn portal_mode_never_reports_king_health() {
+        let mut portal = new_test_session_with_one_dealer();
+
+        for _ in 0..300 {
+            portal.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+        }
+
+        assert_eq!(portal.king_health(), None);
     }
 
     #[test]
