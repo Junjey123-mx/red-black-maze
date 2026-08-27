@@ -114,6 +114,25 @@ const DEALER_ATTACK_DAMAGE: i32 = 10;
 /// cinco golpes limpios del jefe acaban con el jugador.
 const KING_ATTACK_DAMAGE: i32 = 20;
 
+/// Cortes de vida de The King que disparan una fase de invocación
+/// (Bloque 4, Commit 32). Autoritativos y en orden estrictamente
+/// decreciente: como la vida del jefe solo baja, se consumen en este
+/// mismo orden, uno por uno. El último (`200`) además cambia la fase
+/// a `Fleeing` en vez de volver a `Fighting` (Commit 45).
+///
+/// La escala conceptual antigua `1 / 2 / 20` queda descartada: estos
+/// son valores reales de HP contra `KING_MAX_HEALTH = 1000`.
+#[allow(dead_code)]
+const KING_PHASE_THRESHOLDS: [i32; 4] = [800, 600, 400, 200];
+
+/// Cantidad de Dealers que The King invoca en cada umbral
+/// (`KING_PHASE_THRESHOLDS`, mismo índice): 5 en 800, 5 en 600, 5 en
+/// 400 y 10 en la invocación final de 200 (Bloque 4, Commit 32). El
+/// total máximo por combate completo es `5 + 5 + 5 + 10 = 25`; nunca
+/// pueden aparecer más.
+#[allow(dead_code)]
+const KING_SUMMON_COUNTS: [usize; 4] = [5, 5, 5, 10];
+
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
 /// avanza mientras `update_hit_flash` se llame, que a su vez solo
@@ -5843,5 +5862,31 @@ e             #
 
         assert_eq!(run.king_phase(), KingEncounterPhase::Fighting);
         assert!(run.king_alive());
+    }
+
+    // --- Bloque 4, Commit 32: umbrales de vida fijos. ---
+
+    #[test]
+    fn king_phase_thresholds_are_the_frozen_values() {
+        assert_eq!(KING_PHASE_THRESHOLDS, [800, 600, 400, 200]);
+        assert_eq!(KING_SUMMON_COUNTS, [5, 5, 5, 10]);
+
+        // Estrictamente decrecientes y todos dentro de (0, 1000).
+        for pair in KING_PHASE_THRESHOLDS.windows(2) {
+            assert!(pair[0] > pair[1]);
+        }
+        assert!(KING_PHASE_THRESHOLDS.iter().all(|&t| t > 0 && t < 1000));
+
+        // 25 Dealers como máximo en un combate completo.
+        assert_eq!(KING_SUMMON_COUNTS.iter().sum::<usize>(), 25);
+    }
+
+    #[test]
+    fn frozen_combat_values_are_unchanged_by_the_phase_thresholds() {
+        assert_eq!(KING_ATTACK_DAMAGE, 20);
+        assert_eq!(DEALER_ATTACK_DAMAGE, 10);
+        assert_eq!(KING_MAX_HEALTH, 1000);
+        assert_eq!(WeaponTier::Standard.damage(), 50);
+        assert_eq!(WeaponTier::RoyalFlush.damage(), 100);
     }
 }
