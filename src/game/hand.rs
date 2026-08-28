@@ -524,6 +524,96 @@ pub(crate) fn select_spawn_cells(
     }
 }
 
+/// Bandas de distancia navegable para la oleada de CASTIGO de la fase
+/// de huida de The King: a diferencia del resto de invocaciones (que
+/// respetan `SAFE_DISTANCE_FALLBACKS`), estos Dealers aparecen CERCA y
+/// RODEANDO al jugador — la intención es que, si no rematas al Rey en
+/// los 20 s, el ejército te caiga encima. Se relaja si el mapa no
+/// ofrece candidatos en la banda estricta.
+const ENCIRCLE_DISTANCE_FALLBACKS: [(u32, u32); 3] = [(2, 5), (2, 8), (1, u32::MAX)];
+
+/// Coloca `count` celdas navegables CERCA del jugador y repartidas por
+/// octantes a su alrededor (no a distancia segura). Uso: la oleada de
+/// castigo de la huida de The King.
+pub(crate) fn select_encircling_cells(
+    level: &Level,
+    player_position: Vector2,
+    block_size: usize,
+    occupied: &HashSet<(usize, usize)>,
+    count: usize,
+    seed: u64,
+) -> Vec<(usize, usize)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let mut rng = Rng::new(seed);
+    let player_cell = world_to_cell(player_position, block_size);
+    let distances = DistanceField::from_level(level, player_cell);
+
+    let mut pool: Vec<(usize, usize)> = Vec::new();
+    for &(low, high) in &ENCIRCLE_DISTANCE_FALLBACKS {
+        pool.clear();
+        for row in 0..level.height() {
+            for column in 0..level.width() {
+                let cell = (row, column);
+
+                if !level.is_walkable(row, column)
+                    || cell == player_cell
+                    || occupied.contains(&cell)
+                {
+                    continue;
+                }
+
+                let Some(distance) = distances.distance_at(row, column) else {
+                    continue;
+                };
+
+                if distance >= low && distance <= high {
+                    pool.push(cell);
+                }
+            }
+        }
+
+        if pool.len() >= count {
+            break;
+        }
+    }
+
+    pool.sort();
+    rng.shuffle(&mut pool);
+
+    // Reparto por octantes: la oleada rodea al jugador en vez de
+    // amontonarse en una sola dirección.
+    let mut buckets: [Vec<(usize, usize)>; 8] = std::array::from_fn(|_| Vec::new());
+    for &cell in &pool {
+        let dy = cell.0 as f32 - player_cell.0 as f32;
+        let dx = cell.1 as f32 - player_cell.1 as f32;
+        let mut octant = (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round() as i32 % 8;
+        if octant < 0 {
+            octant += 8;
+        }
+        buckets[octant as usize].push(cell);
+    }
+
+    let mut chosen: Vec<(usize, usize)> = Vec::with_capacity(count);
+    let mut progress = true;
+    while chosen.len() < count && progress {
+        progress = false;
+        for bucket in buckets.iter_mut() {
+            if chosen.len() >= count {
+                break;
+            }
+            if let Some(cell) = bucket.pop() {
+                chosen.push(cell);
+                progress = true;
+            }
+        }
+    }
+
+    chosen
+}
+
 /// Banda de distancia navegable de la mitad "accesible pero fuera de
 /// vista" de la munición de Hand: lo bastante cerca para recogerla
 /// con un rodeo corto y sin mucho peligro, pero NO delante del

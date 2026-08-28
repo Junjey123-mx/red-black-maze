@@ -1883,6 +1883,16 @@ impl<'aud> App<'aud> {
                     "THE KING HAS FALLEN",
                     "THE FINAL HAND IS DEALT",
                 );
+            } else if let Some(seconds) = self.session.king_flee_countdown() {
+                /*
+                 * Fase de huida, cohorte ya limpia: cuenta atrás
+                 * REGRESIVA hasta que The King invoque el ejército de
+                 * castigo alrededor del jugador. Si no lo rematas antes
+                 * de que llegue a cero, esa oleada te sepulta.
+                 */
+                let count = seconds.ceil().max(0.0) as u32;
+                let countdown_line = format!("THE COURT ARRIVES IN {count}");
+                render_king_summon_warning(framebuffer, "KILL THE KING", &countdown_line);
             }
         }
 

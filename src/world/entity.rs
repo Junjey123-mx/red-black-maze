@@ -170,7 +170,7 @@ pub(crate) const KING_PURSUIT_SPEED: f32 = 85.0;
 /// (150): una persecución final de verdad, pero el jugador (más
 /// rápido) todavía puede acorralarlo. `GameSession` la aplica como
 /// `speed_scale` cuando el King entra en `Fleeing`.
-pub(crate) const KING_FLEE_SPEED: f32 = 135.0;
+pub(crate) const KING_FLEE_SPEED: f32 = 150.0;
 
 /// Distancia de alerta de The King, en celdas de mapa (Bloque 3,
 /// Commit 22; ajustada en el Commit 30 de balance).

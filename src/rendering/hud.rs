@@ -972,6 +972,8 @@ mod tests {
             "16 DEALERS JOIN THE HUNT",
             "THE KING HAS FALLEN",
             "THE FINAL HAND IS DEALT",
+            "KILL THE KING",
+            "THE COURT ARRIVES IN 20",
         ];
 
         for line in lines {
@@ -1001,6 +1003,8 @@ mod tests {
             "16 DEALERS JOIN THE HUNT",
             "THE KING HAS FALLEN",
             "THE FINAL HAND IS DEALT",
+            "KILL THE KING",
+            "THE COURT ARRIVES IN 20",
         ] {
             let width = hand_message_width(line, KING_SUMMON_WARNING_SCALE);
             assert!(width > 0);

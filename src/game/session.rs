@@ -986,6 +986,20 @@ impl GameSession {
          * cada oleada.
          */
         if self.king_encounter.phase == KingEncounterPhase::Fleeing {
+            /*
+             * La cuenta atrás del castigo SÓLO corre cuando el jugador
+             * ya limpió la cohorte que The King acababa de invocar: son
+             * los 20 s en los que el Rey "huye y huye" sin nada más que
+             * lo proteja. Mientras queden Dealers invocados vivos el
+             * temporizador se mantiene lleno (y el HUD no muestra la
+             * cuenta atrás), así que el reloj no avanza durante la
+             * limpieza.
+             */
+            if self.any_summoned_dealer_alive() {
+                self.king_encounter.flee_punish_timer = KING_FLEE_PUNISH_INTERVAL;
+                return;
+            }
+
             if delta_time.is_finite() && delta_time > 0.0 {
                 self.king_encounter.flee_punish_timer =
                     (self.king_encounter.flee_punish_timer - delta_time).max(0.0);
@@ -1346,6 +1360,33 @@ impl GameSession {
         ))
     }
 
+    /// `true` si queda al menos un Dealer INVOCADO por The King con
+    /// vida (cualquier cohorte, incluida la sintética de la huida).
+    fn any_summoned_dealer_alive(&self) -> bool {
+        self.entities
+            .iter()
+            .any(|entity| entity.summon_cohort().is_some() && !entity.is_dead())
+    }
+
+    /// Segundos que faltan para que The King invoque el ejército de
+    /// castigo (`KING_FLEE_PUNISH_COUNT` Dealers alrededor del jugador)
+    /// durante la fase de huida. `Some` SÓLO cuando la cuenta atrás está
+    /// realmente corriendo — fase `Fleeing`, sin Dealers invocados
+    /// vivos y con tiempo restante —; en cualquier otro caso `None` y
+    /// `App` no dibuja el contador regresivo.
+    pub(crate) fn king_flee_countdown(&self) -> Option<f32> {
+        if self.king_encounter.phase != KingEncounterPhase::Fleeing {
+            return None;
+        }
+        if self.king_encounter.flee_punish_timer <= 0.0 {
+            return None;
+        }
+        if self.any_summoned_dealer_alive() {
+            return None;
+        }
+        Some(self.king_encounter.flee_punish_timer)
+    }
+
     /// Condición de victoria de Horde Mode (Bloque 3, Commit 24 —
     /// reemplaza la resolución temporal del Bloque 1).
     ///
@@ -1447,6 +1488,20 @@ impl GameSession {
         let occupied = self.occupied_world_cells(block_size);
 
         let seed = hand::spawn_seed_for_king_summon(self.hand_seed, threshold_index);
+
+        // La oleada de castigo de la huida (cohorte sintética) rodea al
+        // jugador de cerca; el resto de invocaciones respetan la
+        // distancia segura habitual.
+        if threshold_index == KING_FLEE_PUNISH_COHORT {
+            return hand::select_encircling_cells(
+                &self.level,
+                self.player.pos,
+                block_size,
+                &occupied,
+                count,
+                seed,
+            );
+        }
 
         hand::select_spawn_cells(
             &self.level,
@@ -6825,6 +6880,26 @@ e             #
         }
     }
 
+    /// Mata a todos los Dealers INVOCADOS por The King que sigan vivos
+    /// (cualquier cohorte). La cuenta atrás de la oleada de castigo de
+    /// la huida SOLO corre con el tablero limpio, así que las pruebas
+    /// que quieren ver esa oleada tienen que despejarlo primero.
+    fn kill_summoned_dealers(run: &mut GameSession) {
+        let indices: Vec<usize> = run
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.summon_cohort().is_some() && !e.is_dead())
+            .map(|(i, _)| i)
+            .collect();
+
+        for index in indices {
+            for _ in 0..3 {
+                run.damage_entity(index);
+            }
+        }
+    }
+
     #[test]
     fn twenty_standard_hits_defeat_the_king_and_nineteen_do_not() {
         let (mut run, king) = horde_at_the_king(4);
@@ -7549,6 +7624,10 @@ e             #
         let total_before = run.king_cohort_progress().map(|(_, _, t)| t).unwrap_or(0);
         assert_eq!(total_before, 25); // 5+5+5+10
 
+        // La cuenta atrás del castigo solo corre con el tablero limpio.
+        kill_summoned_dealers(&mut run);
+        assert!(run.king_flee_countdown().is_some());
+
         // ~19 s huyendo: todavía nada.
         for _ in 0..190 {
             run.update_king_encounter(0.1, BLOCK_SIZE);
@@ -7585,6 +7664,45 @@ e             #
     }
 
     #[test]
+    fn the_flee_countdown_only_runs_once_the_summoned_cohort_is_clear() {
+        let (mut run, _king) = king_fleeing_big();
+
+        // Con los 10 Dealers de la cohorte final vivos, la cuenta atrás
+        // NO corre y el HUD no la muestra.
+        assert!(run.king_is_fleeing());
+        assert_eq!(run.king_flee_countdown(), None);
+        for _ in 0..100 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert!(run.king_is_fleeing(), "sin castigo mientras haya cohorte");
+        assert_eq!(run.king_flee_countdown(), None);
+
+        // Tablero limpio: la cuenta atrás arranca desde el intervalo
+        // completo y desciende.
+        kill_summoned_dealers(&mut run);
+        let start = run.king_flee_countdown().expect("cuenta atrás activa");
+        assert!((start - KING_FLEE_PUNISH_INTERVAL).abs() < 1.0);
+
+        for _ in 0..50 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        let later = run.king_flee_countdown().expect("sigue activa");
+        assert!(later < start - 4.0);
+
+        // Al llegar a cero: Summoning y ya no hay cuenta atrás visible.
+        let mut reached_summoning = false;
+        for _ in 0..200 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            if run.king_is_summoning() {
+                reached_summoning = true;
+                break;
+            }
+        }
+        assert!(reached_summoning, "la cuenta atrás dispara la oleada");
+        assert_eq!(run.king_flee_countdown(), None);
+    }
+
+    #[test]
     fn rematando_rapido_al_king_evita_la_oleada_de_castigo() {
         let (mut run, king) = king_fleeing_big();
 
@@ -7608,6 +7726,7 @@ e             #
     #[test]
     fn the_punishment_wave_repeats_while_the_king_keeps_fleeing() {
         let (mut run, _king) = king_fleeing_big();
+        kill_summoned_dealers(&mut run);
         let mut waves = 0;
         for _ in 0..900 {
             // 90 s
@@ -7616,6 +7735,9 @@ e             #
             if !summoning_before && run.king_is_summoning() {
                 waves += 1;
                 run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+                // Cada oleada deja 16 Dealers nuevos que vuelven a
+                // congelar la cuenta atrás hasta que se limpian.
+                kill_summoned_dealers(&mut run);
             }
         }
         assert!(
@@ -8187,6 +8309,41 @@ e             #
         assert_eq!(run.select_king_summon_cells(5, 0, BLOCK_SIZE), cells);
         // Umbral distinto -> reparto distinto (discriminador propio).
         assert_ne!(run.select_king_summon_cells(5, 1, BLOCK_SIZE), cells);
+    }
+
+    #[test]
+    fn the_flee_punishment_cohort_spawns_close_and_around_the_player() {
+        let (run, _king) = horde_at_the_king_big(4);
+        let player_cell = super::world_to_cell(run.player.pos, BLOCK_SIZE);
+        let field = DistanceField::from_level(&run.level, player_cell);
+
+        let cells = run.select_king_summon_cells(16, KING_FLEE_PUNISH_COHORT, BLOCK_SIZE);
+        assert!(!cells.is_empty());
+
+        // Cerca del jugador: la mediana de distancias es mucho menor que
+        // la que exige una invocación normal (`SAFE` = 6+).
+        let mut distances: Vec<u32> = cells
+            .iter()
+            .filter_map(|&(r, c)| field.distance_at(r, c))
+            .collect();
+        distances.sort_unstable();
+        assert!(
+            distances[distances.len() / 2] <= 8,
+            "la oleada de castigo cae encima del jugador, no a distancia segura"
+        );
+
+        // Rodea al jugador: las celdas no caen todas en la misma
+        // dirección cardinal respecto a él.
+        let mut quadrants = std::collections::HashSet::new();
+        for &(row, column) in &cells {
+            let vertical = row.cmp(&player_cell.0);
+            let horizontal = column.cmp(&player_cell.1);
+            quadrants.insert((vertical, horizontal));
+        }
+        assert!(
+            quadrants.len() >= 2,
+            "la oleada envuelve al jugador, no se amontona en un lado"
+        );
     }
 
     #[test]
