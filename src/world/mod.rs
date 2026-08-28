@@ -22,7 +22,7 @@ pub(crate) use ammo_pickup::AmmoPickup;
 pub use collision::can_occupy;
 pub(crate) use entity::{
     DEALER_ATTACK_RANGE_CELLS, EnemyKind, Entity, EntityDamageOutcome, EntitySprite, EntityState,
-    EntityStateTransition, KING_MAX_HEALTH,
+    EntityStateTransition, KING_FLEE_SPEED, KING_MAX_HEALTH, KING_PURSUIT_SPEED,
 };
 pub(crate) use health_pickup::HealthPickup;
 pub use level::{Level, LevelError};

@@ -968,6 +968,8 @@ mod tests {
             "10 DEALERS JOIN THE HAND",
             "THE KING IS SHIELDED",
             "CLEAR HIS DEALERS FIRST",
+            "THE KING REFUSES TO FALL",
+            "16 DEALERS JOIN THE HUNT",
             "THE KING HAS FALLEN",
             "THE FINAL HAND IS DEALT",
         ];
@@ -995,6 +997,8 @@ mod tests {
             "10 DEALERS JOIN THE HAND",
             "THE KING IS SHIELDED",
             "CLEAR HIS DEALERS FIRST",
+            "THE KING REFUSES TO FALL",
+            "16 DEALERS JOIN THE HUNT",
             "THE KING HAS FALLEN",
             "THE FINAL HAND IS DEALT",
         ] {

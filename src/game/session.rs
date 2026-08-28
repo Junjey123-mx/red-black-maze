@@ -5,8 +5,8 @@ use raylib::prelude::Vector2;
 use crate::player::{Player, Weapon, WeaponState, WeaponTier};
 use crate::world::{
     AmmoPickup, DEALER_ATTACK_RANGE_CELLS, DistanceField, EnemyKind, Entity, EntityDamageOutcome,
-    EntityState, EntityStateTransition, HealthPickup, HordeHandConfig, KING_MAX_HEALTH, Level,
-    RoyalFlushPickup,
+    EntityState, EntityStateTransition, HealthPickup, HordeHandConfig, KING_FLEE_SPEED,
+    KING_MAX_HEALTH, KING_PURSUIT_SPEED, Level, RoyalFlushPickup,
 };
 
 use super::GameMode;
@@ -148,6 +148,12 @@ struct KingEncounter {
     /// cuando un `Killed` cae sobre una entidad con marca de cohorte.
     summoned_killed: usize,
 
+    /// Segundos restantes hasta la próxima oleada de castigo de la
+    /// huida (`0.0` fuera de `Fleeing`). Se fija a
+    /// `KING_FLEE_PUNISH_INTERVAL` al entrar en `Fleeing` y tras cada
+    /// oleada; se descuenta en `update_king_encounter`.
+    flee_punish_timer: f32,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -189,6 +195,7 @@ impl KingEncounter {
             invuln_pulse_clock: 0.0,
             summoned_total: 0,
             summoned_killed: 0,
+            flee_punish_timer: 0.0,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -308,6 +315,23 @@ const KING_SHIELD_NOTICE_DURATION: f32 = 20.0;
 /// el jefe. Pause lo congela (`update_king_encounter` deja de
 /// llamarse); Retry lo reinicia (sesión reconstruida).
 const KING_DEATH_AFTERMATH_DURATION: f32 = 20.0;
+
+/// Durante la fase `Fleeing`, si el jugador NO remata a The King en
+/// este tiempo (segundos de PARTIDA), el jefe invoca otra oleada de
+/// castigo. El temporizador se rearma tras cada oleada, así que
+/// dejarlo huir indefinidamente escala sin límite.
+const KING_FLEE_PUNISH_INTERVAL: f32 = 20.0;
+
+/// Cuántos Dealers invoca The King en cada oleada de castigo de la
+/// huida.
+const KING_FLEE_PUNISH_COUNT: usize = 16;
+
+/// Índice de cohorte SINTÉTICO de los Dealers de una oleada de
+/// castigo — fuera del rango de `KING_PHASE_THRESHOLDS`
+/// (0..=3), para que `finish_king_summoning` distinga esta invocación
+/// de las de umbral y `despawn_summoned_dealers`/el contador de HUD
+/// los traten igual que a cualquier otro invocado.
+const KING_FLEE_PUNISH_COHORT: usize = 100;
 
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
@@ -811,19 +835,28 @@ impl GameSession {
                  */
                 /*
                  * Bloque 4, Commit 46: en la fase `Fleeing` The King
-                 * usa el MISMO campo de distancias pero al revés —
-                 * `step_away_from_origin` — para alejarse del jugador
-                 * respetando paredes y sin oscilar. Nunca usa el
-                 * fallback de "misma celda -> posición exacta del
-                 * jugador": un jefe que huye jamás debe converger
-                 * hacia la cámara.
+                 * usa el MISMO campo de distancias pero al revés
+                 * (`step_escape`) para alejarse del jugador respetando
+                 * paredes. Nunca usa el fallback de "misma celda ->
+                 * posición exacta del jugador": un jefe que huye jamás
+                 * debe converger hacia la cámara.
                  */
                 if entity.kind() == EnemyKind::King && king_phase == KingEncounterPhase::Fleeing {
+                    // Huye MÁS rápido que cuando perseguía.
+                    entity.set_speed_scale(KING_FLEE_SPEED / KING_PURSUIT_SPEED);
+
                     let flee_target = distance_field.as_ref().and_then(|field| {
                         let entity_cell = world_to_cell(entity.position(), block_size);
 
+                        /*
+                         * `step_escape` (no `step_away_from_origin`):
+                         * nunca se congela en un óptimo local — si no
+                         * hay celda más lejana, coge la mejor vecina y
+                         * sigue rodeando hasta que el jugador lo
+                         * acorrale.
+                         */
                         field
-                            .step_away_from_origin(entity_cell)
+                            .step_escape(entity_cell)
                             .map(|(row, column)| cell_center(row, column, block_size))
                     });
 
@@ -943,6 +976,31 @@ impl GameSession {
             return;
         }
 
+        /*
+         * Fase de huida: si el jugador tarda demasiado en rematar a
+         * The King, éste invoca una oleada de CASTIGO
+         * (`KING_FLEE_PUNISH_COUNT` Dealers). Va por la fase
+         * `Summoning` normal (Rey inmóvil, dorado, animación, aviso,
+         * SFX, reabastecimiento) usando la cohorte sintética
+         * `KING_FLEE_PUNISH_COHORT`; el temporizador se rearma tras
+         * cada oleada.
+         */
+        if self.king_encounter.phase == KingEncounterPhase::Fleeing {
+            if delta_time.is_finite() && delta_time > 0.0 {
+                self.king_encounter.flee_punish_timer =
+                    (self.king_encounter.flee_punish_timer - delta_time).max(0.0);
+            }
+
+            if self.king_encounter.flee_punish_timer <= 0.0 {
+                self.king_encounter.pending_threshold = Some(KING_FLEE_PUNISH_COHORT);
+                self.king_encounter.phase = KingEncounterPhase::Summoning;
+                self.king_encounter.summon_timer = KING_SUMMON_DURATION;
+                self.king_encounter.summon_cue_pending = true;
+            }
+
+            return;
+        }
+
         if self.king_encounter.phase != KingEncounterPhase::Summoning {
             return;
         }
@@ -969,7 +1027,13 @@ impl GameSession {
         let resolved_threshold = self.king_encounter.pending_threshold;
 
         if let Some(threshold_index) = resolved_threshold {
-            let count = KING_SUMMON_COUNTS[threshold_index];
+            // Las oleadas de umbral usan `KING_SUMMON_COUNTS`; la
+            // oleada de castigo de la huida (cohorte sintética) usa
+            // `KING_FLEE_PUNISH_COUNT`.
+            let count = KING_SUMMON_COUNTS
+                .get(threshold_index)
+                .copied()
+                .unwrap_or(KING_FLEE_PUNISH_COUNT);
 
             let cells = self.select_king_summon_cells(count, threshold_index, block_size);
 
@@ -998,20 +1062,22 @@ impl GameSession {
         }
 
         /*
-         * Bloque 4, Commit 45: la invocación de 200 HP (último índice)
-         * es especial — al terminar su animación The King NO vuelve a
-         * `Fighting` sino que entra de forma PERMANENTE en `Fleeing`.
-         * Las tres primeras (800/600/400) reanudan el combate normal.
+         * Bloque 4, Commit 45: la invocación de 200 HP es especial —
+         * al terminar su animación The King NO vuelve a `Fighting`
+         * sino que entra de forma PERMANENTE en `Fleeing`. Las tres
+         * primeras (800/600/400) reanudan el combate normal; toda
+         * oleada de castigo POSTERIOR también regresa a `Fleeing`.
+         * `thresholds_consumed == 4` marca "ya se rompió el 200".
          */
-        let last_index = KING_PHASE_THRESHOLDS.len() - 1;
-
         self.king_encounter.pending_threshold = None;
         self.king_encounter.summon_timer = 0.0;
-        self.king_encounter.phase = if resolved_threshold == Some(last_index) {
-            KingEncounterPhase::Fleeing
-        } else {
-            KingEncounterPhase::Fighting
-        };
+        self.king_encounter.phase =
+            if self.king_encounter.thresholds_consumed >= KING_PHASE_THRESHOLDS.len() {
+                self.king_encounter.flee_punish_timer = KING_FLEE_PUNISH_INTERVAL;
+                KingEncounterPhase::Fleeing
+            } else {
+                KingEncounterPhase::Fighting
+            };
 
         /*
          * Bloque 5, Commit 56: al terminar la PRIMERA invocación
@@ -7392,6 +7458,156 @@ e             #
         (run, king)
     }
 
+    // --- Huida: velocidad, no congelarse, oleada de castigo. ---
+
+    #[test]
+    fn the_fleeing_king_moves_faster_than_when_it_pursued() {
+        // King persiguiendo: distancia recorrida en 1 s.
+        let (mut chase, chase_king) = horde_at_the_king_big(4);
+        let kp = chase.entities()[chase_king].position();
+        chase.player.pos = Vector2::new(kp.x + 10.0, kp.y);
+        chase.update_entities(0.016, BLOCK_SIZE); // -> Alert
+        let start = chase.entities()[chase_king].position();
+        for _ in 0..10 {
+            chase.update_entities(0.1, BLOCK_SIZE);
+        }
+        let chased = (chase.entities()[chase_king].position().x - start.x)
+            .hypot(chase.entities()[chase_king].position().y - start.y);
+
+        // King huyendo: distancia recorrida en 1 s, jugador pegado.
+        let (mut flee, flee_king) = king_fleeing_big();
+        let kp = flee.entities()[flee_king].position();
+        flee.player.pos = Vector2::new(kp.x - 24.0, kp.y);
+        let start = flee.entities()[flee_king].position();
+        for _ in 0..10 {
+            flee.update_entities(0.1, BLOCK_SIZE);
+        }
+        let fled = (flee.entities()[flee_king].position().x - start.x)
+            .hypot(flee.entities()[flee_king].position().y - start.y);
+
+        assert!(
+            fled > chased,
+            "huye ({fled}) más rápido que persigue ({chased})"
+        );
+    }
+
+    #[test]
+    fn the_fleeing_king_does_not_freeze_while_being_chased() {
+        let (mut run, king) = king_fleeing_big();
+        // Jugador pegado al King y persiguiéndolo. NO se avanza el
+        // encounter (para no disparar la oleada de castigo): solo
+        // interesa el movimiento de huida.
+        let kp = run.entities()[king].position();
+        run.player.pos = Vector2::new(kp.x - 24.0, kp.y);
+
+        let mut moved_frames = 0;
+        for _ in 0..80 {
+            let before = run.entities()[king].position();
+
+            // El jugador persigue al King.
+            let kp = run.entities()[king].position();
+            let dir = Vector2::new(kp.x - run.player.pos.x, kp.y - run.player.pos.y);
+            let len = dir.x.hypot(dir.y).max(1.0);
+            run.player.pos = Vector2::new(
+                run.player.pos.x + dir.x / len * 10.0,
+                run.player.pos.y + dir.y / len * 10.0,
+            );
+
+            run.update_entities(0.1, BLOCK_SIZE);
+
+            let after = run.entities()[king].position();
+            if (after.x - before.x).hypot(after.y - before.y) > 0.5 {
+                moved_frames += 1;
+            }
+        }
+        // Nunca se queda como una estatua mientras lo persiguen.
+        assert!(
+            moved_frames >= 60,
+            "el King huyó en {moved_frames}/80 cuadros"
+        );
+    }
+
+    #[test]
+    fn the_fleeing_king_summons_a_sixteen_dealer_punishment_wave_after_twenty_seconds() {
+        let (mut run, king) = king_fleeing_big();
+        let total_before = run.king_cohort_progress().map(|(_, _, t)| t).unwrap_or(0);
+        assert_eq!(total_before, 25); // 5+5+5+10
+
+        // ~19 s huyendo: todavía nada.
+        for _ in 0..190 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            run.update_entities(0.1, BLOCK_SIZE);
+        }
+        assert!(run.king_is_fleeing());
+
+        // Pasados los 20 s: entra en Summoning (oleada de castigo).
+        for _ in 0..20 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert!(run.king_is_summoning());
+        assert_eq!(
+            run.king_active_summon_index(),
+            Some(KING_FLEE_PUNISH_COHORT)
+        );
+        assert!(run.king_is_invulnerable(), "dorado durante la oleada");
+        assert!(run.king_summon_animation_scale() >= 1.0);
+
+        // Termina -> 16 Dealers nuevos, de vuelta a Fleeing.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert!(run.king_is_fleeing());
+        assert_eq!(
+            run.king_cohort_progress().map(|(_, _, t)| t),
+            Some(total_before + 16)
+        );
+        let punish_alive = run
+            .entities()
+            .iter()
+            .filter(|e| e.summon_cohort() == Some(100) && !e.is_dead())
+            .count();
+        assert_eq!(punish_alive, 16);
+        let _ = king;
+    }
+
+    #[test]
+    fn rematando_rapido_al_king_evita_la_oleada_de_castigo() {
+        let (mut run, king) = king_fleeing_big();
+
+        // Pocos segundos y 4 tiros Standard: el King muere sin oleada.
+        for _ in 0..30 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        for _ in 0..4 {
+            run.damage_entity(king);
+        }
+        assert!(!run.king_alive());
+        assert_eq!(run.king_cohort_progress(), None); // King muerto
+        // Nunca se invocó la cohorte de castigo.
+        assert!(
+            run.entities()
+                .iter()
+                .all(|e| e.summon_cohort() != Some(100))
+        );
+    }
+
+    #[test]
+    fn the_punishment_wave_repeats_while_the_king_keeps_fleeing() {
+        let (mut run, _king) = king_fleeing_big();
+        let mut waves = 0;
+        for _ in 0..900 {
+            // 90 s
+            let summoning_before = run.king_is_summoning();
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            if !summoning_before && run.king_is_summoning() {
+                waves += 1;
+                run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+            }
+        }
+        assert!(
+            waves >= 3,
+            "se invocaron {waves} oleadas de castigo en 90 s"
+        );
+    }
+
     #[test]
     fn the_fleeing_king_moves_away_from_the_player_without_teleporting() {
         let (mut run, king) = king_fleeing_big();
@@ -7408,12 +7624,13 @@ e             #
             .unwrap_or(0);
 
         let mut prev = run.entities()[king].position();
+        let max_step = KING_FLEE_SPEED * 0.1 + 1.0;
         for _ in 0..120 {
             run.update_entities(0.1, BLOCK_SIZE);
             let now = run.entities()[king].position();
-            // Sin teletransporte: cada paso es pequeño (<= velocidad *
-            // dt + margen).
-            assert!((now.x - prev.x).hypot(now.y - prev.y) <= 12.0);
+            // Sin teletransporte: cada paso es <= velocidad de huida *
+            // dt + margen.
+            assert!((now.x - prev.x).hypot(now.y - prev.y) <= max_step);
             prev = now;
         }
 
@@ -7454,12 +7671,15 @@ e             #
         assert_eq!(run.living_summoned_cohort_count(3), 10);
         assert!(run.king_alive());
 
-        // Nunca vuelve a Fighting por sí solo.
+        // Nunca vuelve a `Fighting` por sí solo: se queda en `Fleeing`
+        // (o entra brevemente en `Summoning` para una oleada de
+        // castigo, que también regresa a `Fleeing`).
         for _ in 0..300 {
             run.update_king_encounter(0.1, BLOCK_SIZE);
             run.update_entities(0.1, BLOCK_SIZE);
-            assert_eq!(run.king_phase(), KingEncounterPhase::Fleeing);
+            assert_ne!(run.king_phase(), KingEncounterPhase::Fighting);
         }
+        assert!(run.king_is_fleeing() || run.king_is_summoning());
         let _ = king;
     }
 

@@ -163,7 +163,14 @@ const DEALER_PURSUIT_SPEED: f32 = 75.0;
 /// 22). ~57% de la velocidad del jugador (150 px/s): más presión que
 /// un Dealer (50%), todavía dentro del rango que deja escapar/
 /// maniobrar.
-const KING_PURSUIT_SPEED: f32 = 85.0;
+pub(crate) const KING_PURSUIT_SPEED: f32 = 85.0;
+
+/// Velocidad de The King mientras HUYE (fase `Fleeing`, Bloque 4).
+/// Mucho más alta que su persecución (85) — ~90 % de la del jugador
+/// (150): una persecución final de verdad, pero el jugador (más
+/// rápido) todavía puede acorralarlo. `GameSession` la aplica como
+/// `speed_scale` cuando el King entra en `Fleeing`.
+pub(crate) const KING_FLEE_SPEED: f32 = 135.0;
 
 /// Distancia de alerta de The King, en celdas de mapa (Bloque 3,
 /// Commit 22; ajustada en el Commit 30 de balance).
@@ -263,6 +270,13 @@ pub(crate) struct Entity {
     /// exactamente la misma struct, IA, ataque, daño, cooldown,
     /// billboard, audio y cleanup que cualquier otro.
     summon_cohort: Option<usize>,
+
+    /// Multiplicador de la velocidad de persecución/huida de esta
+    /// entidad (`1.0` por defecto). Solo lo usa `GameSession` para que
+    /// The King HUYA más rápido en la fase `Fleeing` que cuando
+    /// perseguía. No se serializa entre runs: cada `Entity` nace en
+    /// `1.0` y la sesión se reconstruye entera en cada Retry.
+    speed_scale: f32,
 }
 
 impl Entity {
@@ -287,6 +301,7 @@ impl Entity {
             attack_cooldown_remaining: 0.0,
             corpse_elapsed: 0.0,
             summon_cohort: None,
+            speed_scale: 1.0,
         }
     }
 
@@ -310,6 +325,15 @@ impl Entity {
     /// caso. Bloque 4.
     pub(crate) fn summon_cohort(&self) -> Option<usize> {
         self.summon_cohort
+    }
+
+    /// Fija el multiplicador de velocidad de persecución/huida de esta
+    /// entidad (`GameSession` lo sube para The King en `Fleeing`). Un
+    /// valor no finito o `<= 0.0` se ignora.
+    pub(crate) fn set_speed_scale(&mut self, scale: f32) {
+        if scale.is_finite() && scale > 0.0 {
+            self.speed_scale = scale;
+        }
     }
 
     /// Crea a The King centrado exactamente en la celda `(row,
@@ -339,6 +363,7 @@ impl Entity {
             attack_cooldown_remaining: 0.0,
             corpse_elapsed: 0.0,
             summon_cohort: None,
+            speed_scale: 1.0,
         }
     }
 
@@ -570,7 +595,7 @@ impl Entity {
             return;
         }
 
-        let step = self.kind.pursuit_speed() * delta_time;
+        let step = self.kind.pursuit_speed() * self.speed_scale * delta_time;
 
         if step >= distance {
             self.position = target;

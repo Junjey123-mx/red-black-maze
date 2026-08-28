@@ -120,19 +120,19 @@ impl DistanceField {
     }
 
     /// Simétrico de `step_toward_origin` para una entidad que HUYE del
-    /// origen (Bloque 4, Commit 46): elige, entre los vecinos
-    /// 4-direccionales alcanzables de `from`, aquel cuya distancia al
-    /// origen sea ESTRICTAMENTE MAYOR que la de `from` (nunca se
-    /// acerca ni se queda igual); si hay varios, el de mayor
-    /// distancia.
-    ///
-    /// Retorna `None` si `from` es inalcanzable/fuera de rango o si
-    /// ningún vecino alejable existe (callejón sin salida respecto al
-    /// origen): la entidad se detiene en vez de oscilar. Reutiliza la
-    /// MISMA cuadrícula, `Level::is_walkable` y topología 4-direccional
-    /// que el resto del campo — no hay un segundo grafo de navegación.
-    pub(crate) fn step_away_from_origin(&self, from: (usize, usize)) -> Option<(usize, usize)> {
-        let current_distance = self.distance_at(from.0, from.1)?;
+    /// origen (Bloque 4, Commit 46, ampliado): entre los vecinos
+    /// 4-direccionales transitables de `from` elige el de MAYOR
+    /// distancia al origen. A diferencia de un "alejarse estricto",
+    /// NUNCA se detiene mientras exista al menos un vecino transitable
+    /// — si ninguno está más lejos, coge el mejor disponible y sigue
+    /// rodeando, de modo que un jefe que huye no se congela en un
+    /// óptimo local y deja que el jugador lo acorrale. Solo retorna
+    /// `None` si `from` es inalcanzable/fuera de rango o no tiene ni un
+    /// vecino transitable. Reutiliza la MISMA cuadrícula,
+    /// `Level::is_walkable` y topología 4-direccional que el resto del
+    /// campo — no hay un segundo grafo de navegación.
+    pub(crate) fn step_escape(&self, from: (usize, usize)) -> Option<(usize, usize)> {
+        self.distance_at(from.0, from.1)?;
 
         neighbors(from.0, from.1, self.width, self.height)
             .into_iter()
@@ -141,7 +141,6 @@ impl DistanceField {
                 self.distance_at(cell.0, cell.1)
                     .map(|distance| (cell, distance))
             })
-            .filter(|&(_, distance)| distance > current_distance)
             .max_by_key(|&(_, distance)| distance)
             .map(|(cell, _)| cell)
     }
@@ -348,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn step_away_from_origin_increases_path_distance_and_respects_walls() {
+    fn step_escape_increases_path_distance_and_respects_walls() {
         let map = "\
 #######
 #p    #
@@ -365,13 +364,13 @@ mod tests {
 
         // Desde (3, 3) el paso que ALEJA del origen es hacia la
         // derecha (col 4), nunca hacia la pared ni de vuelta.
-        let away = field.step_away_from_origin((3, 3)).expect("hay salida");
+        let away = field.step_escape((3, 3)).expect("hay salida");
         assert_eq!(away, (3, 4));
         assert!(field.distance_at(away.0, away.1).unwrap() > field.distance_at(3, 3).unwrap());
     }
 
     #[test]
-    fn step_away_from_origin_stops_instead_of_oscillating_at_a_dead_end() {
+    fn step_escape_keeps_moving_even_when_cornered_and_never_panics() {
         let map = "\
 #####
 #pg #
@@ -380,14 +379,15 @@ mod tests {
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el mapa debe cargar");
 
-        // Origen en g = (1, 2). Desde (1, 1) (celda de p) el único
-        // vecino transitable es el propio origen -> no hay a dónde
-        // alejarse.
+        // Origen en g = (1, 2). Desde (1, 1) el único vecino
+        // transitable es el propio origen: acorralado, pero `step_escape`
+        // NO se congela — devuelve esa única celda para seguir en
+        // movimiento.
         let field = DistanceField::from_level(&level, (1, 2));
-        assert_eq!(field.step_away_from_origin((1, 1)), None);
+        assert_eq!(field.step_escape((1, 1)), Some((1, 2)));
 
-        // Celda inalcanzable / fuera de rango: sin pánico.
-        assert_eq!(field.step_away_from_origin((100, 100)), None);
+        // Celda inalcanzable / fuera de rango: sin pánico, sí `None`.
+        assert_eq!(field.step_escape((100, 100)), None);
     }
 
     #[test]

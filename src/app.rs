@@ -1956,7 +1956,10 @@ fn king_summon_warning_lines(summon_index: Option<usize>) -> Option<(&'static st
     match summon_index {
         Some(0..=2) => Some(("THE KING CALLS HIS HAND!", "5 DEALERS JOIN THE HAND")),
         Some(3) => Some(("THE KING CALLS HIS FINAL HAND!", "10 DEALERS JOIN THE HAND")),
-        _ => None,
+        // Oleada de castigo durante la huida (cohorte sintética, índice
+        // fuera del rango 0..=3).
+        Some(_) => Some(("THE KING REFUSES TO FALL", "16 DEALERS JOIN THE HUNT")),
+        None => None,
     }
 }
 
