@@ -1830,12 +1830,13 @@ impl<'aud> App<'aud> {
                 king_summon_warning_lines(self.session.king_active_summon_index())
             {
                 render_king_summon_warning(framebuffer, line_one, line_two);
-            } else if self.session.king_is_shield_gated() {
+            } else if self.session.king_shield_notice_visible() {
                 /*
                  * Gate entre cohortes: The King está clavado en un
                  * umbral y NO recibe daño hasta que el jugador limpie
-                 * su cohorte. Se le explica con el mismo aviso de HUD
-                 * (además del billboard dorado del jefe).
+                 * su cohorte. El texto es un AVISO puntual (~20 s); el
+                 * billboard dorado del jefe queda como recordatorio
+                 * permanente.
                  */
                 render_king_summon_warning(
                     framebuffer,

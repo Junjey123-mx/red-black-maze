@@ -114,6 +114,13 @@ struct KingEncounter {
     /// `damage_entity`.
     last_hit_deflected: bool,
 
+    /// Segundos de PARTIDA restantes del aviso de HUD "THE KING IS
+    /// SHIELDED" (Bloque 4/5). Se rearma a `KING_SHIELD_NOTICE_DURATION`
+    /// cada vez que el gate entre cohortes se activa; se descuenta en
+    /// `update_king_encounter`. `0.0` = el aviso ya no se muestra
+    /// (aunque el King siga siendo invulnerable).
+    shield_notice_timer: f32,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -150,6 +157,7 @@ impl KingEncounter {
             thresholds_consumed: 0,
             last_hit_broke_phase: false,
             last_hit_deflected: false,
+            shield_notice_timer: 0.0,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -253,6 +261,14 @@ const KING_SUMMON_COUNTS: [usize; 4] = [5, 5, 5, 10];
 /// congelan automáticamente igual que el resto de temporizadores de
 /// la sesión.
 const KING_SUMMON_DURATION: f32 = 2.0;
+
+/// Cuánto tiempo (segundos de PARTIDA) permanece en pantalla el aviso
+/// "THE KING IS SHIELDED / CLEAR HIS DEALERS FIRST" al activarse el
+/// gate entre cohortes. Es un AVISO puntual, no un estado permanente:
+/// pasados estos segundos el texto se retira, pero el billboard
+/// dorado del jefe y los disparos que rebotan siguen indicando que no
+/// recibe daño.
+const KING_SHIELD_NOTICE_DURATION: f32 = 20.0;
 
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
@@ -821,6 +837,22 @@ impl GameSession {
     /// igual que el resto de temporizadores de la sesión.
     pub(crate) fn update_king_encounter(&mut self, delta_time: f32, block_size: usize) {
         /*
+         * Aviso "THE KING IS SHIELDED": es un mensaje TEMPORIZADO
+         * (`KING_SHIELD_NOTICE_DURATION` s de partida), no un estado
+         * permanente — el King dorado y los disparos que rebotan
+         * siguen comunicando la invulnerabilidad después de que el
+         * texto desaparezca. Se descuenta aquí, antes de cualquier
+         * retorno anticipado, para que Pause lo congele.
+         */
+        if self.king_encounter.shield_notice_timer > 0.0
+            && delta_time.is_finite()
+            && delta_time > 0.0
+        {
+            self.king_encounter.shield_notice_timer =
+                (self.king_encounter.shield_notice_timer - delta_time).max(0.0);
+        }
+
+        /*
          * Bloque 4, Commit 43: gate entre cohortes. Si un umbral ya
          * fue roto pero su invocación quedó en espera porque la
          * cohorte anterior seguía viva, la invocación arranca EN EL
@@ -982,6 +1014,16 @@ impl GameSession {
     pub(crate) fn king_is_shield_gated(&self) -> bool {
         self.king_encounter.phase == KingEncounterPhase::Fighting
             && self.king_encounter.pending_threshold.is_some()
+    }
+
+    /// `true` mientras debe mostrarse el aviso de HUD "THE KING IS
+    /// SHIELDED / CLEAR HIS DEALERS FIRST": el gate está activo Y su
+    /// temporizador de aviso (`KING_SHIELD_NOTICE_DURATION` s) aún no
+    /// ha expirado. Al agotarse, el texto desaparece aunque el King
+    /// siga clavado — el dorado y el sonido de deflexión bastan como
+    /// recordatorio.
+    pub(crate) fn king_shield_notice_visible(&self) -> bool {
+        self.king_encounter.shield_notice_timer > 0.0 && self.king_is_shield_gated()
     }
 
     /// Consume el evento "el último disparo contra The King rebotó por
@@ -1759,6 +1801,9 @@ impl GameSession {
                 if self.previous_cohort_blocks(consumed) {
                     self.king_encounter.phase = KingEncounterPhase::Fighting;
                     self.king_encounter.summon_timer = 0.0;
+                    // Gate activo: rearma el aviso de HUD durante
+                    // `KING_SHIELD_NOTICE_DURATION` s.
+                    self.king_encounter.shield_notice_timer = KING_SHIELD_NOTICE_DURATION;
                 } else {
                     self.king_encounter.phase = KingEncounterPhase::Summoning;
                     self.king_encounter.summon_timer = KING_SUMMON_DURATION;
@@ -7521,8 +7566,92 @@ e             #
             portal.update_king_encounter(0.1, BLOCK_SIZE);
             assert!(!portal.king_is_invulnerable());
             assert!(!portal.king_is_shield_gated());
+            assert!(!portal.king_shield_notice_visible());
             assert!(!portal.take_king_hit_deflected());
         }
+    }
+
+    #[test]
+    fn the_shield_notice_shows_for_twenty_seconds_then_hides_while_the_king_stays_gold() {
+        let (mut run, king) = king_after_first_cohort();
+
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert_eq!(run.king_health(), Some((600, 1000)));
+        assert!(run.king_is_shield_gated());
+        assert!(
+            run.king_shield_notice_visible(),
+            "el aviso aparece al activarse el gate"
+        );
+
+        // ~19 s: sigue visible.
+        for _ in 0..190 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert!(run.king_shield_notice_visible());
+
+        // Pasados los 20 s: el TEXTO desaparece...
+        for _ in 0..20 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert!(
+            !run.king_shield_notice_visible(),
+            "el aviso caduca a los 20 s"
+        );
+
+        // ...pero el King sigue clavado, invulnerable y DORADO.
+        assert!(run.king_is_shield_gated());
+        assert!(run.king_is_invulnerable());
+        assert_eq!(run.king_health(), Some((600, 1000)));
+    }
+
+    #[test]
+    fn the_shield_notice_is_frozen_by_pause_and_rearms_at_the_next_gate() {
+        let (mut run, king) = king_after_first_cohort();
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert!(run.king_shield_notice_visible());
+
+        // "Pausa": no se llama a update_king_encounter -> el aviso no
+        // consume tiempo.
+        for _ in 0..500 {
+            assert!(run.king_shield_notice_visible());
+        }
+
+        // Mata SOLO la cohorte de 800 -> arranca la invocación de 600.
+        // El aviso deja de mostrarse (ya no es gate, es Summoning).
+        let cohort0: Vec<usize> = run
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.summon_cohort() == Some(0))
+            .map(|(i, _)| i)
+            .collect();
+        for i in cohort0 {
+            run.damage_entity(i);
+            run.damage_entity(i);
+        }
+        run.update_king_encounter(0.0, BLOCK_SIZE);
+        assert!(run.king_is_summoning());
+        assert!(!run.king_shield_notice_visible());
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.living_summoned_cohort_count(1), 5);
+
+        // Baja hasta 400 con la cohorte de 600 viva -> gate nuevo, el
+        // aviso se rearma.
+        let mut guard = 0;
+        while run.king_health().map(|(h, _)| h).unwrap_or(0) > 400 {
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 100);
+        }
+        assert!(run.king_is_shield_gated());
+        assert!(
+            run.king_shield_notice_visible(),
+            "el aviso vuelve en el siguiente gate"
+        );
     }
 
     // --- Bloque 4, Commit 41: segunda invocación de 5 Dealers (600). ---

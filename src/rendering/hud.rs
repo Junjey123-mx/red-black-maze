@@ -531,32 +531,35 @@ pub(crate) fn render_hand_message(framebuffer: &mut Framebuffer, text: &str) {
     );
 }
 
-/// Escala del aviso de invocación de The King (Bloque 5, Commit 54):
-/// menor que `HAND_MESSAGE_SCALE` para que sus dos líneas quepan
-/// centradas y se lean como un aviso persistente, no como el banner
-/// puntual de Hand.
-const KING_SUMMON_WARNING_SCALE: i32 = 2;
+/// Escala del aviso de The King. DEBE ser `GLYPH_SCALE`: `draw_glyph`
+/// pinta siempre a `GLYPH_SCALE` px por píxel lógico, mientras que el
+/// avance del cursor en `draw_mixed_text` usa la escala pasada — con
+/// cualquier otro valor las letras se solapan y el texto queda
+/// ilegible.
+const KING_SUMMON_WARNING_SCALE: i32 = GLYPH_SCALE;
 
-/// Ancla vertical de la primera línea del aviso de invocación:
-/// bastante por debajo de la barra de vida de The King (arriba-centro)
-/// y por encima del arma/HUD, sin tapar ninguno.
-const KING_SUMMON_WARNING_TOP: i32 = 118;
+/// Ancla vertical de la primera línea del aviso: por debajo de la
+/// barra de vida de The King (arriba-centro) y por encima del arma/
+/// HUD, sin tapar ninguno.
+const KING_SUMMON_WARNING_TOP: i32 = 116;
 
-/// Separación vertical entre las dos líneas del aviso.
-const KING_SUMMON_WARNING_LINE_GAP: i32 = 6;
+/// Separación vertical (píxeles lógicos, antes de escalar) entre las
+/// dos líneas del aviso.
+const KING_SUMMON_WARNING_LINE_GAP: i32 = 3;
 
 /// Alto lógico de un glifo de esta fuente (`letter_glyph_rows`
 /// devuelve 7 filas).
 const KING_SUMMON_WARNING_LINE_HEIGHT: i32 = 7;
 
-/// Dibuja el aviso de invocación de The King: dos líneas centradas
-/// horizontalmente, ancladas en el tercio superior de la pantalla.
+/// Dibuja un aviso de The King de dos líneas, centrado
+/// horizontalmente y anclado en el tercio superior de la pantalla,
+/// con la misma fuente/escala VGA que el resto del HUD.
 ///
-/// Presentación pura: `App` decide CUÁNDO mostrarlo (mientras el
-/// encuentro está en `Summoning`) y con QUÉ textos ("5 DEALERS..." o
-/// "10 DEALERS..."). Reutiliza la misma fuente/estilo VGA que
-/// `render_hand_message`; no es un modal y no bloquea nada — solo
-/// pinta glifos sobre la escena ya renderizada.
+/// Presentación pura: `App` decide CUÁNDO mostrarlo y con QUÉ textos
+/// — durante la invocación ("THE KING CALLS HIS HAND!" / "5 DEALERS
+/// JOIN THE HAND"), o durante el gate entre cohortes ("THE KING IS
+/// SHIELDED" / "CLEAR HIS DEALERS FIRST", como aviso temporizado).
+/// No es un modal y no bloquea nada.
 pub(crate) fn render_king_summon_warning(
     framebuffer: &mut Framebuffer,
     line_one: &str,
