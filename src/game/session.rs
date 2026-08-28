@@ -121,6 +121,14 @@ struct KingEncounter {
     /// (aunque el King siga siendo invulnerable).
     shield_notice_timer: f32,
 
+    /// Epílogo tras la muerte de The King. `None` mientras el Rey
+    /// vive; `Some(t)` desde el instante en que muere, contando hacia
+    /// `0.0` durante `KING_DEATH_AFTERMATH_DURATION` s. Mientras
+    /// `t > 0.0` se muestra "THE KING HAS FALLEN" y la victoria de
+    /// Horde AÚN no se resuelve; al llegar a `0.0` `App` transiciona a
+    /// la pantalla de Victoria existente.
+    death_aftermath_timer: Option<f32>,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -158,6 +166,7 @@ impl KingEncounter {
             last_hit_broke_phase: false,
             last_hit_deflected: false,
             shield_notice_timer: 0.0,
+            death_aftermath_timer: None,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -269,6 +278,14 @@ const KING_SUMMON_DURATION: f32 = 2.0;
 /// dorado del jefe y los disparos que rebotan siguen indicando que no
 /// recibe daño.
 const KING_SHIELD_NOTICE_DURATION: f32 = 20.0;
+
+/// Cuánto dura (segundos de PARTIDA) el EPÍLOGO tras derrotar a The
+/// King antes de que la partida ceda a la pantalla de Victoria: el
+/// juego sigue corriendo con el cadáver del Rey a la vista y el
+/// mensaje "THE KING HAS FALLEN", para que el jugador vea cómo cayó
+/// el jefe. Pause lo congela (`update_king_encounter` deja de
+/// llamarse); Retry lo reinicia (sesión reconstruida).
+const KING_DEATH_AFTERMATH_DURATION: f32 = 20.0;
 
 /// Duración del flash visual de daño al jugador (Tarea 45), en
 /// segundos de tiempo de PARTIDA (nunca reloj absoluto): solo
@@ -817,7 +834,15 @@ impl GameSession {
             })
             .collect();
 
-        self.entities.retain(|entity| !entity.should_despawn());
+        /*
+         * El CADÁVER de The King no despawnea: tras derrotarlo el
+         * juego se queda 20 s en el epílogo para que el jugador vea
+         * cómo cayó el Rey (mensaje "THE KING HAS FALLEN") antes de
+         * ceder a la pantalla de Victoria. Los cadáveres de Dealers
+         * siguen expirando a los 15 s como siempre.
+         */
+        self.entities
+            .retain(|entity| !entity.should_despawn() || entity.kind() == EnemyKind::King);
 
         transitions
     }
@@ -850,6 +875,18 @@ impl GameSession {
         {
             self.king_encounter.shield_notice_timer =
                 (self.king_encounter.shield_notice_timer - delta_time).max(0.0);
+        }
+
+        /*
+         * Epílogo tras la muerte de The King: cuenta atrás hacia la
+         * pantalla de Victoria. También antes de cualquier retorno
+         * anticipado (el Rey muere en fase `Fleeing`, que retorna
+         * pronto) y congelado por Pause.
+         */
+        if let Some(timer) = self.king_encounter.death_aftermath_timer.as_mut() {
+            if *timer > 0.0 && delta_time.is_finite() && delta_time > 0.0 {
+                *timer = (*timer - delta_time).max(0.0);
+            }
         }
 
         /*
@@ -1175,6 +1212,24 @@ impl GameSession {
     /// queda ninguna Hand".
     pub(crate) fn horde_completed(&self) -> bool {
         self.mode == GameMode::Horde && self.king_spawned && !self.king_alive()
+    }
+
+    /// `true` mientras corre el EPÍLOGO tras derrotar a The King: el
+    /// juego sigue jugable, con el cadáver del Rey a la vista, y `App`
+    /// dibuja el mensaje "THE KING HAS FALLEN". Se apaga solo pasados
+    /// `KING_DEATH_AFTERMATH_DURATION` s, momento en que
+    /// `horde_victory_ready` pasa a `true`.
+    pub(crate) fn king_death_epilogue_active(&self) -> bool {
+        matches!(self.king_encounter.death_aftermath_timer, Some(t) if t > 0.0)
+    }
+
+    /// `true` cuando la Horde está ganada Y el epílogo de la muerte
+    /// del Rey ya terminó: es la señal con la que `App` transiciona a
+    /// `GameState::Victory` (retrasa la Victoria unos 20 s respecto a
+    /// `horde_completed`, sin cambiar la condición de victoria en sí).
+    pub(crate) fn horde_victory_ready(&self) -> bool {
+        self.horde_completed()
+            && matches!(self.king_encounter.death_aftermath_timer, Some(t) if t <= 0.0)
     }
 
     /// Mensaje HUD del sistema de Hands para este cuadro, si hay
@@ -1845,6 +1900,18 @@ impl GameSession {
          */
         if outcome == EntityDamageOutcome::Killed {
             self.despawn_summoned_dealers();
+
+            /*
+             * Arranca el epílogo: la victoria de Horde NO se resuelve
+             * hasta pasados `KING_DEATH_AFTERMATH_DURATION` s, para que
+             * el jugador vea caer al Rey y el mensaje "THE KING HAS
+             * FALLEN" antes de la pantalla de Victoria. Solo se fija
+             * una vez (`apply_damage` ignora todo daño posterior a
+             * `Dead`, pero por robustez).
+             */
+            if self.king_encounter.death_aftermath_timer.is_none() {
+                self.king_encounter.death_aftermath_timer = Some(KING_DEATH_AFTERMATH_DURATION);
+            }
         }
 
         outcome
@@ -8569,6 +8636,109 @@ e             #
             run.entities().iter().all(|e| e.summon_cohort().is_none()),
             "cohortes invocadas limpias tras la muerte del King"
         );
+    }
+
+    // --- Epílogo de 20 s tras derrotar a The King. ---
+
+    /// Lleva el combate hasta matar a The King y devuelve la sesión en
+    /// el primer cuadro del epílogo.
+    fn king_just_defeated() -> GameSession {
+        let (mut run, king) = king_at_later_summon(3);
+        while run.king_is_summoning() {
+            run.update_king_encounter(0.2, BLOCK_SIZE);
+        }
+        let mut guard = 0;
+        while run.king_alive() {
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 50);
+        }
+        run
+    }
+
+    #[test]
+    fn killing_the_king_opens_a_twenty_second_epilogue_before_victory() {
+        let mut run = king_just_defeated();
+
+        // El Rey está derrotado (`horde_completed`), pero la victoria
+        // NO está lista todavía: corre el epílogo.
+        assert!(run.horde_completed());
+        assert!(run.king_death_epilogue_active());
+        assert!(!run.horde_victory_ready());
+
+        // ~19 s: sigue en epílogo.
+        for _ in 0..190 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            assert!(run.king_death_epilogue_active());
+            assert!(!run.horde_victory_ready());
+        }
+
+        // Pasados los 20 s: el epílogo termina y la victoria queda
+        // lista para que `App` pase a la pantalla de Victoria.
+        for _ in 0..20 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert!(!run.king_death_epilogue_active());
+        assert!(run.horde_victory_ready());
+        assert!(run.horde_completed());
+    }
+
+    #[test]
+    fn the_king_corpse_stays_visible_through_the_whole_epilogue_and_beyond() {
+        let mut run = king_just_defeated();
+
+        let king_corpses = |run: &GameSession| {
+            run.entities()
+                .iter()
+                .filter(|e| e.kind() == EnemyKind::King)
+                .count()
+        };
+        assert_eq!(king_corpses(&run), 1);
+
+        // Muchos más de los 15 s de despawn de un cadáver normal: el
+        // del Rey NO desaparece.
+        for _ in 0..400 {
+            run.update_entities(0.1, BLOCK_SIZE);
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert_eq!(king_corpses(&run), 1, "el cadáver del Rey permanece");
+        assert!(run.horde_victory_ready());
+    }
+
+    #[test]
+    fn pause_freezes_the_epilogue_timer() {
+        let mut run = king_just_defeated();
+        assert!(run.king_death_epilogue_active());
+
+        // "Pausa": no se llama a `update_king_encounter` -> el epílogo
+        // no avanza y la victoria nunca queda lista.
+        for _ in 0..1000 {
+            assert!(run.king_death_epilogue_active());
+            assert!(!run.horde_victory_ready());
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_run_has_no_pending_epilogue() {
+        let run = king_just_defeated();
+        assert!(run.king_death_epilogue_active());
+
+        let fresh = rebuilt_like_retry(&run, 4);
+        assert!(!fresh.king_death_epilogue_active());
+        assert!(!fresh.horde_victory_ready());
+        assert!(!fresh.horde_completed());
+    }
+
+    #[test]
+    fn portal_mode_never_has_a_king_epilogue() {
+        let mut portal = new_test_session_with_one_dealer();
+        for _ in 0..300 {
+            portal.damage_entity(0);
+            portal.update_entities(0.1, BLOCK_SIZE);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+            assert!(!portal.king_death_epilogue_active());
+            assert!(!portal.horde_victory_ready());
+        }
     }
 
     #[test]

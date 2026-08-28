@@ -809,9 +809,15 @@ impl<'aud> App<'aud> {
          * Entrar a la Final Hand con el King vivo NUNCA produce
          * Victory.
          */
-        let horde_completed = self.session.horde_completed();
-
-        let victory_condition_met = reached_goal || horde_completed;
+        /*
+         * Al derrotar a The King la Victoria NO es inmediata: hay un
+         * epílogo de ~20 s (`GameSession::king_death_epilogue_active`)
+         * con el cadáver del Rey a la vista y el mensaje "THE KING HAS
+         * FALLEN". `horde_victory_ready()` solo es `true` cuando ese
+         * epílogo ya terminó — es entonces cuando se cede a la
+         * pantalla de Victoria existente.
+         */
+        let victory_condition_met = reached_goal || self.session.horde_victory_ready();
 
         /*
          * Tarea 46.B: resolución terminal ÚNICA de este cuadro, ahora
@@ -1812,7 +1818,7 @@ impl<'aud> App<'aud> {
              * franja es suya: se omite el mensaje de Hand para que
              * "THE KING" + barra no queden pisados por "HAND IV".
              */
-            if self.session.king_health().is_none() {
+            if self.session.king_health().is_none() && !self.session.king_death_epilogue_active() {
                 if let Some(message) = hand_message_text(self.session.hand_hud_message()) {
                     render_hand_message(framebuffer, &message);
                 }
@@ -1842,6 +1848,17 @@ impl<'aud> App<'aud> {
                     framebuffer,
                     "THE KING IS SHIELDED",
                     "CLEAR HIS DEALERS FIRST",
+                );
+            } else if self.session.king_death_epilogue_active() {
+                /*
+                 * Epílogo: The King ha caído. El juego se queda ~20 s
+                 * con su cadáver a la vista y este mensaje antes de
+                 * ceder a la pantalla de Victoria.
+                 */
+                render_king_summon_warning(
+                    framebuffer,
+                    "THE KING HAS FALLEN",
+                    "THE FINAL HAND IS DEALT",
                 );
             }
         }
