@@ -119,30 +119,34 @@ impl DistanceField {
             .map(|(cell, _)| cell)
     }
 
-    /// Simétrico de `step_toward_origin` para una entidad que HUYE del
-    /// origen (Bloque 4, Commit 46, ampliado): entre los vecinos
-    /// 4-direccionales transitables de `from` elige el de MAYOR
-    /// distancia al origen. A diferencia de un "alejarse estricto",
-    /// NUNCA se detiene mientras exista al menos un vecino transitable
-    /// — si ninguno está más lejos, coge el mejor disponible y sigue
-    /// rodeando, de modo que un jefe que huye no se congela en un
-    /// óptimo local y deja que el jugador lo acorrale. Solo retorna
-    /// `None` si `from` es inalcanzable/fuera de rango o no tiene ni un
-    /// vecino transitable. Reutiliza la MISMA cuadrícula,
-    /// `Level::is_walkable` y topología 4-direccional que el resto del
-    /// campo — no hay un segundo grafo de navegación.
-    pub(crate) fn step_escape(&self, from: (usize, usize)) -> Option<(usize, usize)> {
-        self.distance_at(from.0, from.1)?;
+    /// Celda transitable ALCANZABLE desde el origen cuya distancia de
+    /// ruta es la mayor de todo el campo — el "rincón más lejano" del
+    /// origen. En caso de empate devuelve la primera en orden de
+    /// barrido (fila, luego columna), de modo que es determinista.
+    ///
+    /// Retorna `None` solo si NINGUNA celda es alcanzable (origen
+    /// inválido o nivel sin celdas transitables conectadas).
+    ///
+    /// Uso: la fase `Fleeing` de The King fija este rincón como META
+    /// PERSISTENTE y se dirige a ella con un segundo campo enraizado
+    /// allí (`step_toward_origin`), en vez de dar pasos codiciosos
+    /// vecino-a-vecino que oscilan al llegar a un máximo local.
+    pub(crate) fn farthest_reachable_cell(&self) -> Option<(usize, usize)> {
+        let mut best: Option<((usize, usize), u32)> = None;
 
-        neighbors(from.0, from.1, self.width, self.height)
-            .into_iter()
-            .flatten()
-            .filter_map(|cell| {
-                self.distance_at(cell.0, cell.1)
-                    .map(|distance| (cell, distance))
-            })
-            .max_by_key(|&(_, distance)| distance)
-            .map(|(cell, _)| cell)
+        for row in 0..self.height {
+            for column in 0..self.width {
+                let Some(distance) = self.distance_at(row, column) else {
+                    continue;
+                };
+
+                if best.map_or(true, |(_, best_distance)| distance > best_distance) {
+                    best = Some(((row, column), distance));
+                }
+            }
+        }
+
+        best.map(|(cell, _)| cell)
     }
 }
 
@@ -347,30 +351,26 @@ mod tests {
     }
 
     #[test]
-    fn step_escape_increases_path_distance_and_respects_walls() {
+    fn farthest_reachable_cell_is_the_end_of_the_longest_corridor() {
         let map = "\
 #######
-#p    #
+#pg   #
 ##### #
-#g    #
+#     #
 #######
 ";
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el mapa debe cargar");
 
-        // Origen en g = (3, 1); la única abertura entre filas está en
-        // la columna 5.
-        let field = DistanceField::from_level(&level, (3, 1));
-
-        // Desde (3, 3) el paso que ALEJA del origen es hacia la
-        // derecha (col 4), nunca hacia la pared ni de vuelta.
-        let away = field.step_escape((3, 3)).expect("hay salida");
-        assert_eq!(away, (3, 4));
-        assert!(field.distance_at(away.0, away.1).unwrap() > field.distance_at(3, 3).unwrap());
+        // Origen en p = (1, 1); el único paso entre filas está en la
+        // columna 5, así que el rincón más lejano es el fondo izquierdo
+        // de la fila 3.
+        let field = DistanceField::from_level(&level, (1, 1));
+        assert_eq!(field.farthest_reachable_cell(), Some((3, 1)));
     }
 
     #[test]
-    fn step_escape_keeps_moving_even_when_cornered_and_never_panics() {
+    fn farthest_reachable_cell_is_none_when_nothing_is_reachable() {
         let map = "\
 #####
 #pg #
@@ -379,15 +379,9 @@ mod tests {
         let file = TempLevelFile::write(map);
         let level = Level::load(file.path_str()).expect("el mapa debe cargar");
 
-        // Origen en g = (1, 2). Desde (1, 1) el único vecino
-        // transitable es el propio origen: acorralado, pero `step_escape`
-        // NO se congela — devuelve esa única celda para seguir en
-        // movimiento.
-        let field = DistanceField::from_level(&level, (1, 2));
-        assert_eq!(field.step_escape((1, 1)), Some((1, 2)));
-
-        // Celda inalcanzable / fuera de rango: sin pánico, sí `None`.
-        assert_eq!(field.step_escape((100, 100)), None);
+        // Origen fuera de rango: campo vacío -> sin rincón.
+        let field = DistanceField::from_level(&level, (100, 100));
+        assert_eq!(field.farthest_reachable_cell(), None);
     }
 
     #[test]

@@ -154,6 +154,14 @@ struct KingEncounter {
     /// oleada; se descuenta en `update_king_encounter`.
     flee_punish_timer: f32,
 
+    /// Celda META hacia la que The King se dirige mientras HUYE
+    /// (`Fleeing`): el rincón alcanzable más lejano del jugador,
+    /// recalculado solo cuando el Rey lo alcanza o el jugador se le
+    /// adelanta. `None` fuera de `Fleeing`. Dar pasos codiciosos
+    /// vecino-a-vecino en su lugar hacía que el Rey oscilara
+    /// izquierda-derecha al tocar un máximo local en vez de huir.
+    flee_target_cell: Option<(usize, usize)>,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -196,6 +204,7 @@ impl KingEncounter {
             summoned_total: 0,
             summoned_killed: 0,
             flee_punish_timer: 0.0,
+            flee_target_cell: None,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -780,6 +789,58 @@ impl GameSession {
          */
         let king_phase = self.king_encounter.phase;
 
+        /*
+         * Fase `Fleeing`: The King se dirige a una META PERSISTENTE —
+         * el rincón alcanzable más lejano del jugador — recorriendo un
+         * segundo campo de distancias enraizado en ESA meta. Se
+         * recalcula la meta solo cuando el Rey la alcanza, deja de ser
+         * alcanzable, o el jugador se le adelanta (queda tan cerca o
+         * más de la meta que el propio Rey). Los pasos codiciosos
+         * vecino-a-vecino que había antes hacían que el Rey vibrara
+         * izquierda-derecha sobre un máximo local en vez de huir.
+         */
+        let king_flee_field = if king_phase == KingEncounterPhase::Fleeing {
+            let king_cell = self
+                .entities
+                .iter()
+                .find(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
+                .map(|king| world_to_cell(king.position(), block_size));
+
+            match king_cell {
+                Some(king_cell) => {
+                    let from_player = DistanceField::from_level(&self.level, player_cell);
+
+                    let king_distance = from_player.distance_at(king_cell.0, king_cell.1);
+
+                    let keep_goal = self.king_encounter.flee_target_cell.is_some_and(|goal| {
+                        if goal == king_cell {
+                            return false;
+                        }
+
+                        match (from_player.distance_at(goal.0, goal.1), king_distance) {
+                            (Some(goal_distance), Some(king_distance)) => {
+                                goal_distance > king_distance
+                            }
+                            _ => false,
+                        }
+                    });
+
+                    if !keep_goal {
+                        self.king_encounter.flee_target_cell =
+                            from_player.farthest_reachable_cell();
+                    }
+
+                    self.king_encounter
+                        .flee_target_cell
+                        .map(|goal| DistanceField::from_level(&self.level, goal))
+                }
+                None => None,
+            }
+        } else {
+            self.king_encounter.flee_target_cell = None;
+            None
+        };
+
         let transitions = self
             .entities
             .iter_mut()
@@ -834,29 +895,24 @@ impl GameSession {
                  * imposible atacar a través de una pared.
                  */
                 /*
-                 * Bloque 4, Commit 46: en la fase `Fleeing` The King
-                 * usa el MISMO campo de distancias pero al revés
-                 * (`step_escape`) para alejarse del jugador respetando
-                 * paredes. Nunca usa el fallback de "misma celda ->
-                 * posición exacta del jugador": un jefe que huye jamás
-                 * debe converger hacia la cámara.
+                 * Bloque 4, Commit 46 (revisado): en la fase `Fleeing`
+                 * The King recorre `king_flee_field` — un campo de
+                 * distancias enraizado en la META de huida (el rincón
+                 * más lejano del jugador) — hacia esa meta, respetando
+                 * paredes. Al LLEGAR (`step_toward_origin` -> `None`) se
+                 * queda quieto en el rincón en vez de vibrar. Nunca usa
+                 * el fallback "misma celda -> posición exacta del
+                 * jugador": un jefe que huye jamás converge a la cámara.
                  */
                 if entity.kind() == EnemyKind::King && king_phase == KingEncounterPhase::Fleeing {
                     // Huye MÁS rápido que cuando perseguía.
                     entity.set_speed_scale(KING_FLEE_SPEED / KING_PURSUIT_SPEED);
 
-                    let flee_target = distance_field.as_ref().and_then(|field| {
+                    let flee_target = king_flee_field.as_ref().and_then(|field| {
                         let entity_cell = world_to_cell(entity.position(), block_size);
 
-                        /*
-                         * `step_escape` (no `step_away_from_origin`):
-                         * nunca se congela en un óptimo local — si no
-                         * hay celda más lejana, coge la mejor vecina y
-                         * sigue rodeando hasta que el jugador lo
-                         * acorrale.
-                         */
                         field
-                            .step_escape(entity_cell)
+                            .step_toward_origin(entity_cell)
                             .map(|(row, column)| cell_center(row, column, block_size))
                     });
 
@@ -7779,6 +7835,41 @@ e             #
             "el King aumentó su distancia de camino al jugador ({start_dist} -> {end_dist})"
         );
         assert!(run.level.is_walkable(end_cell.0, end_cell.1));
+    }
+
+    #[test]
+    fn the_fleeing_king_commits_to_its_escape_and_does_not_stall_near_the_start() {
+        let (mut run, king) = king_fleeing_big();
+
+        // Jugador quieto pegado al King. Con meta de huida FIJA (el
+        // rincón lejano) el King se compromete con una dirección en vez
+        // de vibrar izquierda-derecha sobre un máximo local sin avanzar.
+        let king_pos = run.entities()[king].position();
+        run.player.pos = Vector2::new(king_pos.x - 24.0, king_pos.y);
+
+        let player_cell = super::world_to_cell(run.player.pos, BLOCK_SIZE);
+        let field = DistanceField::from_level(&run.level, player_cell);
+        let path_dist = |run: &GameSession| {
+            let c = super::world_to_cell(run.entities()[king].position(), BLOCK_SIZE);
+            field.distance_at(c.0, c.1).unwrap_or(0)
+        };
+
+        let start = path_dist(&run);
+        let mut samples = Vec::new();
+        for _ in 0..150 {
+            run.update_entities(0.1, BLOCK_SIZE);
+            samples.push(path_dist(&run));
+        }
+
+        // Se alejó de verdad y NO volvió a quedarse pegado al inicio: la
+        // oscilación greedy dejaba al King vibrando en su celda de
+        // salida, así que su distancia final sería ~la inicial.
+        let end = *samples.last().unwrap();
+        let peak = samples.iter().copied().max().unwrap();
+        assert!(
+            peak >= start + 6 && end >= start + 4,
+            "huida real esperada (inicio {start}, pico {peak}, fin {end})"
+        );
     }
 
     #[test]
