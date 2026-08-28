@@ -129,6 +129,14 @@ struct KingEncounter {
     /// la pantalla de Victoria existente.
     death_aftermath_timer: Option<f32>,
 
+    /// Reloj (segundos de PARTIDA) del pulso dorado de The King:
+    /// avanza mientras es invulnerable (`pending_threshold.is_some()`
+    /// — cubre gate + invocación) y se reinicia a `0.0` en cuanto
+    /// vuelve a ser vulnerable. `king_summon_animation_scale` deriva
+    /// de él el pulso de escala, para que TODA invocación (y su gate
+    /// previo) se anime igual que la primera.
+    invuln_pulse_clock: f32,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -167,6 +175,7 @@ impl KingEncounter {
             last_hit_deflected: false,
             shield_notice_timer: 0.0,
             death_aftermath_timer: None,
+            invuln_pulse_clock: 0.0,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -890,6 +899,20 @@ impl GameSession {
         }
 
         /*
+         * Reloj del pulso dorado: corre durante TODA la ventana de
+         * invulnerabilidad (gate + invocación) y se reinicia al
+         * volverse vulnerable, de modo que cada invocación se anima
+         * exactamente como la primera.
+         */
+        if self.king_encounter.pending_threshold.is_some() {
+            if delta_time.is_finite() && delta_time > 0.0 {
+                self.king_encounter.invuln_pulse_clock += delta_time;
+            }
+        } else {
+            self.king_encounter.invuln_pulse_clock = 0.0;
+        }
+
+        /*
          * Bloque 4, Commit 43: gate entre cohortes. Si un umbral ya
          * fue roto pero su invocación quedó en espera porque la
          * cohorte anterior seguía viva, la invocación arranca EN EL
@@ -1114,17 +1137,24 @@ impl GameSession {
     /// interpolación suave. La MISMA animación en los cuatro umbrales
     /// (800/600/400/200), porque solo depende de `summon_timer`.
     pub(crate) fn king_summon_animation_scale(&self) -> f32 {
-        if self.king_encounter.phase != KingEncounterPhase::Summoning {
+        /*
+         * El pulso acompaña TODA la ventana de invulnerabilidad —
+         * tanto el gate (clavado en un umbral con la cohorte previa
+         * viva) como la invocación en sí — no solo la fase `Summoning`.
+         * Así cada invocación se ve "igual que la primera": Rey dorado
+         * Y latiendo desde el instante en que deja de recibir daño.
+         * `1.0` (sin pulso) cuando es vulnerable.
+         */
+        if self.king_encounter.pending_threshold.is_none() {
             return 1.0;
         }
 
-        let elapsed = (KING_SUMMON_DURATION - self.king_encounter.summon_timer).max(0.0);
+        let elapsed = self.king_encounter.invuln_pulse_clock.max(0.0);
 
         // 8 escalones por segundo, pulso triangular que ARRANCA en el
-        // tamaño normal (Bloque 5, Commit 70: sin "pop-in" al empezar
-        // la animación), sube a +30 % y vuelve, repitiéndose cada
-        // medio segundo. Determinista respecto a `summon_timer`, misma
-        // animación en los cuatro umbrales.
+        // tamaño normal (sin "pop-in"), sube a +30 % y vuelve,
+        // repitiéndose cada medio segundo. Determinista respecto a
+        // `invuln_pulse_clock`, idéntico en los cuatro umbrales.
         let steps = (elapsed * 8.0).floor() as i32;
         let triangle = ((steps + 4).rem_euclid(8) - 4).abs() as f32 / 4.0;
 
@@ -7873,39 +7903,63 @@ e             #
     // --- Bloque 4, Commit 37: animación de invocación. ---
 
     #[test]
-    fn the_king_billboard_only_pulses_while_summoning() {
+    fn the_king_billboard_pulses_the_whole_time_it_is_invulnerable() {
+        // Vulnerable (peleando normal): sin pulso.
         let (mut run, _king) = horde_at_the_king(4);
         assert_eq!(run.king_summon_animation_scale(), 1.0);
 
+        // Invocando: pulso, acotado y determinista.
         let (mut run, _king) = king_at_summon(0);
         assert_eq!(run.king_phase(), KingEncounterPhase::Summoning);
 
-        // Determinista respecto al tiempo de fase y siempre >= 1.0,
-        // acotado.
         let mut saw_pulse = false;
-        let mut elapsed = 0.0;
-        while elapsed < KING_SUMMON_DURATION {
+        for _ in 0..40 {
             let a = run.king_summon_animation_scale();
-            let b = run.king_summon_animation_scale();
-            assert_eq!(a, b, "misma fase -> mismo valor");
+            assert_eq!(
+                a,
+                run.king_summon_animation_scale(),
+                "mismo instante -> mismo valor"
+            );
             assert!((1.0..=1.35).contains(&a));
             if a > 1.0 {
                 saw_pulse = true;
             }
             run.update_king_encounter(0.05, BLOCK_SIZE);
-            elapsed += 0.05;
         }
         assert!(saw_pulse, "el billboard debe latir durante la invocación");
 
-        // Terminada la invocación vuelve a 1.0.
+        // Terminada la invocación (vulnerable de nuevo) vuelve a 1.0.
         run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
         assert_eq!(run.king_summon_animation_scale(), 1.0);
     }
 
     #[test]
+    fn the_king_billboard_also_pulses_during_the_between_cohort_gate() {
+        // Clavado en 600 con la cohorte de 800 aún viva: dorado Y
+        // latiendo, igual que durante una invocación.
+        let (mut run, king) = king_after_first_cohort();
+        for _ in 0..30 {
+            run.damage_entity(king);
+        }
+        assert!(run.king_is_shield_gated());
+        assert!(!run.king_is_summoning());
+
+        let mut saw_pulse = false;
+        for _ in 0..40 {
+            let a = run.king_summon_animation_scale();
+            assert!((1.0..=1.35).contains(&a));
+            if a > 1.0 {
+                saw_pulse = true;
+            }
+            run.update_king_encounter(0.05, BLOCK_SIZE);
+        }
+        assert!(saw_pulse, "el billboard debe latir también durante el gate");
+    }
+
+    #[test]
     fn the_summon_animation_is_the_same_at_every_threshold() {
-        // Muestreado al mismo instante de fase, el pulso es idéntico
-        // en 800/600/400/200 (solo depende de `summon_timer`).
+        // Muestreado al mismo instante de la ventana de
+        // invulnerabilidad, el pulso es idéntico en 800/600/400/200.
         let sample = |idx: usize| {
             let (mut run, _king) = king_at_summon(idx);
             run.update_king_encounter(0.30, BLOCK_SIZE);
