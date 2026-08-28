@@ -288,8 +288,9 @@ pub(crate) fn render_hud(
     );
 }
 
-/// Dibuja el contador de FPS en tiempo real, anclado arriba-
-/// izquierda sobre la vista activa (World3D o Map2D).
+/// Dibuja el contador de FPS en tiempo real ("`N` FPS"), anclado
+/// arriba-izquierda sobre la vista activa (World3D o Map2D). La
+/// etiqueta "FPS" va a la derecha del número, en la misma vista.
 ///
 /// Reutiliza la MISMA fuente bitmap de dígitos que `render_hud`
 /// (`digits_of`/`draw_digits`/`DIGIT_FONT`): no existe un segundo
@@ -302,11 +303,23 @@ pub(crate) fn render_hud(
 pub(crate) fn render_fps(framebuffer: &mut Framebuffer, fps: u32) {
     let digits = digits_of(fps as i64, FPS_MIN_DIGITS);
 
-    draw_digits(
+    let after_digits_x = draw_digits(
         framebuffer,
         &digits,
         FPS_LEFT_MARGIN,
         FPS_TOP_MARGIN,
+        HUD_IVORY,
+    );
+
+    // Etiqueta "FPS" pegada al número, misma fuente bitmap y misma
+    // escala (`draw_mixed_text` con `GLYPH_SCALE`). Cadena literal: no
+    // asigna ningún `String`/`format!`, igual que el resto del HUD.
+    draw_mixed_text(
+        framebuffer,
+        "FPS",
+        after_digits_x + GLYPH_GAP * GLYPH_SCALE,
+        FPS_TOP_MARGIN,
+        GLYPH_SCALE,
         HUD_IVORY,
     );
 }
@@ -391,6 +404,12 @@ fn letter_glyph_rows(character: char) -> [u8; 7] {
         ],
         'O' => [
             0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+
+        // 'P' añadido para la etiqueta "FPS" del contador (arriba-
+        // izquierda) — mismo bitmap 5x7 que el resto de la fuente.
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
         'R' => [
             0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
@@ -908,6 +927,17 @@ mod tests {
                 letter_glyph_rows(character),
                 [0u8; 7],
                 "falta el glifo para '{character}'"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fps_label_letters_all_resolve_to_a_glyph() {
+        for character in "FPS".chars() {
+            assert_ne!(
+                letter_glyph_rows(character),
+                [0u8; 7],
+                "falta el glifo para '{character}' de la etiqueta FPS"
             );
         }
     }
