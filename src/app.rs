@@ -15,8 +15,8 @@ use crate::rendering::map_2d::{
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
     render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress, render_hud,
-    render_king_health_bar, render_king_summon_warning, render_minimap, render_weapon,
-    render_world_sprites,
+    render_king_cohort_progress, render_king_health_bar, render_king_summon_warning,
+    render_minimap, render_weapon, render_world_sprites,
 };
 use crate::ui::{
     DefeatMenuItem, DefeatScreen, LevelSelectScreen, PauseMenuItem, PauseScreen, VictoryAction,
@@ -1767,6 +1767,16 @@ impl<'aud> App<'aud> {
                      */
                     if let Some((current, max)) = self.session.king_health() {
                         render_king_health_bar(framebuffer, current, max);
+
+                        /*
+                         * Contador de los Dealers que invoca The King,
+                         * abajo-derecha (donde iría "ENEMIES: K"):
+                         * "DEALERS: {vivos}" + "KILLED: {matados}/{total}".
+                         * Solo aparece una vez que ha invocado algo.
+                         */
+                        if let Some((alive, killed, total)) = self.session.king_cohort_progress() {
+                            render_king_cohort_progress(framebuffer, alive, killed, total);
+                        }
                     } else {
                         let final_hand_number = self
                             .level_manager

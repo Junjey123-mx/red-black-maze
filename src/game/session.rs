@@ -137,6 +137,17 @@ struct KingEncounter {
     /// previo) se anime igual que la primera.
     invuln_pulse_clock: f32,
 
+    /// Total de Dealers que The King ha invocado en este combate
+    /// (0 → 5 → 10 → 15 → 25). Se incrementa al COMPLETAR cada
+    /// invocación (`finish_king_summoning`). Alimenta el contador de
+    /// HUD "KILLED: k/t" del combate del jefe.
+    summoned_total: usize,
+
+    /// Cuántos de los Dealers invocados por The King ha matado el
+    /// jugador en este combate. Se incrementa en `damage_entity`
+    /// cuando un `Killed` cae sobre una entidad con marca de cohorte.
+    summoned_killed: usize,
+
     /// Índice (en `KING_PHASE_THRESHOLDS`) del umbral cuya invocación
     /// está en curso o pendiente de resolverse (Bloque 4, Commit 35).
     /// `Some(idx)` desde que el disparo rompe el umbral hasta que su
@@ -176,6 +187,8 @@ impl KingEncounter {
             shield_notice_timer: 0.0,
             death_aftermath_timer: None,
             invuln_pulse_clock: 0.0,
+            summoned_total: 0,
+            summoned_killed: 0,
             pending_threshold: None,
             summon_timer: 0.0,
             summon_cue_pending: false,
@@ -948,10 +961,10 @@ impl GameSession {
 
     /// Cierra la fase `Summoning` en curso: coloca la cohorte de
     /// Dealers del umbral pendiente en celdas seguras alrededor del
-    /// jugador (Commit 39), limpia el temporizador y el umbral
-    /// pendiente y devuelve al King a `Fighting`. El Commit 45 añade
-    /// aquí el desvío a `Fleeing` cuando el umbral resuelto es el de
-    /// 200 HP.
+    /// jugador (Commit 39), inyecta munición y vida de recuperación
+    /// con la MISMA regla por tramos que las intermisiones entre
+    /// Hands, limpia el temporizador y el umbral pendiente y devuelve
+    /// al King a `Fighting` (o a `Fleeing` en la invocación de 200).
     fn finish_king_summoning(&mut self, block_size: usize) {
         let resolved_threshold = self.king_encounter.pending_threshold;
 
@@ -968,6 +981,20 @@ impl GameSession {
                     threshold_index,
                 ));
             }
+
+            self.king_encounter.summoned_total += count;
+
+            /*
+             * Cada invocación de The King reabastece igual que una
+             * intermisión entre Hands: `spawn_intermission_supplies`
+             * aplica sus tres tramos de munición según el estado del
+             * jugador y rellena los corazones hasta el objetivo de la
+             * ronda. `dealer_equivalent = count` (5 o 10) dimensiona
+             * el presupuesto para la amenaza que acaba de aparecer.
+             */
+            let mut occupied = self.occupied_world_cells(block_size);
+            let supply_seed = hand::spawn_seed_for_king_summon(self.hand_seed, threshold_index);
+            self.spawn_intermission_supplies(block_size, &mut occupied, supply_seed, count);
         }
 
         /*
@@ -1228,6 +1255,29 @@ impl GameSession {
             .iter()
             .find(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
             .map(|king| (king.health(), KING_MAX_HEALTH))
+    }
+
+    /// Progreso del jugador contra los Dealers que The King invoca:
+    /// `(vivos_ahora, matados_en_total, invocados_en_total)`. `None`
+    /// mientras el jefe no haya invocado nada todavía (o ya no esté
+    /// vivo). `App` lo dibuja como contador de HUD durante el combate
+    /// del jefe, análogo a "ENEMIES: K" de las Hordas.
+    pub(crate) fn king_cohort_progress(&self) -> Option<(usize, usize, usize)> {
+        if !self.king_alive() || self.king_encounter.summoned_total == 0 {
+            return None;
+        }
+
+        let alive = self
+            .entities
+            .iter()
+            .filter(|entity| entity.summon_cohort().is_some() && !entity.is_dead())
+            .count();
+
+        Some((
+            alive,
+            self.king_encounter.summoned_killed,
+            self.king_encounter.summoned_total,
+        ))
     }
 
     /// Condición de victoria de Horde Mode (Bloque 3, Commit 24 —
@@ -1801,11 +1851,22 @@ impl GameSession {
             return self.damage_king(entity_index, damage);
         }
 
-        match self.entities.get_mut(entity_index) {
+        let was_summoned = self
+            .entities
+            .get(entity_index)
+            .is_some_and(|entity| entity.summon_cohort().is_some() && !entity.is_dead());
+
+        let outcome = match self.entities.get_mut(entity_index) {
             Some(entity) => entity.apply_damage(damage),
 
             None => EntityDamageOutcome::None,
+        };
+
+        if was_summoned && outcome == EntityDamageOutcome::Killed {
+            self.king_encounter.summoned_killed += 1;
         }
+
+        outcome
     }
 
     /// Aplica un disparo aceptado a The King a través del modelo de
@@ -8690,6 +8751,104 @@ e             #
             run.entities().iter().all(|e| e.summon_cohort().is_none()),
             "cohortes invocadas limpias tras la muerte del King"
         );
+    }
+
+    // --- Contador de cohorte + reabastecimiento por invocación. ---
+
+    #[test]
+    fn king_cohort_progress_tracks_summoned_alive_killed_and_total() {
+        // Antes de invocar nada: None.
+        let (mut run, king) = horde_at_the_king_big(4);
+        assert_eq!(run.king_cohort_progress(), None);
+
+        // Tras la invocación de 800: 5 vivos, 0 matados, 5 invocados.
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_cohort_progress(), Some((5, 0, 5)));
+
+        // Mata a los 5: 0 vivos, 5 matados, 5 invocados.
+        loop {
+            let idxs: Vec<usize> = run
+                .entities()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.summon_cohort().is_some() && !e.is_dead())
+                .map(|(i, _)| i)
+                .collect();
+            if idxs.is_empty() {
+                break;
+            }
+            for i in idxs {
+                run.damage_entity(i);
+                run.damage_entity(i);
+            }
+        }
+        assert_eq!(run.king_cohort_progress(), Some((0, 5, 5)));
+
+        // Baja el Rey a 600 -> invocación de 600: 5 vivos, 5 matados,
+        // 10 invocados en total.
+        let mut guard = 0;
+        while run.king_health().map(|(h, _)| h).unwrap_or(0) > 600 {
+            run.damage_entity(king);
+            guard += 1;
+            assert!(guard < 100);
+        }
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        assert_eq!(run.king_cohort_progress(), Some((5, 5, 10)));
+    }
+
+    #[test]
+    fn every_king_summon_drops_recovery_supplies() {
+        let (run, king) = horde_at_the_king_big(4);
+        let (mut run, king) = drive_king_to_summon(run, king, 0);
+
+        // Vacía munición y corazones para forzar reabastecimiento.
+        while run.weapon_ammo() > 0 || run.weapon_reserve_ammo() > 0 {
+            if run.weapon_ammo() > 0 {
+                run.try_fire_weapon();
+                run.update_weapon(1.0);
+            } else {
+                run.try_start_weapon_reload();
+                run.update_weapon(1.0);
+            }
+        }
+        for p in 0..run.health_pickups().len() {
+            let pos = run.health_pickups()[p].position();
+            run.player.pos = pos;
+            run.collect_nearby_health_pickups();
+        }
+
+        let ammo_before = run.ammo_pickups().iter().filter(|p| p.is_active()).count();
+
+        // Completa la invocación de 800.
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+
+        let ammo_after = run.ammo_pickups().iter().filter(|p| p.is_active()).count();
+        let health_after = run
+            .health_pickups()
+            .iter()
+            .filter(|p| p.is_active())
+            .count();
+
+        assert!(
+            ammo_after > ammo_before,
+            "cada invocación suelta munición de recuperación"
+        );
+        assert!(
+            health_after > 0,
+            "cada invocación repone corazones hasta el objetivo"
+        );
+    }
+
+    #[test]
+    fn portal_mode_never_reports_king_cohort_progress() {
+        let mut portal = new_test_session_with_one_dealer();
+        for _ in 0..200 {
+            portal.damage_entity(0);
+            portal.update_entities(0.1, BLOCK_SIZE);
+            portal.update_king_encounter(0.1, BLOCK_SIZE);
+            assert_eq!(portal.king_cohort_progress(), None);
+        }
     }
 
     // --- Epílogo de 20 s tras derrotar a The King. ---

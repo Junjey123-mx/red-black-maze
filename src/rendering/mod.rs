@@ -13,8 +13,8 @@ pub mod world_3d;
 
 pub(crate) use hit_flash::render_hit_flash_overlay;
 pub(crate) use hud::{
-    render_fps, render_hand_message, render_horde_progress, render_hud, render_king_health_bar,
-    render_king_summon_warning,
+    render_fps, render_hand_message, render_horde_progress, render_hud,
+    render_king_cohort_progress, render_king_health_bar, render_king_summon_warning,
 };
 pub(crate) use minimap::render_minimap;
 /// Tarea 41: expuesto fuera de `rendering` para que

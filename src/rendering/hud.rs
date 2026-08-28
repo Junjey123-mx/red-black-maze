@@ -429,6 +429,13 @@ fn letter_glyph_rows(character: char) -> [u8; 7] {
             0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
         ],
 
+        // '/' para los contadores de HUD ("HAND N/M", "KILLED: k/t").
+        // Hasta ahora se dibujaba en blanco; este glifo 5x7 lo hace
+        // visible en todos los contadores por igual.
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+
         // El espacio, y cualquier carácter no soportado por esta
         // fuente mínima, se dibuja en blanco en vez de entrar en
         // pánico o intentar una fuente completa.
@@ -697,6 +704,54 @@ pub(crate) fn render_horde_progress(
     );
 }
 
+/// Contador de HUD del combate de The King, análogo a
+/// `render_horde_progress` ("HAND N/M" + "ENEMIES: K") pero para los
+/// Dealers que invoca el jefe: dos líneas abajo-derecha —
+/// "DEALERS: {vivos}" y "KILLED: {matados}/{invocados}".
+///
+/// Presentación pura: `App` decide cuándo llamarla (durante el
+/// combate del jefe, a partir de `GameSession::king_cohort_progress`).
+pub(crate) fn render_king_cohort_progress(
+    framebuffer: &mut Framebuffer,
+    alive: usize,
+    killed: usize,
+    total: usize,
+) {
+    let framebuffer_width = framebuffer.width();
+    let framebuffer_height = framebuffer.height();
+
+    if framebuffer_width <= 0 || framebuffer_height <= 0 {
+        return;
+    }
+
+    let number = |value: usize| -> String {
+        digits_of(value as i64, 1)
+            .into_iter()
+            .map(|d| (b'0' + d) as char)
+            .collect()
+    };
+
+    let alive_line = format!("DEALERS: {}", number(alive));
+    let killed_line = format!("KILLED: {}/{}", number(killed), number(total));
+
+    let row_height = HORDE_PROGRESS_LINE_HEIGHT * HORDE_PROGRESS_SCALE;
+
+    let killed_line_y = framebuffer_height - HORDE_PROGRESS_BOTTOM_MARGIN - row_height;
+    let alive_line_y = killed_line_y - HORDE_PROGRESS_LINE_GAP - row_height;
+
+    for (text, y) in [(alive_line, alive_line_y), (killed_line, killed_line_y)] {
+        let width = hand_message_width(&text, HORDE_PROGRESS_SCALE);
+        draw_mixed_text(
+            framebuffer,
+            &text,
+            framebuffer_width - HORDE_PROGRESS_RIGHT_MARGIN - width,
+            y,
+            HORDE_PROGRESS_SCALE,
+            HAND_MESSAGE_COLOR,
+        );
+    }
+}
+
 /// Escala de la etiqueta "THE KING" de la barra de vida del jefe —
 /// la misma que los mensajes de Hand, para que se lea con claridad
 /// desde el centro de la pantalla durante el combate final.
@@ -854,6 +909,33 @@ mod tests {
                 [0u8; 7],
                 "falta el glifo para '{character}'"
             );
+        }
+    }
+
+    #[test]
+    fn king_cohort_and_horde_counter_glyphs_all_resolve_including_the_slash() {
+        for line in ["DEALERS: 3", "KILLED: 8/25", "HAND 3/4", "ENEMIES: 12"] {
+            for character in line.chars() {
+                if character == ' ' || character.is_ascii_digit() {
+                    continue;
+                }
+                assert_ne!(
+                    letter_glyph_rows(character),
+                    [0u8; 7],
+                    "falta el glifo para '{character}' en \"{line}\""
+                );
+            }
+        }
+        // El '/' ahora tiene glifo (antes se dibujaba en blanco).
+        assert_ne!(letter_glyph_rows('/'), [0u8; 7]);
+    }
+
+    #[test]
+    fn king_cohort_counter_lines_fit_the_framebuffer() {
+        for line in ["DEALERS: 10", "KILLED: 25/25"] {
+            let width = hand_message_width(line, HORDE_PROGRESS_SCALE);
+            assert!(width > 0);
+            assert!(width <= crate::config::FRAMEBUFFER_WIDTH);
         }
     }
 
