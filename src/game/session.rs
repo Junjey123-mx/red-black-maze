@@ -1182,6 +1182,25 @@ impl GameSession {
         self.king_encounter.phase == KingEncounterPhase::Fleeing
     }
 
+    /// Posición de mundo de The King para MARCARLA en el minimapa,
+    /// `Some` solo mientras huye (fase `Fleeing` o la `Summoning` de la
+    /// oleada de castigo de la huida) y sigue vivo. Un King que huye
+    /// más rápido que el jugador sería imposible de encontrar sin esta
+    /// pista; fuera de la huida no se revela.
+    pub(crate) fn king_minimap_position(&self) -> Option<Vector2> {
+        let fleeing = self.king_encounter.phase == KingEncounterPhase::Fleeing
+            || self.king_encounter.pending_threshold == Some(KING_FLEE_PUNISH_COHORT);
+
+        if !fleeing {
+            return None;
+        }
+
+        self.entities
+            .iter()
+            .find(|entity| entity.kind() == EnemyKind::King && !entity.is_dead())
+            .map(|king| king.position())
+    }
+
     /// Cantidad de Dealers VIVOS invocados por The King en la cohorte
     /// `threshold_index` ahora mismo. Bloque 4: base del gate entre
     /// invocaciones (Commit 43) y de la limpieza al morir el jefe
@@ -7756,6 +7775,44 @@ e             #
         }
         assert!(reached_summoning, "la cuenta atrás dispara la oleada");
         assert_eq!(run.king_flee_countdown(), None);
+    }
+
+    #[test]
+    fn the_king_is_only_revealed_on_the_minimap_while_it_flees() {
+        // Antes de la huida (Fighting): nunca se revela.
+        let (run, king) = horde_at_the_king_big(4);
+        assert_eq!(run.king_minimap_position(), None);
+
+        // Tampoco durante una invocación de umbral normal (Fighting).
+        let (run, _king) = drive_king_to_summon(run, king, 0);
+        assert!(run.king_is_summoning());
+        assert_eq!(run.king_minimap_position(), None);
+
+        // En huida: revela la posición real del King.
+        let (mut run, king) = king_fleeing_big();
+        let marker = run.king_minimap_position().expect("revelado al huir");
+        let king_pos = run.entities()[king].position();
+        assert!((marker.x - king_pos.x).abs() < 0.01 && (marker.y - king_pos.y).abs() < 0.01);
+
+        // También durante la Summoning de la oleada de castigo.
+        kill_summoned_dealers(&mut run);
+        for _ in 0..300 {
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+            if run.king_is_summoning() {
+                break;
+            }
+        }
+        assert!(run.king_is_summoning());
+        assert!(run.king_minimap_position().is_some());
+
+        // Tras morir el King: deja de revelarse. (Se remata la
+        // Summoning para que vuelva a ser vulnerable en `Fleeing`.)
+        run.update_king_encounter(KING_SUMMON_DURATION, BLOCK_SIZE);
+        for _ in 0..8 {
+            run.damage_entity(king);
+        }
+        assert!(!run.king_alive());
+        assert_eq!(run.king_minimap_position(), None);
     }
 
     #[test]

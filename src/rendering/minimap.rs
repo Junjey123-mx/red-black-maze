@@ -1,4 +1,4 @@
-use raylib::prelude::Color;
+use raylib::prelude::{Color, Vector2};
 
 use super::framebuffer::Framebuffer;
 use super::palette::palette_for_theme;
@@ -25,6 +25,15 @@ const DIRECTION_LINE_LENGTH: f32 = 12.0;
 
 /// Radio del marcador del jugador, en píxeles de minimapa.
 const PLAYER_MARKER_RADIUS: i32 = 3;
+
+/// Radio del marcador de The King (fase `Fleeing`), en píxeles de
+/// minimapa — un pelo mayor que el del jugador para que resalte.
+const KING_MARKER_RADIUS: i32 = 4;
+
+/// Oro sólido, el MISMO tono con el que el billboard de The King se
+/// dora cuando es invulnerable (`rendering::sprites::GILD_*`): el
+/// marcador del jefe en el minimapa habla el mismo idioma visual.
+const KING_COLOR: Color = Color::new(255, 198, 58, 255);
 
 /// Neutro, independiente del `LevelTheme` activo.
 const BACKGROUND_COLOR: Color = Color::new(10, 10, 14, 255);
@@ -213,6 +222,26 @@ fn draw_player_marker(framebuffer: &mut Framebuffer, center_x: f32, center_y: f3
     }
 }
 
+/// Dibuja el marcador de The King: un rombo relleno dorado centrado en
+/// `(center_x, center_y)`, con un punto oscuro al medio para leerse
+/// como "ojo" y distinguirse a simple vista del marcador del jugador.
+fn draw_king_marker(framebuffer: &mut Framebuffer, center_x: f32, center_y: f32) {
+    let cx = center_x.round() as i32;
+    let cy = center_y.round() as i32;
+
+    framebuffer.set_current_color(KING_COLOR);
+    for offset_y in -KING_MARKER_RADIUS..=KING_MARKER_RADIUS {
+        for offset_x in -KING_MARKER_RADIUS..=KING_MARKER_RADIUS {
+            if offset_x.abs() + offset_y.abs() <= KING_MARKER_RADIUS {
+                framebuffer.point(cx + offset_x, cy + offset_y);
+            }
+        }
+    }
+
+    framebuffer.set_current_color(BACKGROUND_COLOR);
+    framebuffer.point(cx, cy);
+}
+
 /// Dibuja la superposición de minimapa: caja anclada arriba-derecha
 /// sobre la vista `World3D`, con fondo oscuro, borde, paredes del
 /// nivel completo escaladas de forma independiente a sus
@@ -229,6 +258,7 @@ pub(crate) fn render_minimap(
     player: &Player,
     block_size: usize,
     theme: LevelTheme,
+    king_position: Option<Vector2>,
 ) {
     let Some(layout) = compute_layout(
         framebuffer.width(),
@@ -288,6 +318,13 @@ pub(crate) fn render_minimap(
                 palette.minimap_wall_accent,
             );
         }
+    }
+
+    // The King se marca ANTES que el jugador: cuando huye y ambos
+    // coinciden en una celda, el jugador queda encima y siempre se ve.
+    if let Some(king) = king_position {
+        let (king_x, king_y) = world_to_minimap(&layout, king.x, king.y, block_size);
+        draw_king_marker(framebuffer, king_x, king_y);
     }
 
     let (player_x, player_y) = world_to_minimap(&layout, player.pos.x, player.pos.y, block_size);

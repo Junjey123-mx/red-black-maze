@@ -1729,6 +1729,7 @@ impl<'aud> App<'aud> {
                     &self.session.player,
                     BLOCK_SIZE,
                     theme,
+                    self.session.king_minimap_position(),
                 );
 
                 /*
