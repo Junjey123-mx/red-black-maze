@@ -16,7 +16,7 @@ pub(crate) use hud::{
     render_fps, render_hand_message, render_horde_progress, render_hud,
     render_king_cohort_progress, render_king_health_bar, render_king_summon_warning,
 };
-pub(crate) use minimap::render_minimap;
+pub(crate) use minimap::{MinimapItems, render_minimap};
 /// Tarea 41: expuesto fuera de `rendering` para que
 /// `ui::level_select` pueda resolver el acento cromático de cada
 /// fila del catálogo desde la MISMA fuente de verdad que ya usan

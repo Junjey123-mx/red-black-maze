@@ -14,8 +14,8 @@ use crate::rendering::map_2d::{
 };
 use crate::rendering::world_3d::render_world;
 use crate::rendering::{
-    render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress, render_hud,
-    render_king_cohort_progress, render_king_health_bar, render_king_summon_warning,
+    MinimapItems, render_fps, render_hand_message, render_hit_flash_overlay, render_horde_progress,
+    render_hud, render_king_cohort_progress, render_king_health_bar, render_king_summon_warning,
     render_minimap, render_weapon, render_world_sprites,
 };
 use crate::ui::{
@@ -1723,6 +1723,39 @@ impl<'aud> App<'aud> {
                  * es un segundo viewport y no reduce el tamaño del
                  * mundo/framebuffer/proyección.
                  */
+                /*
+                 * Marcadores de ítem en el minimapa: SOLO en "The
+                 * Dealer's True Maze" (procedural, enorme), donde
+                 * encontrar munición/vida/pistola dorada a ojo es
+                 * tedioso. En el resto de niveles las listas van vacías
+                 * y el minimapa se dibuja igual que siempre.
+                 */
+                let (ammo_marks, health_marks, royal_flush_mark) =
+                    if self.level_manager.current_is_procedural() {
+                        let ammo: Vec<_> = self
+                            .session
+                            .ammo_pickups()
+                            .iter()
+                            .filter(|pickup| pickup.is_active())
+                            .map(|pickup| pickup.position())
+                            .collect();
+                        let health: Vec<_> = self
+                            .session
+                            .health_pickups()
+                            .iter()
+                            .filter(|pickup| pickup.is_active())
+                            .map(|pickup| pickup.position())
+                            .collect();
+                        let royal_flush = self
+                            .session
+                            .royal_flush_pickup()
+                            .filter(|pickup| pickup.is_active())
+                            .map(|pickup| pickup.position());
+                        (ammo, health, royal_flush)
+                    } else {
+                        (Vec::new(), Vec::new(), None)
+                    };
+
                 render_minimap(
                     framebuffer,
                     &self.session.level,
@@ -1730,6 +1763,11 @@ impl<'aud> App<'aud> {
                     BLOCK_SIZE,
                     theme,
                     self.session.king_minimap_position(),
+                    MinimapItems {
+                        ammo: &ammo_marks,
+                        health: &health_marks,
+                        royal_flush: royal_flush_mark,
+                    },
                 );
 
                 /*

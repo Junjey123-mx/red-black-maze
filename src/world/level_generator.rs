@@ -78,11 +78,19 @@ const AMMO_PER_PICKUP: u32 = 6;
 const MIN_AMMO_PICKUPS: usize = 8;
 const MAX_AMMO_PICKUPS: usize = 20;
 
-/// Cantidad FIJA de Health Pickups que debe colocar cada generación
-/// de "The Dealer's True Maze" (sección 11: "Genera exactamente 3
-/// Health Pickups por generación"). A diferencia de la munición, esto
-/// NUNCA depende de un presupuesto calculado (cantidad de Dealers,
-/// etc.) — es un número de diseño de nivel fijo.
+/// "The Dealer's True Maze" es MUCHÍSIMO más grande que los tres
+/// niveles fijos, así que buscar munición y vida a ciegas se vuelve
+/// tedioso. Todos sus pickups (munición y vida) se colocan por
+/// DUPLICADO respecto al presupuesto base — y además su ubicación se
+/// marca en el minimapa (`rendering::minimap`), igual que la pistola
+/// dorada.
+const PROCEDURAL_ITEM_MULTIPLIER: usize = 2;
+
+/// Cantidad BASE de Health Pickups por generación de "The Dealer's
+/// True Maze" (sección 11: "Genera exactamente 3 Health Pickups por
+/// generación"). A diferencia de la munición, no depende de un
+/// presupuesto calculado. El nivel procedural coloca el DOBLE
+/// (`* PROCEDURAL_ITEM_MULTIPLIER`) por su tamaño.
 const HEALTH_PICKUP_COUNT: usize = 3;
 
 /// Intentos máximos de generación antes de recurrir al mapa de
@@ -711,7 +719,7 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
 
     // --- Colocación de munición (sección 13) ---
 
-    let ammo_target = ammo_pickup_budget(dealer_positions.len());
+    let ammo_target = ammo_pickup_budget(dealer_positions.len()) * PROCEDURAL_ITEM_MULTIPLIER;
 
     // Callejones sin salida (grado == 1) primero: rutas secundarias
     // que incentivan exploración, tal como pide la sección 13.
@@ -761,10 +769,12 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
     // (rutas secundarias que recompensan exploración, sección 11),
     // nunca concentradas todas juntas porque cada una sale de un
     // punto distinto del mapa ya barajado.
-    let mut health_positions = Vec::with_capacity(HEALTH_PICKUP_COUNT);
+    let health_target = HEALTH_PICKUP_COUNT * PROCEDURAL_ITEM_MULTIPLIER;
+
+    let mut health_positions = Vec::with_capacity(health_target);
 
     for &pos in dead_ends.iter().chain(remaining_eligible.iter()) {
-        if health_positions.len() >= HEALTH_PICKUP_COUNT {
+        if health_positions.len() >= health_target {
             break;
         }
 
@@ -780,7 +790,7 @@ fn try_generate(attempt_seed: u64) -> Option<GeneratedLevel> {
     // celdas transitables libres que `HEALTH_PICKUP_COUNT` — no
     // colocar los tres es señal de un intento degenerado; el
     // llamador (`generate`) ya reintenta con otra semilla derivada.
-    if health_positions.len() < HEALTH_PICKUP_COUNT {
+    if health_positions.len() < health_target {
         return None;
     }
 
@@ -1096,22 +1106,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn generated_level_doubles_its_ammo_pickup_budget() {
+        for seed in [1u64, 2, 3, 837_492, u64::MAX, 0, 999_999] {
+            let generated = generate(seed);
+            let base = ammo_pickup_budget(generated.dealer_count);
+
+            assert!(
+                generated.ammo_pickup_count >= base * PROCEDURAL_ITEM_MULTIPLIER
+                    || generated.ammo_pickup_count >= MIN_AMMO_PICKUPS * PROCEDURAL_ITEM_MULTIPLIER,
+                "seed {seed}: {} pickups, se esperaba el doble del presupuesto base",
+                generated.ammo_pickup_count
+            );
+        }
+    }
+
     // --- Health Pickup: colocación procedural (sección 11). ---
 
     #[test]
-    fn generated_level_always_places_exactly_three_health_pickups() {
+    fn generated_level_places_the_doubled_health_pickup_count() {
+        let expected = HEALTH_PICKUP_COUNT * PROCEDURAL_ITEM_MULTIPLIER;
+
         for seed in [1u64, 2, 3, 837_492, u64::MAX, 0, 999_999] {
             let generated = generate(seed);
 
             assert_eq!(
-                generated.health_pickup_count, 3,
-                "seed {seed}: se esperaban exactamente 3 Health Pickups"
+                generated.health_pickup_count, expected,
+                "seed {seed}: The Dealer's True Maze duplica los Health Pickups"
             );
 
             let level = Level::from_cells(generated.cells.clone())
                 .expect("el nivel generado debe ser válido");
 
-            assert_eq!(level.health_spawns().len(), 3);
+            assert_eq!(level.health_spawns().len(), expected);
         }
     }
 

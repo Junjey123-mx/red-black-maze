@@ -35,6 +35,19 @@ const KING_MARKER_RADIUS: i32 = 4;
 /// marcador del jefe en el minimapa habla el mismo idioma visual.
 const KING_COLOR: Color = Color::new(255, 198, 58, 255);
 
+/// Colores de los marcadores de ítem del minimapa (solo "The Dealer's
+/// True Maze"): munición en azul acero, vida en rojo carmín, y la
+/// pistola dorada en oro claro — distinto del oro del King, que además
+/// tiene forma de rombo con "ojo".
+const MINIMAP_AMMO_COLOR: Color = Color::new(120, 184, 236, 255);
+const MINIMAP_HEALTH_COLOR: Color = Color::new(232, 92, 112, 255);
+const MINIMAP_ROYAL_FLUSH_COLOR: Color = Color::new(255, 232, 150, 255);
+
+/// Radio (píxeles de minimapa) del punto de un pickup de munición/vida
+/// y, algo mayor, del de la pistola dorada.
+const MINIMAP_ITEM_RADIUS: i32 = 1;
+const MINIMAP_ROYAL_FLUSH_RADIUS: i32 = 2;
+
 /// Neutro, independiente del `LevelTheme` activo.
 const BACKGROUND_COLOR: Color = Color::new(10, 10, 14, 255);
 
@@ -242,6 +255,37 @@ fn draw_king_marker(framebuffer: &mut Framebuffer, center_x: f32, center_y: f32)
     framebuffer.point(cx, cy);
 }
 
+/// Ubicaciones de ítems a marcar en el minimapa. Solo "The Dealer's
+/// True Maze" las aporta no vacías (`App` pasa listas vacías / `None`
+/// en el resto de niveles): ese nivel es tan grande que buscar
+/// munición, vida y la pistola dorada a ciegas es tedioso.
+pub(crate) struct MinimapItems<'a> {
+    pub(crate) ammo: &'a [Vector2],
+    pub(crate) health: &'a [Vector2],
+    pub(crate) royal_flush: Option<Vector2>,
+}
+
+/// Dibuja un punto cuadrado relleno de radio `radius` centrado en
+/// `(center_x, center_y)`.
+fn draw_dot(
+    framebuffer: &mut Framebuffer,
+    center_x: f32,
+    center_y: f32,
+    radius: i32,
+    color: Color,
+) {
+    framebuffer.set_current_color(color);
+
+    let cx = center_x.round() as i32;
+    let cy = center_y.round() as i32;
+
+    for offset_y in -radius..=radius {
+        for offset_x in -radius..=radius {
+            framebuffer.point(cx + offset_x, cy + offset_y);
+        }
+    }
+}
+
 /// Dibuja la superposición de minimapa: caja anclada arriba-derecha
 /// sobre la vista `World3D`, con fondo oscuro, borde, paredes del
 /// nivel completo escaladas de forma independiente a sus
@@ -259,6 +303,7 @@ pub(crate) fn render_minimap(
     block_size: usize,
     theme: LevelTheme,
     king_position: Option<Vector2>,
+    items: MinimapItems<'_>,
 ) {
     let Some(layout) = compute_layout(
         framebuffer.width(),
@@ -318,6 +363,27 @@ pub(crate) fn render_minimap(
                 palette.minimap_wall_accent,
             );
         }
+    }
+
+    // Ítems primero (debajo de King y jugador). Solo el nivel
+    // procedural los aporta; en el resto las listas llegan vacías.
+    for &position in items.ammo {
+        let (x, y) = world_to_minimap(&layout, position.x, position.y, block_size);
+        draw_dot(framebuffer, x, y, MINIMAP_ITEM_RADIUS, MINIMAP_AMMO_COLOR);
+    }
+    for &position in items.health {
+        let (x, y) = world_to_minimap(&layout, position.x, position.y, block_size);
+        draw_dot(framebuffer, x, y, MINIMAP_ITEM_RADIUS, MINIMAP_HEALTH_COLOR);
+    }
+    if let Some(royal_flush) = items.royal_flush {
+        let (x, y) = world_to_minimap(&layout, royal_flush.x, royal_flush.y, block_size);
+        draw_dot(
+            framebuffer,
+            x,
+            y,
+            MINIMAP_ROYAL_FLUSH_RADIUS,
+            MINIMAP_ROYAL_FLUSH_COLOR,
+        );
     }
 
     // The King se marca ANTES que el jugador: cuando huye y ambos
