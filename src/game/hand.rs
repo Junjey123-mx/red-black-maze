@@ -315,11 +315,19 @@ impl HordeManager {
 
                 self.hand_number = next_hand_number;
                 self.phase = HandPhase::Active;
-                self.banner_remaining = HAND_BANNER_DURATION;
 
                 if next_hand_number >= final_hand_number {
+                    // La ronda final ES el combate contra The King, no
+                    // una Hand numerada de Dealers: NO se muestra el
+                    // banner "HAND N" (se solaparía con la barra de
+                    // vida del jefe, que ocupa la misma franja
+                    // superior-centro). The King tiene su propia
+                    // etiqueta "THE KING" + barra.
+                    self.banner_remaining = 0.0;
                     return Some(HandOutcome::FinalHandReached);
                 }
+
+                self.banner_remaining = HAND_BANNER_DURATION;
 
                 // La progresión nunca depende de `previous_spawn_count`
                 // en 0 (un nivel estático hipotético sin Dealers
@@ -1231,6 +1239,27 @@ mod tests {
         let hand_four = run_full_reload_with_final(&mut state, 100, 4);
         assert_eq!(hand_four, HandOutcome::FinalHandReached);
         assert_eq!(state.hand_number(), 4);
+    }
+
+    #[test]
+    fn reaching_the_final_hand_shows_no_hand_banner() {
+        // La ronda final es The King (barra de vida propia); el banner
+        // "HAND N" se solaparía con ella, así que NO se muestra.
+        let mut state = HordeManager::new(2);
+
+        assert_eq!(
+            run_full_reload_with_final(&mut state, 100, 2),
+            HandOutcome::FinalHandReached
+        );
+
+        assert_eq!(state.hud_message(), HandHudMessage::None);
+
+        // Y sigue en `None` en los cuadros siguientes (el King mantiene
+        // la fase `Active` sin re-disparar el banner).
+        for _ in 0..10 {
+            assert_eq!(state.tick(0.1, 1, 100, 2), None);
+            assert_eq!(state.hud_message(), HandHudMessage::None);
+        }
     }
 
     /// Igual que `run_full_reload`, pero conservando el

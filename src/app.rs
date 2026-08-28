@@ -1805,8 +1805,17 @@ impl<'aud> App<'aud> {
          * la cadena ya resuelta.
          */
         if matches!(self.state, GameState::Playing | GameState::Paused) {
-            if let Some(message) = hand_message_text(self.session.hand_hud_message()) {
-                render_hand_message(framebuffer, &message);
+            /*
+             * El banner "HAND N" y el countdown de intermisión se
+             * anclan arriba-centro, la MISMA franja que ocupa la barra
+             * de vida de The King. Durante el combate del jefe esa
+             * franja es suya: se omite el mensaje de Hand para que
+             * "THE KING" + barra no queden pisados por "HAND IV".
+             */
+            if self.session.king_health().is_none() {
+                if let Some(message) = hand_message_text(self.session.hand_hud_message()) {
+                    render_hand_message(framebuffer, &message);
+                }
             }
 
             /*
