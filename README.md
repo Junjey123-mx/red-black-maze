@@ -14,15 +14,27 @@ El juego incluye cuatro niveles (tres diseñados a mano y uno generado procedura
 
 **[▶ Ver la demostración completa de Red-Black Maze](https://canva.link/ctxjdfvs4l9oygs)**
 
-Grabaciones de juego incluidas en el repositorio:
+Además, tres grabaciones de juego en formato GIF incrustadas en este documento:
 
-| Video | Contenido |
-|---|---|
-| [▶ `docs/videos/mod_portal.mp4`](docs/videos/mod_portal.mp4) | Partida de **Portal Mode** (recorrer el laberinto hasta el portal). |
-| [▶ `docs/videos/mod_horde.mp4`](docs/videos/mod_horde.mp4) | Partida de **Horde Mode** (Dealer Hands, Royal Flush y combate contra The King). |
-| [▶ `docs/videos/welcome.mp4`](docs/videos/welcome.mp4) | Pantalla de bienvenida y selección de nivel / modo. |
+### Bienvenida y selección
 
-> GitHub no reproduce archivos `.mp4` incrustados de forma fiable; los enlaces de arriba descargan o abren cada grabación directamente.
+<img src="docs/videos/welcome.gif" width="720" alt="Pantalla de bienvenida con fondo animado y menú de selección de nivel y modo">
+
+La pantalla de arranque: el título `RED-BLACK MAZE` sobre un fondo vivo (una simulación del Juego de la Vida de Conway) y el botón `PLAY`. A continuación, la pantalla de selección donde se elige uno de los cuatro niveles y el modo de juego (`PORTAL` o `HORDE`).
+
+### Portal Mode
+
+<img src="docs/videos/mod_portal.gif" width="680" alt="Gameplay de Portal Mode: recorrer el laberinto y enfrentar a un Dealer">
+
+El modo clásico: recorrer el laberinto en primera persona hasta el portal, esquivando o abatiendo a los Dealers repartidos por el mapa. Se ve el combate *hitscan*, el HUD de vida y munición, el minimapa y la vista con texturas de baraja recoloreadas por nivel. El nivel termina al pisar el portal.
+
+### Horde Mode
+
+<img src="docs/videos/mod_horde.gif" width="600" alt="Gameplay de Horde Mode: oleadas de Dealers y HUD de progreso">
+
+El modo de oleadas: sin portal, el jugador sobrevive a **Dealer Hands** sucesivas (cada una con el doble de enemigos que la anterior), con las intermisiones `THE HOUSE IS RELOADING...`, el contador `HAND N/M — ENEMIES: K`, y el reabastecimiento entre oleadas. La progresión desemboca en la **Final Hand**: el combate contra **The King**.
+
+> Los GIF son una versión reducida y sin sonido para visualización rápida en GitHub. La demostración completa y con mejor calidad está en el enlace de Canva de arriba.
 
 ---
 
@@ -117,7 +129,9 @@ Portal Mode es el modo clásico de laberinto-shooter.
 
 Al completar un nivel, la pantalla de victoria ofrece `NEXT LEVEL` para avanzar al siguiente del catálogo.
 
-[▶ Ver gameplay de Portal Mode](docs/videos/mod_portal.mp4)
+<img src="docs/videos/mod_portal.gif" width="600" alt="Gameplay de Portal Mode">
+
+*(GIF: recorrido de un nivel en Portal Mode hasta el portal.)*
 
 ---
 
@@ -146,7 +160,9 @@ Flujo de una partida de Horde:
 
 El tope global absoluto de Dealers vivos a la vez es 52, se aplique el nivel que se aplique.
 
-[▶ Ver gameplay de Horde Mode](docs/videos/mod_horde.mp4)
+<img src="docs/videos/mod_horde.gif" width="600" alt="Gameplay de Horde Mode">
+
+*(GIF: oleadas de Dealers, HUD de progreso e intermisiones de Horde Mode.)*
 
 ---
 
@@ -495,7 +511,9 @@ En **Level Select** el jugador elige:
 - **Modo** (`←` `→` o `A` `D`): `PORTAL` o `HORDE`.
 - Confirmar con `Enter` o clic. `Esc` vuelve a la bienvenida.
 
-[▶ Ver la interfaz de bienvenida y selección](docs/videos/welcome.mp4)
+<img src="docs/videos/welcome.gif" width="600" alt="Bienvenida y selección de nivel y modo">
+
+*(GIF: pantalla de bienvenida con fondo animado y menú de selección.)*
 
 ---
 
@@ -529,7 +547,7 @@ Este ciclo nunca retrocede: una vez que suena la batalla final, no se vuelve a l
 
 ## Capturas y videos
 
-Todas las capturas están en [`docs/screenshots/`](docs/screenshots/) y los videos en [`docs/videos/`](docs/videos/).
+Todas las capturas están en [`docs/screenshots/`](docs/screenshots/) y los GIF de gameplay en [`docs/videos/`](docs/videos/).
 
 | Escena | Archivo |
 |---|---|
@@ -541,9 +559,9 @@ Todas las capturas están en [`docs/screenshots/`](docs/screenshots/) y los vide
 | Pausa | [`06-pause.png`](docs/screenshots/06-pause.png) |
 | Victoria | [`07-victory.png`](docs/screenshots/07-victory.png) |
 | Derrota | [`08-defeat.png`](docs/screenshots/08-defeat.png) |
-| Portal Mode (video) | [`mod_portal.mp4`](docs/videos/mod_portal.mp4) |
-| Horde Mode (video) | [`mod_horde.mp4`](docs/videos/mod_horde.mp4) |
-| Bienvenida / selección (video) | [`welcome.mp4`](docs/videos/welcome.mp4) |
+| Portal Mode (GIF) | [`mod_portal.gif`](docs/videos/mod_portal.gif) |
+| Horde Mode (GIF) | [`mod_horde.gif`](docs/videos/mod_horde.gif) |
+| Bienvenida / selección (GIF) | [`welcome.gif`](docs/videos/welcome.gif) |
 
 ---
 
@@ -830,7 +848,7 @@ red-black-maze/
 │       └── sfx/          21 efectos .wav.
 ├── docs/
 │   ├── screenshots/      01–08 (menús, niveles, pausa, victoria, derrota).
-│   └── videos/           mod_portal.mp4, mod_horde.mp4, welcome.mp4.
+│   └── videos/           mod_portal.gif, mod_horde.gif, welcome.gif (gameplay).
 └── tests/                Pruebas de integración.
 ```
 
