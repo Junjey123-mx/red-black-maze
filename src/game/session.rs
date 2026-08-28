@@ -314,7 +314,7 @@ const KING_SHIELD_NOTICE_DURATION: f32 = 20.0;
 /// mensaje "THE KING HAS FALLEN", para que el jugador vea cómo cayó
 /// el jefe. Pause lo congela (`update_king_encounter` deja de
 /// llamarse); Retry lo reinicia (sesión reconstruida).
-const KING_DEATH_AFTERMATH_DURATION: f32 = 20.0;
+const KING_DEATH_AFTERMATH_DURATION: f32 = 7.0;
 
 /// Durante la fase `Fleeing`, si el jugador NO remata a The King en
 /// este tiempo (segundos de PARTIDA), el jefe invoca otra oleada de
@@ -1505,6 +1505,17 @@ impl GameSession {
         use_clusters: bool,
         final_hand_number: usize,
     ) -> Option<HandOutcome> {
+        /*
+         * Una vez que The King está en el mapa, el sistema de Hands
+         * numeradas queda CONGELADO: el combate del jefe (y su
+         * epílogo) no usa `HordeManager`, y seguir haciéndole `tick`
+         * hacía que `hand_number` subiera sin sentido ("HAND 5/3") a
+         * medida que el jugador caminaba tras la victoria.
+         */
+        if self.king_spawned {
+            return None;
+        }
+
         let alive_count = self.alive_dealer_count();
 
         let outcome = self
@@ -6900,13 +6911,18 @@ e             #
         assert!(run.horde_completed());
 
         // Sigue "corriendo" muchos cuadros: ninguna Hand nueva, el
-        // conteo de Hand no crece más allá de la Final, y sigue
+        // conteo de Hand queda CONGELADO desde que apareció el jefe
+        // (nunca sube "HAND 5/3" mientras el jugador camina), y sigue
         // completado.
         for _ in 0..600 {
             run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
         }
         assert!(run.horde_completed());
-        assert!(run.hand_number() >= hand_at_boss);
+        assert_eq!(
+            run.hand_number(),
+            hand_at_boss,
+            "el nº de Hand queda congelado"
+        );
         let kings = run
             .entities()
             .iter()
@@ -9090,7 +9106,7 @@ e             #
     }
 
     #[test]
-    fn killing_the_king_opens_a_twenty_second_epilogue_before_victory() {
+    fn killing_the_king_opens_a_seven_second_epilogue_before_victory() {
         let mut run = king_just_defeated();
 
         // El Rey está derrotado (`horde_completed`), pero la victoria
@@ -9099,14 +9115,14 @@ e             #
         assert!(run.king_death_epilogue_active());
         assert!(!run.horde_victory_ready());
 
-        // ~19 s: sigue en epílogo.
-        for _ in 0..190 {
+        // ~6 s: sigue en epílogo.
+        for _ in 0..60 {
             run.update_king_encounter(0.1, BLOCK_SIZE);
             assert!(run.king_death_epilogue_active());
             assert!(!run.horde_victory_ready());
         }
 
-        // Pasados los 20 s: el epílogo termina y la victoria queda
+        // Pasados los 7 s: el epílogo termina y la victoria queda
         // lista para que `App` pase a la pantalla de Victoria.
         for _ in 0..20 {
             run.update_king_encounter(0.1, BLOCK_SIZE);
@@ -9114,6 +9130,28 @@ e             #
         assert!(!run.king_death_epilogue_active());
         assert!(run.horde_victory_ready());
         assert!(run.horde_completed());
+    }
+
+    #[test]
+    fn the_hand_number_does_not_climb_once_the_king_has_spawned() {
+        let (mut run, king) = horde_at_the_king_big(4);
+        let frozen = run.hand_number();
+
+        // Cientos de cuadros durante el combate y el epílogo: el nº de
+        // Hand no se mueve (antes subía "HAND 5", "6"... al caminar).
+        for _ in 0..500 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+            assert_eq!(run.hand_number(), frozen);
+        }
+
+        // Ni siquiera tras matar al Rey y correr el epílogo entero.
+        hit_king_through_phases(&mut run, king, 25);
+        assert!(!run.king_alive());
+        for _ in 0..300 {
+            run.update_hand_state(0.1, BLOCK_SIZE, 52, false, 4);
+            run.update_king_encounter(0.1, BLOCK_SIZE);
+        }
+        assert_eq!(run.hand_number(), frozen);
     }
 
     #[test]

@@ -1736,14 +1736,23 @@ impl<'aud> App<'aud> {
                  * abajo-izquierda, leyendo instantáneas primitivas
                  * de estado real ya existente en GameSession; no
                  * posee ni modifica ese estado.
+                 *
+                 * Durante el EPÍLOGO tras derrotar a The King se
+                 * ocultan TODOS los contadores (vida/munición, HUD de
+                 * Horde, FPS) — la pantalla se queda solo con el
+                 * mensaje "THE KING HAS FALLEN" y la escena.
                  */
-                render_hud(
-                    framebuffer,
-                    self.session.player_health(),
-                    self.session.weapon_ammo(),
-                    self.session.weapon_reserve_ammo(),
-                    theme,
-                );
+                let king_epilogue = self.session.king_death_epilogue_active();
+
+                if !king_epilogue {
+                    render_hud(
+                        framebuffer,
+                        self.session.player_health(),
+                        self.session.weapon_ammo(),
+                        self.session.weapon_reserve_ammo(),
+                        theme,
+                    );
+                }
 
                 /*
                  * HUD de progreso de Horde (Bloque 1, Commit 09):
@@ -1757,7 +1766,7 @@ impl<'aud> App<'aud> {
                  * (nunca cadáveres todavía en despawn), la MISMA
                  * fuente de verdad que decide cuándo termina una Hand.
                  */
-                if self.session.mode() == GameMode::Horde {
+                if self.session.mode() == GameMode::Horde && !king_epilogue {
                     /*
                      * Bloque 3, Commit 25: durante el combate contra
                      * The King la barra del jefe sustituye al contador
@@ -1804,9 +1813,12 @@ impl<'aud> App<'aud> {
          * (World3D/Map2D) porque se dibuja fuera del `match`, sin
          * duplicar la llamada en cada rama. No sustituye ni se
          * solapa con el HUD (abajo-izquierda) ni el minimapa
-         * (arriba-derecha, solo en World3D).
+         * (arriba-derecha, solo en World3D). Oculto durante el epílogo
+         * de la muerte de The King.
          */
-        render_fps(framebuffer, self.current_fps);
+        if !self.session.king_death_epilogue_active() {
+            render_fps(framebuffer, self.current_fps);
+        }
 
         /*
          * Dealer Hands: "THE HOUSE IS RELOADING...", cuenta
@@ -1861,9 +1873,10 @@ impl<'aud> App<'aud> {
                 );
             } else if self.session.king_death_epilogue_active() {
                 /*
-                 * Epílogo: The King ha caído. El juego se queda ~20 s
-                 * con su cadáver a la vista y este mensaje antes de
-                 * ceder a la pantalla de Victoria.
+                 * Epílogo: The King ha caído. El juego se queda ~7 s
+                 * con su cadáver a la vista y SOLO este mensaje (el
+                 * resto del HUD está oculto) antes de ceder a la
+                 * pantalla de Victoria.
                  */
                 render_king_summon_warning(
                     framebuffer,
